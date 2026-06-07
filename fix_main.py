@@ -1,7 +1,6 @@
 import sys
 import subprocess
 
-# 1. Checkout the original file
 subprocess.run(['git', 'checkout', '3775189', 'src/main.cpp'], check=True)
 
 with open('src/main.cpp', 'r', encoding='utf-8') as f:
@@ -81,14 +80,21 @@ extracted = keyboard_key + "\n" + keyboard_key_geometry + "\n" + keyboard_overla
 for m in methods:
     extracted += extract_method(m) + "\n"
 
-# Remove all backend_ calls
+# Clean up Browser/Firefox leftovers
 lines = extracted.split('\n')
 clean_lines = []
 for line in lines:
-    if 'backend_' not in line:
-        clean_lines.append(line)
+    if 'backend_' in line: continue
+    if 'statusOverlayTexture_' in line: continue
+    if 'loadingOverlayTexture_' in line: continue
+    clean_lines.append(line)
 extracted = '\n'.join(clean_lines)
+
 extracted = extracted.replace("BrowserState", "TubeState")
+extracted = extracted.replace("TubeState::InputMode::Url", "TubeState::InputMode::SearchText")
+extracted = extracted.replace("TubeState::InputMode::PageText", "TubeState::InputMode::SearchText")
+extracted = extracted.replace("state_.pageTextSelectionArmed", "false")
+extracted = extracted.replace("? \"URL INPUT \" : \"TEXT INPUT \"", "? \"SEARCH \" : \"SEARCH \"")
 
 top_code = """#include <iostream>
 #include <string>
@@ -193,7 +199,13 @@ public:
 """
 
 bottom_code = """
+    static constexpr int kKeyboardGridColumns = 12;
+    static constexpr bool kKeyboardWrapAround = true;
+    void updateTitle() {}
+    void logRendererInfo() {}
+
     std::string& activeBuffer() { return state_.textBuffer; }
+    const std::string& activeBuffer() const { return state_.textBuffer; }
 
     void eraseActiveBufferChar() {
         auto& buffer = activeBuffer();
@@ -340,7 +352,7 @@ bottom_code = """
             }
             break;
         case SDLK_DOWN:
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < search_results_.size() - 1) {
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) {
                 selected_result_idx_++; uiDirty_ = true;
             }
             break;
@@ -394,7 +406,7 @@ bottom_code = """
         else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
             if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) selected_result_idx_--;
         } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < search_results_.size() - 1) selected_result_idx_++;
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) selected_result_idx_++;
         }
     }
 
@@ -404,7 +416,12 @@ private:
     SDL_GameController* controller_{nullptr};
     SDL_Joystick* joystick_{nullptr};
     SDL_Texture* keyboardOverlayTexture_{nullptr};
+    int keyboardOverlayWidth_{0};
+    int keyboardOverlayHeight_{0};
     bool uiDirty_{true};
+    bool forceVsync_{false};
+    bool maxPerformance_{false};
+    uint32_t preferredTextureFormat_{SDL_PIXELFORMAT_UNKNOWN};
 
     TubeState state_;
     MpvPlayer mpv_player_;
@@ -442,4 +459,4 @@ with open('src/main.cpp', 'w', encoding='utf-8') as f:
     f.write(extracted)
     f.write(bottom_code)
 
-print("FIXED")
+print("FIXED AGAIN")
