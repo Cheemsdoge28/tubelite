@@ -13,6 +13,8 @@
 #include <cstring>
 #include <chrono>
 #include <thread>
+#include "mpv_player.hpp"
+#include "youtube_api.hpp"
 
 #include <fstream>
 #include <mutex>
@@ -154,419 +156,51 @@ static std::string percentEncode(const std::string& input) {
 }
 
 
-// Simple cross-platform IPC pipe for command communication
-class CommandPipe {
-public:
-    bool create(const std::string& baseName) {
-#ifdef _WIN32
-        // Create named pipes on Windows for commands
-        pipeIn_ = CreateNamedPipeA(
-            ("\\\\.\\pipe\\" + baseName + "_in").c_str(),
-            PIPE_ACCESS_OUTBOUND,
-            PIPE_TYPE_BYTE,  // Changed to BYTE mode for streaming
-            1, 65536, 65536, 0, nullptr);
-        
-        pipeOut_ = CreateNamedPipeA(
-            ("\\\\.\\pipe\\" + baseName + "_out").c_str(),
-            PIPE_ACCESS_INBOUND,
-            PIPE_TYPE_BYTE,  // Changed to BYTE mode for streaming
-            1, 65536, 65536, 0, nullptr);
-        
-        // Create framebuffer streaming pipe (output only)
-        fbPipe_ = CreateNamedPipeA(
-            ("\\\\.\\pipe\\" + baseName + "_fb").c_str(),
-            PIPE_ACCESS_INBOUND,
-            PIPE_TYPE_BYTE,
-            1, 1048576, 1048576, 0, nullptr);
-        
-        return pipeIn_ != INVALID_HANDLE_VALUE && pipeOut_ != INVALID_HANDLE_VALUE && fbPipe_ != INVALID_HANDLE_VALUE;
-#else
-        // Use FIFOs on Unix
-        std::string pipeInPath = "/tmp/" + baseName + "_in";
-        std::string pipeOutPath = "/tmp/" + baseName + "_out";
-        std::string fbPath = "/tmp/" + baseName + "_fb";
-        
-        mkfifo(pipeInPath.c_str(), 0666);
-        mkfifo(pipeOutPath.c_str(), 0666);
-        mkfifo(fbPath.c_str(), 0666);
-        
-        pipeInPath_ = pipeInPath;
-        pipeOutPath_ = pipeOutPath;
-        fbPath_ = fbPath;
-        return true;
-#endif
-    }
 
-    bool sendCommand(const std::string& cmd) {
-#ifdef _WIN32
-        if (pipeIn_ == INVALID_HANDLE_VALUE) return false;
-        
-        DWORD written = 0;
-        return WriteFile(pipeIn_, cmd.c_str(), (DWORD)cmd.size(), &written, nullptr) && written > 0;
-#else
-        if (pipeInFd_ < 0) {
-            pipeInFd_ = open(pipeInPath_.c_str(), O_WRONLY | O_NONBLOCK);
-            if (pipeInFd_ < 0) return false;
-        }
-        
-        ssize_t ret = write(pipeInFd_, cmd.c_str(), cmd.size());
-        return ret > 0;
-#endif
-    }
-
-    ~CommandPipe() {
-#ifdef _WIN32
-        if (pipeIn_ != INVALID_HANDLE_VALUE) CloseHandle(pipeIn_);
-        if (pipeOut_ != INVALID_HANDLE_VALUE) CloseHandle(pipeOut_);
-        if (fbPipe_ != INVALID_HANDLE_VALUE) CloseHandle(fbPipe_);
-#else
-        if (pipeInFd_ >= 0) close(pipeInFd_);
-        if (pipeOutFd_ >= 0) close(pipeOutFd_);
-        unlink(pipeInPath_.c_str());
-        unlink(pipeOutPath_.c_str());
-        unlink(fbPath_.c_str());
-#endif
-    }
-
-private:
-#ifdef _WIN32
-    HANDLE pipeIn_{INVALID_HANDLE_VALUE};
-    HANDLE pipeOut_{INVALID_HANDLE_VALUE};
-    HANDLE fbPipe_{INVALID_HANDLE_VALUE};
-#else
-    int pipeInFd_{-1};
-    int pipeOutFd_{-1};
-    std::string pipeInPath_;
-    std::string pipeOutPath_;
-    std::string fbPath_;
-#endif
-    friend class FramebufferReader;
-};
-
-// Framebuffer holder for captured screenshots with delta tracking
-struct Framebuffer {
-    std::vector<uint8_t> data;
-    int width = 0;
-    int height = 0;
-    uint64_t timestamp = 0;
-    bool dirty = false;
+struct TubeState {
+    enum class Screen {
+        Home,
+        Search,
+        Playback
+    };
     
-    // Delta encoding: only redraw changed regions
-    struct DirtyRect {
-        int x, y, w, h;
-    } dirtyRect{0, 0, 0, 0};
-    
-    // Frame rate limiting: target 60 FPS (~16ms per frame)
-    using ClockType = std::chrono::steady_clock;
-    static constexpr std::chrono::milliseconds targetFrameTime{16};
-    ClockType::time_point lastFrameTime{ClockType::now()};
-    
-    bool shouldUpdate() {
-        auto now = ClockType::now();
-        if (now - lastFrameTime >= targetFrameTime) {
-            lastFrameTime = now;
-            return true;
-        }
-        return false;
-    }
-    
-    void resize(int w, int h) {
-        if (w != width || h != height) {
-            width = w;
-            height = h;
-            data.clear();
-            data.resize(w * h * 4, 0);  // RGBA8888
-            dirtyRect = {0, 0, w, h};
-            dirty = true;
-        }
-    }
-};
-
-// High-performance framebuffer reader with streaming support
-class FramebufferReader {
-public:
-    bool initialize(const std::string& baseName) {
-        std::string fbPath = "/tmp/" + baseName + "_fb";
-        
-#ifdef _WIN32
-        // Open named pipe for reading framebuffer stream
-        fbPipe_ = CreateFileA(
-            ("\\\\.\\pipe\\" + baseName + "_fb").c_str(),
-            GENERIC_READ,
-            0,
-            nullptr,
-            OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED,  // Non-blocking I/O
-            nullptr);
-        
-        return fbPipe_ != INVALID_HANDLE_VALUE;
-#else
-        // Open FIFO for reading framebuffer stream (non-blocking)
-        mkfifo(fbPath.c_str(), 0666);
-        fbFd_ = open(fbPath.c_str(), O_RDONLY | O_NONBLOCK);
-        fbPath_ = fbPath;
-        return fbFd_ >= 0;
-#endif
-    }
-    
-    // Attempt to read available frame data (non-blocking)
-    bool tryReadFrame(Framebuffer& fb) {
-#ifdef _WIN32
-        if (fbPipe_ == INVALID_HANDLE_VALUE) return false;
-        
-        // Use current framebuffer dimensions or fall back to 640x480
-        uint32_t width = fb.width > 0 ? fb.width : 640;
-        uint32_t height = fb.height > 0 ? fb.height : 480;
-        
-        if (fb.width != (int)width || fb.height != (int)height) {
-            fb.resize((int)width, (int)height);
-        }
-        
-        size_t pixelBytes = width * height * 4;
-        size_t totalRead = 0;
-        
-        // Non-blocking read first byte/chunk to see if data exists
-        DWORD bytesToRead = (DWORD)pixelBytes;
-        DWORD bytesReadNow = 0;
-        if (!ReadFile(fbPipe_, fb.data.data(), bytesToRead, &bytesReadNow, nullptr)) {
-            // No data or error
-            return false;
-        }
-        if (bytesReadNow == 0) return false;
-        
-        totalRead += bytesReadNow;
-        
-        while (totalRead < pixelBytes) {
-            bytesToRead = (DWORD)(pixelBytes - totalRead);
-            bytesReadNow = 0;
-            if (!ReadFile(fbPipe_, fb.data.data() + totalRead, bytesToRead, &bytesReadNow, nullptr)) {
-                if (GetLastError() == ERROR_IO_PENDING || GetLastError() == ERROR_NO_DATA || GetLastError() == ERROR_PIPE_NOT_CONNECTED) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    continue;
-                }
-                return false;
-            }
-            if (bytesReadNow > 0) totalRead += bytesReadNow;
-        }
-        
-        fb.dirty = true;
-        fb.timestamp = std::time(nullptr);
-        return true;
-#else
-        if (fbFd_ < 0) return false;
-        
-        // Use current framebuffer dimensions or fall back to 640x480
-        uint32_t width = fb.width > 0 ? fb.width : 640;
-        uint32_t height = fb.height > 0 ? fb.height : 480;
-        
-        if (fb.width != (int)width || fb.height != (int)height) {
-            fb.resize((int)width, (int)height);
-        }
-        
-        size_t pixelBytes = width * height * 4;
-        size_t totalRead = 0;
-        
-        ssize_t ret = read(fbFd_, fb.data.data(), pixelBytes);
-        if (ret > 0) {
-            totalRead += ret;
-        } else if (ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            return false;
-        } else {
-            return false;
-        }
-        
-        while (totalRead < pixelBytes) {
-            ret = read(fbFd_, fb.data.data() + totalRead, pixelBytes - totalRead);
-            if (ret > 0) {
-                totalRead += ret;
-            } else if (ret < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    continue;
-                }
-                return false;
-            } else {
-                return false; // EOF
-            }
-        }
-        
-        fb.dirty = true;
-        fb.timestamp = std::time(nullptr);
-        return true;
-#endif
-    }
-    
-    ~FramebufferReader() {
-#ifdef _WIN32
-        if (fbPipe_ != INVALID_HANDLE_VALUE) {
-            CloseHandle(fbPipe_);
-            fbPipe_ = INVALID_HANDLE_VALUE;
-        }
-#else
-        if (fbFd_ >= 0) {
-            close(fbFd_);
-            fbFd_ = -1;
-        }
-        if (!fbPath_.empty()) {
-            unlink(fbPath_.c_str());
-        }
-#endif
-    }
-
-private:
-#ifdef _WIN32
-    HANDLE fbPipe_{INVALID_HANDLE_VALUE};
-#else
-    int fbFd_{-1};
-    std::string fbPath_;
-#endif
-};
-
-// Shared memory constants — must match the Python ShmFrameProducer
-static constexpr uint32_t SHM_MAGIC = 0x46425348; // 'FBSH'
-static constexpr size_t SHM_HEADER_SIZE = 32;
-static constexpr const char* SHM_PATH = "/dev/shm/fire4arkos_fb";
-
-// Shared memory header layout (little-endian):
-//   [0..3]   magic    uint32
-//   [4..7]   width    uint32
-//   [8..11]  height   uint32
-//   [12..15] stride   uint32
-//   [16..23] frame_seq int64
-//   [24..27] flags    uint32
-//   [28..31] reserved
-
-// Zero-copy framebuffer reader via POSIX shared memory
-class ShmFrameReader {
-public:
-    bool initialize() {
-#ifdef _WIN32
-        return false; // SHM not available on Windows
-#else
-        // Try to open the shared memory file created by the Python wrapper
-        shmFd_ = open(SHM_PATH, O_RDONLY);
-        if (shmFd_ < 0) {
-            return false;
-        }
-
-        // Read the file size to determine mapping length
-        struct stat st{};
-        if (fstat(shmFd_, &st) != 0 || st.st_size < static_cast<off_t>(SHM_HEADER_SIZE)) {
-            close(shmFd_);
-            shmFd_ = -1;
-            return false;
-        }
-
-        mapSize_ = static_cast<size_t>(st.st_size);
-        mapped_ = static_cast<volatile uint8_t*>(mmap(nullptr, mapSize_, PROT_READ, MAP_SHARED, shmFd_, 0));
-        if (mapped_ == MAP_FAILED) {
-            mapped_ = nullptr;
-            close(shmFd_);
-            shmFd_ = -1;
-            return false;
-        }
-
-        // Tell the kernel we'll read sequentially — improves hardware prefetch
-        // for the large memcpy in tryReadFrame().
-#ifdef MADV_SEQUENTIAL
-        madvise(const_cast<uint8_t*>(mapped_), mapSize_, MADV_SEQUENTIAL);
-#endif
-
-        // Validate magic
-        uint32_t magic = 0;
-        std::memcpy(&magic, const_cast<const uint8_t*>(mapped_), 4);
-        if (magic != SHM_MAGIC) {
-            munmap(const_cast<uint8_t*>(mapped_), mapSize_);
-            mapped_ = nullptr;
-            close(shmFd_);
-            shmFd_ = -1;
-            return false;
-        }
-
-        // Read dimensions from header (parsed once)
-        std::memcpy(&shmWidth_, const_cast<const uint8_t*>(mapped_) + 4, 4);
-        std::memcpy(&shmHeight_, const_cast<const uint8_t*>(mapped_) + 8, 4);
-        std::memcpy(&shmStride_, const_cast<const uint8_t*>(mapped_) + 12, 4);
-
-        return true;
-#endif
-    }
-
-    bool tryReadFrame(Framebuffer& fb) {
-#ifdef _WIN32
-        (void)fb;
-        return false;
-#else
-        if (mapped_ == nullptr) return false;
-
-        // Volatile read of frame sequence counter — prevents compiler from
-        // caching the value across calls (critical on ARM with -O3 -flto).
-        int64_t currentSeq = 0;
-        const volatile uint8_t* seqPtr = mapped_ + 16;
-        std::memcpy(&currentSeq, const_cast<const uint8_t*>(seqPtr), 8);
-
-        // No new frame? Skip.
-        if (currentSeq == lastSeq_) return false;
-
-        // Frame skip: if multiple frames arrived, we only render the latest
-        lastSeq_ = currentSeq;
-
-        // Ensure framebuffer is correctly sized
-        if (fb.width != static_cast<int>(shmWidth_) || fb.height != static_cast<int>(shmHeight_)) {
-            fb.resize(static_cast<int>(shmWidth_), static_cast<int>(shmHeight_));
-        }
-
-        // Single memcpy of pixel data (zero kernel calls)
-        size_t pixelBytes = shmWidth_ * shmHeight_ * 4;
-        if (SHM_HEADER_SIZE + pixelBytes <= mapSize_) {
-            std::memcpy(fb.data.data(), const_cast<const uint8_t*>(mapped_ + SHM_HEADER_SIZE), pixelBytes);
-        }
-
-        fb.dirty = true;
-        fb.timestamp = static_cast<uint64_t>(std::time(nullptr));
-        return true;
-#endif
-    }
-
-    bool isAvailable() const {
-#ifdef _WIN32
-        return false;
-#else
-        return mapped_ != nullptr;
-#endif
-    }
-
-    ~ShmFrameReader() {
-#ifndef _WIN32
-        if (mapped_ != nullptr) {
-            munmap(const_cast<uint8_t*>(mapped_), mapSize_);
-            mapped_ = nullptr;
-        }
-        if (shmFd_ >= 0) {
-            close(shmFd_);
-            shmFd_ = -1;
-        }
-#endif
-    }
-
-private:
-#ifndef _WIN32
-    int shmFd_{-1};
-    volatile uint8_t* mapped_{nullptr};
-    size_t mapSize_{0};
-    uint32_t shmWidth_{0};
-    uint32_t shmHeight_{0};
-    uint32_t shmStride_{0};
-    int64_t lastSeq_{0};
-#endif
-};
-
-struct BrowserState {
     enum class InputMode {
         None,
-        Url,
-        PageText
+        SearchText
     };
+
+    enum class KeyboardMode {
+        Lowercase,
+        Uppercase,
+        Symbols
+    };
+
+    Screen currentScreen{Screen::Home};
+    InputMode inputMode{InputMode::None};
+    KeyboardMode keyboardMode{KeyboardMode::Lowercase};
+    
+    std::string textBuffer;
+    int textCursor{0};
+    int scrollOffset{0};
+    bool running{true};
+    int keyboardSelectedIndex{0};
+    bool replaceBufferOnNextInput{false};
+    bool showUi{true};
+    float cursorX{320.0f};
+    float cursorY{240.0f};
+    float leftStickX{0.0f};
+    float leftStickY{0.0f};
+    float rightStickX{0.0f};
+    float rightStickY{0.0f};
+    float leftTrigger{0.0f};
+    float rightTrigger{0.0f};
+    bool dpadUpPressed{false};
+    bool dpadDownPressed{false};
+    bool dpadLeftPressed{false};
+    bool dpadRightPressed{false};
+    bool l3Pressed{false};
+};
+
 
     enum class KeyboardMode {
         Lowercase,
@@ -610,338 +244,6 @@ struct BrowserState {
     std::chrono::steady_clock::time_point clickSuppressUntil{};  // Suppress mousemove IPC until this time
 };
 
-class BrowserBackend {
-public:
-    virtual ~BrowserBackend() = default;
-    virtual bool initialize(SDL_Window* window, const std::string& initialUrl) = 0;
-    virtual bool loadUrl(const std::string& url) = 0;
-    virtual void goBack() = 0;
-    virtual void scrollBy(int deltaLines) = 0;
-    virtual void clickFocusedElement() = 0;
-    virtual void resize(int width, int height) = 0;
-    virtual void typeText(const std::string& text) = 0;
-    virtual void pressKey(const std::string& key) = 0;
-    virtual void mouseDownAt(int x, int y, int button = 1) = 0;
-    virtual void mouseUpAt(int x, int y, int button = 1) = 0;
-    virtual void pump() = 0;
-    virtual bool captureFrame(Framebuffer& fb) = 0;
-    virtual bool sendCommand(const std::string& cmd) = 0;
-};
-
-class FirefoxProcessBackend final : public BrowserBackend {
-public:
-    explicit FirefoxProcessBackend(std::filesystem::path executableDir)
-        : executableDir_(std::move(executableDir)) {}
-
-    ~FirefoxProcessBackend() {
-        shutdown();
-    }
-
-    bool initialize(SDL_Window* window, const std::string& initialUrl) override {
-        window_ = window;
-        currentUrl_ = initialUrl;
-        return launchFirefox(initialUrl);
-    }
-
-    bool loadUrl(const std::string& url) override {
-        currentUrl_ = url;
-        return sendCommand("load:" + url);
-    }
-
-    void goBack() override {
-        sendCommand("back");
-    }
-
-    void scrollBy(int deltaLines) override {
-        sendCommand("scroll:" + std::to_string(deltaLines));
-    }
-
-    void clickFocusedElement() override {
-        sendCommand("click");
-    }
-
-    void clickAt(int windowX, int windowY) {
-        sendCommand("click:" + std::to_string(scaleX(windowX)) + "," + std::to_string(scaleY(windowY)));
-    }
-
-    void mouseMoveAt(int windowX, int windowY) {
-        sendCommand("mousemove:" + std::to_string(scaleX(windowX)) + "," + std::to_string(scaleY(windowY)));
-    }
-
-    void rightClickAt(int windowX, int windowY) {
-        sendCommand("rightclick:" + std::to_string(scaleX(windowX)) + "," + std::to_string(scaleY(windowY)));
-    }
-
-    void mouseDownAt(int windowX, int windowY, int button = 1) override {
-        std::string cmd = (button == 3) ? "rightmousedown:" : "mousedown:";
-        sendCommand(cmd + std::to_string(scaleX(windowX)) + "," + std::to_string(scaleY(windowY)));
-    }
-
-    void mouseUpAt(int windowX, int windowY, int button = 1) override {
-        std::string cmd = (button == 3) ? "rightmouseup:" : "mouseup:";
-        sendCommand(cmd + std::to_string(scaleX(windowX)) + "," + std::to_string(scaleY(windowY)));
-    }
-
-    void resize(int width, int height) override {
-        width_ = width;
-        height_ = height;
-        sendCommand("resize:" + std::to_string(width) + "," + std::to_string(height));
-    }
-
-    void typeText(const std::string& text) override {
-        sendCommand("text:" + percentEncode(text));
-    }
-
-    void pressKey(const std::string& key) override {
-        sendCommand("key:" + key);
-    }
-
-    void pump() override {
-        if (window_ != nullptr) {
-            std::string title = "Firefox Headless | " + currentUrl_;
-            SDL_SetWindowTitle(window_, title.c_str());
-        }
-    }
-
-    // Capture a screenshot from Firefox process (non-blocking streaming)
-    bool captureFrame(Framebuffer& fb) {
-        if (!isRunning_) {
-            return false;
-        }
-
-        // Only attempt to read if enough time has passed (frame rate limiting)
-        // Note: SHM bypasses this because tryReadFrame() has its own 
-        // ultra-efficient sequence counter check.
-        if (!shmReader_.isAvailable() && !fb.shouldUpdate()) {
-            return false;
-        }
-
-        // Try shared memory first (zero-copy), fall back to FIFO pipe
-        if (shmReader_.isAvailable()) {
-            return shmReader_.tryReadFrame(fb);
-        }
-        return fbReader_.tryReadFrame(fb);
-    }
-
-    // Retry SHM initialization (called from main loop when shm wasn't ready at startup)
-    bool retryShmInit() {
-        if (shmReader_.isAvailable()) return true;
-        if (shmReader_.initialize()) {
-            logInfo("SHM frame reader initialized on retry (zero-copy mode)");
-            std::cout << "SHM frame reader initialized on retry (zero-copy mode)\n";
-            return true;
-        }
-        return false;
-    }
-
-    bool isShmReady() const {
-        return shmReader_.isAvailable();
-    }
-
-private:
-    std::optional<std::string> findWrapperPath() const {
-        if (const char* env = std::getenv("FIRE4ARKOS_WRAPPER"); env != nullptr && *env != '\0') {
-            return std::string(env);
-        }
-
-        std::vector<std::filesystem::path> candidates = {
-            executableDir_ / "firefox-framebuffer-wrapper.py",
-            executableDir_.parent_path() / "firefox-framebuffer-wrapper.py",
-            std::filesystem::current_path() / "firefox-framebuffer-wrapper.py",
-            "/usr/local/bin/firefox-framebuffer-wrapper.py",
-            "/opt/fire4arkos/firefox-framebuffer-wrapper.py"
-        };
-
-        for (const auto& candidate : candidates) {
-            if (!candidate.empty() && std::filesystem::exists(candidate)) {
-                return candidate.string();
-            }
-        }
-
-        return std::nullopt;
-    }
-
-    bool launchFirefox(const std::string& url) {
-        auto wrapperPath = findWrapperPath();
-        if (!wrapperPath) {
-            logError("Could not locate firefox-framebuffer-wrapper.py");
-            return false;
-        }
-
-        // Create IPC pipes for command communication
-        if (!cmdPipe_.create("fire4arkos")) {
-            std::cerr << "Failed to create command pipes\n";
-            logError("Failed to create command pipes");
-            return false;
-        }
-
-        // Initialize framebuffer reader for streaming frames
-        if (!fbReader_.initialize("fire4arkos")) {
-            std::cerr << "Warning: Failed to initialize framebuffer reader\n";
-            logWarn("Failed to initialize framebuffer reader");
-            // Don't fail here - renderer might work without streaming
-        }
-
-        // Try shared memory reader (zero-copy path, Linux only)
-        // This will succeed once the Python wrapper creates /dev/shm/fire4arkos_fb
-        // We retry in a background-friendly way later if it fails now.
-        if (shmReader_.initialize()) {
-            logInfo("SHM frame reader initialized (zero-copy mode)");
-            std::cout << "SHM frame reader initialized (zero-copy mode)\n";
-        } else {
-            logInfo("SHM not available yet; will use FIFO pipe (retry on first frame)");
-        }
-        
-#ifdef _WIN32
-        std::string cmdline = "py -3 \"" + *wrapperPath + "\" \"" + url + "\" fire4arkos";
-        STARTUPINFOA si = {};
-        PROCESS_INFORMATION pi = {};
-        si.cb = sizeof(si);
-
-        if (!CreateProcessA(nullptr, (LPSTR)cmdline.c_str(), nullptr, nullptr, FALSE, 
-                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            std::string err = "Failed to launch wrapper: " + std::to_string(GetLastError());
-            std::cerr << err << '\n';
-            std::cerr << "Cmdline: " << cmdline << '\n';
-            logError(err + " Cmdline: " + cmdline);
-            return false;
-        }
-
-        processHandle_ = pi.hProcess;
-        CloseHandle(pi.hThread);
-        {
-            std::ostringstream ss; ss << "Launched wrapper process: " << pi.dwProcessId;
-            std::cout << ss.str() << '\n';
-            logInfo(ss.str());
-        }
-#else
-        // Unix-like systems
-        pid_t pid = fork();
-        if (pid == -1) {
-            std::cerr << "fork() failed\n";
-            logError("fork() failed");
-            return false;
-        }
-
-        if (pid == 0) {
-            // Child process - execute Python wrapper
-            execlp("python3", "python3", wrapperPath->c_str(), url.c_str(), "fire4arkos", nullptr);
-            
-            // If Python not available, try with python
-            execlp("python", "python", wrapperPath->c_str(), url.c_str(), "fire4arkos", nullptr);
-            
-            std::cerr << "execlp failed: Python not found\n";
-            logError("execlp failed: Python not found");
-            exit(1);
-        }
-
-        processId_ = pid;
-        {
-            std::ostringstream ss; ss << "Launched wrapper process: " << pid;
-            std::cout << ss.str() << '\n';
-            logInfo(ss.str());
-        }
-#endif
-
-        // Wait a bit for pipes to be created
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        
-        isRunning_ = true;
-        return true;
-    }
-
-public:
-    bool sendCommand(const std::string& cmd) override {
-        if (!isRunning_) {
-            return false;
-        }
-
-        // Only log high-level commands, not frequent movement/scroll
-        if (cmd.rfind("mousemove:", 0) != 0 && cmd.rfind("scroll:", 0) != 0) {
-            logInfo(std::string("IPC => ") + cmd);
-        }
-        return cmdPipe_.sendCommand(cmd + "\n");
-    }
-
-    void shutdown() {
-        if (!isRunning_) {
-            return;
-        }
-
-#ifdef _WIN32
-        if (processHandle_ != nullptr) {
-            TerminateProcess(processHandle_, 0);
-            WaitForSingleObject(processHandle_, INFINITE);
-            CloseHandle(processHandle_);
-            processHandle_ = nullptr;
-        }
-#else
-        if (processId_ > 0) {
-            kill(processId_, SIGTERM);
-            int status = 0;
-            waitpid(processId_, &status, 0);
-            processId_ = 0;
-        }
-#endif
-
-        isRunning_ = false;
-    }
-
-    static std::string findFirefoxExecutable() {
-        // Try common Firefox paths
-        std::vector<std::string> candidates = {
-#ifdef _WIN32
-            "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
-            "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe",
-            "firefox.exe"
-#else
-            "/usr/bin/firefox",
-            "/usr/local/bin/firefox",
-            "firefox"
-#endif
-        };
-
-        for (const auto& path : candidates) {
-            if (std::filesystem::exists(path)) {
-                return path;
-            }
-        }
-
-        // Fall back to PATH search
-        return "firefox";
-    }
-
-    SDL_Window* window_{nullptr};
-    std::string currentUrl_;
-    std::filesystem::path executableDir_;
-    int width_{640};
-    int height_{480};
-    int surfaceWidth_{640};
-    int surfaceHeight_{480};
-    bool isRunning_{false};
-    CommandPipe cmdPipe_;
-    FramebufferReader fbReader_;
-    ShmFrameReader shmReader_;
-
-    int scaleX(int windowX) const {
-        if (width_ <= 0 || surfaceWidth_ <= 0) return windowX;
-        long long value = static_cast<long long>(windowX) * surfaceWidth_ / width_;
-        return static_cast<int>(std::clamp<long long>(value, 0, surfaceWidth_ - 1));
-    }
-
-    int scaleY(int windowY) const {
-        if (height_ <= 0 || surfaceHeight_ <= 0) return windowY;
-        long long value = static_cast<long long>(windowY) * surfaceHeight_ / height_;
-        return static_cast<int>(std::clamp<long long>(value, 0, surfaceHeight_ - 1));
-    }
-
-#ifdef _WIN32
-    HANDLE processHandle_{nullptr};
-#else
-    pid_t processId_{0};
-#endif
-};
-
 class App final {
 public:
     explicit App(LaunchOptions options)
@@ -955,212 +257,49 @@ public:
         state_.urlBuffer = options.initialUrl;
     }
 
+    
     bool initialize() {
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
-            std::string err = std::string("SDL_Init failed: ") + SDL_GetError();
-            std::cerr << err << '\n';
-            logError(err);
+            std::cerr << "SDL_Init failed: " << SDL_GetError() << '
+';
             return false;
         }
-
         SDL_GameControllerEventState(SDL_ENABLE);
-
-        if (!createWindow()) {
-            return false;
-        }
-
+        if (!createWindow()) return false;
         openController();
-
-        if (!backend_.initialize(window_, state_.currentUrl)) {
-            std::cerr << "Backend initialization failed\n";
-            logError("Backend initialization failed");
+        if (!mpv_player_.initialize(window_, renderer_)) {
+            std::cerr << "MPV init failed
+";
             return false;
         }
-
         SDL_StartTextInput();
         updateTitle();
         return true;
     }
 
+    
     void run() {
-        auto lastStatsTime = std::chrono::steady_clock::now();
-        int frameCount = 0;
-        double perfTotalMs = 0.0;
-        double perfInputMs = 0.0;
-        double perfBackendMs = 0.0;
-        double perfRenderMs = 0.0;
-        double perfSleepMs = 0.0;
-        int perfSamples = 0;
-
         while (state_.running) {
-            auto loopStart = std::chrono::steady_clock::now();
-
-            auto inputStart = loopStart;
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 handleEvent(event);
             }
             updateKeyboardCursorBlinkState();
-
-            bool needsRender = updateSticks() || uiDirty_;
-
-            if (state_.requestReload) {
-                state_.requestReload = false;
-                backend_.loadUrl(state_.currentUrl);
-                needsRender = true;
-            }
-            auto inputEnd = std::chrono::steady_clock::now();
-            auto inputMs = std::chrono::duration_cast<std::chrono::microseconds>(inputEnd - inputStart).count() / 1000.0;
-
-            auto backendStart = std::chrono::steady_clock::now();
-            backend_.pump();
-            // Capture frames from Firefox backend
-            {
-                auto captureStart = std::chrono::steady_clock::now();
-                
-                // Keep retrying SHM initialization until it succeeds
-                // (Python wrapper may create it 2-3 seconds after C++ startup)
-                if (!backend_.isShmReady()) {
-                    backend_.retryShmInit();
-                }
-
-                bool gotFrame = backend_.captureFrame(framebuffer_);
-                auto captureEnd = std::chrono::steady_clock::now();
-                auto captureMs = std::chrono::duration_cast<std::chrono::microseconds>(captureEnd - captureStart).count() / 1000.0;
-                
-                if (gotFrame) {
-                    if (framesReceived_ == 0) {
-                        logInfo("First frame received from Firefox");
-                        std::cout << "First frame received from Firefox\n";
-                    }
-                    ++framesReceived_;
-                    frameCount++;
-                    if (captureMs > 5.0) {
-                        std::cerr << "[PERF-WARN] Slow capture: " << std::fixed << std::setprecision(1) << captureMs << "ms\n";
-                    }
-                }
-                needsRender = gotFrame || needsRender;
-            }
-            auto backendEnd = std::chrono::steady_clock::now();
-            auto backendMs = std::chrono::duration_cast<std::chrono::microseconds>(backendEnd - backendStart).count() / 1000.0;
-
-            if (framesReceived_ == 0) {
-                int elapsedSeconds = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - startTime_).count());
-                if (elapsedSeconds != loadingOverlayCurrentSeconds_) {
-                    loadingOverlayCurrentSeconds_ = elapsedSeconds;
-                    needsRender = true;
-                }
-            }
-
-            if (needsRender && framesReceived_ > 0 && frameSkip_ > 1 && !uiDirty_ && ((framesReceived_ - 1) % frameSkip_) != 0) {
-                needsRender = false;
-            }
-
-            if (needsRender || framesReceived_ == 0) {
-                auto renderStart = std::chrono::steady_clock::now();
-                renderFrame();
-                auto renderEnd = std::chrono::steady_clock::now();
-                auto renderMs = std::chrono::duration_cast<std::chrono::microseconds>(renderEnd - renderStart).count() / 1000.0;
-                
-                if (renderMs > 20.0) {
-                    std::cerr << "[PERF-WARN] Slow render: " << std::fixed << std::setprecision(1) << renderMs << "ms\n";
-                }
-                
-                // Balanced timing: avoid stalling or pinning CPU
-                if (framesReceived_ == 0) {
-                    auto sleepStart = std::chrono::steady_clock::now();
-                    if (!noSleep_) {
-                        SDL_Delay(50); // Loading: gentle wait
-                    }
-                    auto sleepEnd = std::chrono::steady_clock::now();
-                    auto sleepMs = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - sleepStart).count() / 1000.0;
-                    auto totalMs = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - loopStart).count() / 1000.0;
-                    perfTotalMs += totalMs;
-                    perfInputMs += inputMs;
-                    perfBackendMs += backendMs;
-                    perfRenderMs += renderMs;
-                    perfSleepMs += sleepMs;
-                    ++perfSamples;
-                } else {
-                    auto sleepStart = std::chrono::steady_clock::now();
-                    if (!noSleep_) {
-                        SDL_Delay(3); // Frame received: minimal delay
-                    }
-                    auto sleepEnd = std::chrono::steady_clock::now();
-                    auto sleepMs = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - sleepStart).count() / 1000.0;
-                    auto totalMs = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - loopStart).count() / 1000.0;
-                    perfTotalMs += totalMs;
-                    perfInputMs += inputMs;
-                    perfBackendMs += backendMs;
-                    perfRenderMs += renderMs;
-                    perfSleepMs += sleepMs;
-                    ++perfSamples;
-                }
-            } else {
-                // Idle: balanced between responsiveness and CPU rest
-                auto sleepStart = std::chrono::steady_clock::now();
-                if (!noSleep_) {
-                    SDL_Delay(5);
-                }
-                auto sleepEnd = std::chrono::steady_clock::now();
-                auto sleepMs = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - sleepStart).count() / 1000.0;
-                auto totalMs = std::chrono::duration_cast<std::chrono::microseconds>(sleepEnd - loopStart).count() / 1000.0;
-                perfTotalMs += totalMs;
-                perfInputMs += inputMs;
-                perfBackendMs += backendMs;
-                perfSleepMs += sleepMs;
-                ++perfSamples;
-            }
-
-            // Stats update every 3 seconds
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - lastStatsTime).count() >= 3) {
-                float fps = frameCount / 3.0f;
-                double avgTotal = 0.0;
-                double avgInput = 0.0;
-                double avgBackend = 0.0;
-                double avgRender = 0.0;
-                double avgSleep = 0.0;
-                if (perfSamples > 0) {
-                    const double count = static_cast<double>(perfSamples);
-                    avgTotal = perfTotalMs / count;
-                    avgInput = perfInputMs / count;
-                    avgBackend = perfBackendMs / count;
-                    avgRender = perfRenderMs / count;
-                    avgSleep = perfSleepMs / count;
-                }
-                // Use stderr to avoid interleaving with command output if possible
-                std::cerr << "\r[PERF-APP] FPS:" << std::fixed << std::setprecision(1) << fps
-                          << " Total:" << std::setprecision(1) << avgTotal << "ms"
-                          << " [Input:" << avgInput << "ms Backend:" << avgBackend << "ms Render:" << avgRender << "ms Sleep:" << avgSleep << "ms]   "
-                          << std::flush;
-                frameCount = 0;
-                perfTotalMs = 0.0;
-                perfInputMs = 0.0;
-                perfBackendMs = 0.0;
-                perfRenderMs = 0.0;
-                perfSleepMs = 0.0;
-                perfSamples = 0;
-                lastStatsTime = now;
-            }
+            mpv_player_.update();
+            updateSticks(); // mostly for virtual keyboard repeats
+            renderFrame();
+            SDL_Delay(16); // roughly 60fps
         }
     }
 
+    
     void shutdown() {
         SDL_StopTextInput();
         closeController();
         destroyUiTextures();
-        if (framebufferTexture_ != nullptr) {
-            SDL_DestroyTexture(framebufferTexture_);
-            framebufferTexture_ = nullptr;
-        }
-        if (renderer_ != nullptr) {
-            SDL_DestroyRenderer(renderer_);
-        }
-        if (window_ != nullptr) {
-            SDL_DestroyWindow(window_);
-        }
+        mpv_player_.shutdown();
+        if (renderer_) SDL_DestroyRenderer(renderer_);
+        if (window_) SDL_DestroyWindow(window_);
         SDL_Quit();
     }
 
@@ -1320,58 +459,34 @@ private:
         }
     }
 
+    
     void handleKey(SDL_Keycode key) {
         if (hasActiveKeyboard()) {
             handleKeyboardOverlayKey(key);
             return;
         }
-
         switch (key) {
-        case SDLK_UP:
-            backend_.scrollBy(-5);
-            state_.scrollOffset -= 5;
-            break;
-        case SDLK_DOWN:
-            backend_.scrollBy(5);
-            state_.scrollOffset += 5;
-            break;
-        case SDLK_LEFT:
-            backend_.scrollBy(-1);
-            break;
-        case SDLK_RIGHT:
-            backend_.scrollBy(1);
-            break;
-        case SDLK_RETURN:
-            // backend_.clickFocusedElement(); // Removed to prevent double-submit conflicts with controller clicks
-            break;
-        case SDLK_TAB:
-        case SDLK_s:
-            openKeyboard(BrowserState::InputMode::Url);
-            break;
-        case SDLK_t:
-            openKeyboard(BrowserState::InputMode::PageText);
-            break;
-        case SDLK_BACKSPACE:
-            navigateBack();
-            break;
-        case SDLK_r:
-            state_.requestReload = true;
-            break;
-        case SDLK_PLUS:
-        case SDLK_EQUALS:
-            adjustSystemVolume(volumeStepPercent_);
-            break;
-        case SDLK_MINUS:
-            adjustSystemVolume(-volumeStepPercent_);
-            break;
-        case SDLK_m:
-            toggleSystemMute();
-            break;
         case SDLK_q:
         case SDLK_ESCAPE:
             state_.running = false;
             break;
-        default:
+        case SDLK_y:
+            openKeyboard(TubeState::InputMode::SearchText);
+            break;
+        case SDLK_UP:
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) {
+                selected_result_idx_--;
+            }
+            break;
+        case SDLK_DOWN:
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < search_results_.size() - 1) {
+                selected_result_idx_++;
+            }
+            break;
+        case SDLK_RETURN:
+            if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
+                playVideo(search_results_[selected_result_idx_]);
+            }
             break;
         }
     }
@@ -1405,7 +520,7 @@ private:
             updateTitle();
             break;
         case SDLK_TAB:
-            if (state_.inputMode == BrowserState::InputMode::PageText) {
+            if (state_.inputMode == TubeState::InputMode::SearchText) {
                 applyBufferedPageText();
                 backend_.pressKey("Tab");
             }
@@ -1415,198 +530,51 @@ private:
         }
     }
 
+    
     void handleControllerButton(SDL_GameControllerButton button, bool down) {
-        static bool debugInput = (std::getenv("FIRE4ARKOS_DEBUG_INPUT") != nullptr);
-        if (debugInput && down) {
-            std::ostringstream ss;
-            ss << "[DEBUG-INPUT] Controller Button Down: " << SDL_GameControllerGetStringForButton(button) << " (" << (int)button << ")";
-            logInfo(ss.str());
-        }
-
-        switch (button) {
-        case SDL_CONTROLLER_BUTTON_DPAD_UP:
-            state_.dpadUpPressed = down;
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-            state_.dpadDownPressed = down;
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-            state_.dpadLeftPressed = down;
-            break;
-        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-            state_.dpadRightPressed = down;
-            break;
-        default:
-            break;
-        }
-
-        // Exit combo: Start + Select (BACK)
-        if (SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_START) &&
-            SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
+        if (button == SDL_CONTROLLER_BUTTON_START && SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
             state_.running = false;
             return;
         }
-
-        // Hold BACK + D-Pad for system volume control
-        if (down && controller_ != nullptr && SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-                adjustSystemVolume(volumeStepPercent_);
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-                adjustSystemVolume(-volumeStepPercent_);
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                toggleSystemMute();
-                return;
-            }
-        }
-
-        // Global click debounce to prevent button chatter from sending duplicate IPC commands
-        // Only debounce pointer clicks outside the keyboard overlay.
-        static auto lastClickTime = std::chrono::steady_clock::now();
-        bool isClickAction = (!hasActiveKeyboard() && button == SDL_CONTROLLER_BUTTON_B);
-
-        if (isClickAction && down) {
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastClickTime).count() < 350) {
-                return;
-            }
-            lastClickTime = now;
-        }
-
-        if (button == SDL_CONTROLLER_BUTTON_B) {
-            if (hasActiveKeyboard()) {
-                if (down) activateSelectedKey();
-            } else {
-                if (down) {
-                    // Suppress mousemove IPC for 150ms (enough for xdotool/Firefox)
-                    state_.clickSuppressUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
-                    // Single atomic click with current cursor position
-                    backend_.clickAt((int)state_.cursorX, (int)state_.cursorY);
-                }
-            }
-            return;
-        }
-
-        // L3: left mouse button down/up for drag selection and highlighting
-        if (button == SDL_CONTROLLER_BUTTON_LEFTSTICK) {
-            if (hasActiveKeyboard()) {
-                if (down) {
-                    toggleKeyboardMode();
-                }
-                return;
-            }
-            if (down && !state_.l3Pressed) {
-                state_.l3Pressed = true;
-                // Send mousedown at current cursor position for drag start
-                backend_.mouseDownAt((int)state_.cursorX, (int)state_.cursorY, 1);
-            } else if (!down && state_.l3Pressed) {
-                state_.l3Pressed = false;
-                // Send mouseup at current cursor position to end drag
-                backend_.mouseUpAt((int)state_.cursorX, (int)state_.cursorY, 1);
-            }
-            return;
-        }
-
-        // R3: right mouse button down/up -> single right click
-        if (button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) {
-            if (hasActiveKeyboard()) {
-                return;
-            }
-            if (down) {
-                // Suppress mousemove IPC for 150ms (enough for xdotool/Firefox)
-                state_.clickSuppressUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
-                backend_.rightClickAt((int)state_.cursorX, (int)state_.cursorY);
-            }
-            return;
-        }
-
-        if (!down) return; // Only handle DOWN for other buttons
-
+        if (!down) return;
+        
         if (hasActiveKeyboard()) {
-            if (button == SDL_CONTROLLER_BUTTON_A) {
-                closeKeyboard(false);
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_X) {
-                eraseActiveBufferChar();
-                updateTitle();
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_Y) {
-                insertActiveText(" ");
-                updateTitle();
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
-                toggleKeyboardMode();
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-                return;
-            }
-            if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                return;
-            }
-        }
-
-        if (button == SDL_CONTROLLER_BUTTON_A) {
-            if (!hasActiveKeyboard()) {
-                // Match L3 behavior when keyboard is closed.
-                if (down && !state_.l3Pressed) {
-                    state_.l3Pressed = true;
-                    backend_.mouseDownAt((int)state_.cursorX, (int)state_.cursorY, 1);
-                } else if (!down && state_.l3Pressed) {
-                    state_.l3Pressed = false;
-                    backend_.mouseUpAt((int)state_.cursorX, (int)state_.cursorY, 1);
-                }
-                return;
-            }
-            navigateBack();
-            return;
-        }
-        if (button == SDL_CONTROLLER_BUTTON_X) {
-            state_.requestReload = true;
+            if (button == SDL_CONTROLLER_BUTTON_A) { closeKeyboard(false); return; }
+            if (button == SDL_CONTROLLER_BUTTON_X) { eraseActiveBufferChar(); return; }
+            if (button == SDL_CONTROLLER_BUTTON_Y) { insertActiveText(" "); return; }
+            if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) { toggleKeyboardMode(); return; }
+            if (button == SDL_CONTROLLER_BUTTON_START) { activateKeyboardGo(); return; }
             return;
         }
 
         if (button == SDL_CONTROLLER_BUTTON_Y) {
-            openKeyboard(BrowserState::InputMode::Url);
+            openKeyboard(TubeState::InputMode::SearchText);
             return;
         }
-
-        if (button == SDL_CONTROLLER_BUTTON_START) {
-            if (hasActiveKeyboard()) {
-                activateKeyboardGo();
-            } else {
-                backend_.pressKey("Return");
+        
+        if (button == SDL_CONTROLLER_BUTTON_A) {
+            if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
+                playVideo(search_results_[selected_result_idx_]);
+            } else if (state_.currentScreen == TubeState::Screen::Playback) {
+                if (mpv_player_.isPlaying()) mpv_player_.pause(); else mpv_player_.resume();
+            }
+            return;
+        }
+        
+        if (button == SDL_CONTROLLER_BUTTON_B) {
+            if (state_.currentScreen == TubeState::Screen::Playback) {
+                mpv_player_.stop();
+                state_.currentScreen = TubeState::Screen::Home;
+            } else if (state_.currentScreen == TubeState::Screen::Search) {
+                state_.currentScreen = TubeState::Screen::Home;
             }
             return;
         }
 
-        if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
-            openKeyboard(BrowserState::InputMode::PageText);
-        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-            backend_.scrollBy(-5);
-            state_.scrollOffset -= 5;
+        if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) selected_result_idx_--;
         } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-            backend_.scrollBy(5);
-            state_.scrollOffset += 5;
-        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-            backend_.scrollBy(-1);
-        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-            backend_.scrollBy(1);
-        } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
-            state_.showUi = !state_.showUi;
-            uiDirty_ = true;
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < search_results_.size() - 1) selected_result_idx_++;
         }
     }
 
@@ -1908,24 +876,24 @@ private:
     }
 
     bool hasActiveKeyboard() const {
-        return state_.inputMode != BrowserState::InputMode::None;
+        return state_.inputMode != TubeState::InputMode::None;
     }
 
     std::string& activeBuffer() {
-        return state_.inputMode == BrowserState::InputMode::Url ? state_.urlBuffer : state_.textBuffer;
+        return state_.inputMode == TubeState::InputMode::SearchText ? state_.urlBuffer : state_.textBuffer;
     }
 
     const std::string& activeBuffer() const {
-        return state_.inputMode == BrowserState::InputMode::Url ? state_.urlBuffer : state_.textBuffer;
+        return state_.inputMode == TubeState::InputMode::SearchText ? state_.urlBuffer : state_.textBuffer;
     }
 
-    void openKeyboard(BrowserState::InputMode mode) {
+    void openKeyboard(TubeState::InputMode mode) {
         state_.inputMode = mode;
-        if (mode == BrowserState::InputMode::Url) {
+        if (mode == TubeState::InputMode::SearchText) {
             state_.urlBuffer = state_.currentUrl;
             state_.replaceBufferOnNextInput = true;
             state_.pageTextSelectionArmed = false;
-        } else if (mode == BrowserState::InputMode::PageText) {
+        } else if (mode == TubeState::InputMode::SearchText) {
             state_.textBuffer.clear();
             state_.textCursor = 0;
             state_.replaceBufferOnNextInput = false;
@@ -1940,14 +908,14 @@ private:
 
     void closeKeyboard(bool keepBuffer) {
         if (!keepBuffer) {
-            if (state_.inputMode == BrowserState::InputMode::Url) {
+            if (state_.inputMode == TubeState::InputMode::SearchText) {
                 state_.urlBuffer = state_.currentUrl;
-            } else if (state_.inputMode == BrowserState::InputMode::PageText) {
+            } else if (state_.inputMode == TubeState::InputMode::SearchText) {
                 state_.textBuffer.clear();
                 state_.textCursor = 0;
             }
         }
-        state_.inputMode = BrowserState::InputMode::None;
+        state_.inputMode = TubeState::InputMode::None;
         state_.replaceBufferOnNextInput = false;
         state_.pageTextSelectionArmed = false;
         state_.leftTrigger = 0.0f;
@@ -1983,7 +951,7 @@ private:
             state_.replaceBufferOnNextInput = false;
             return;
         }
-        if (state_.inputMode == BrowserState::InputMode::PageText && buffer.empty()) {
+        if (state_.inputMode == TubeState::InputMode::SearchText && buffer.empty()) {
             backend_.pressKey("BackSpace");
             state_.pageTextSelectionArmed = false;
             return;
@@ -2057,11 +1025,11 @@ private:
         };
 
         switch (state_.keyboardMode) {
-        case BrowserState::KeyboardMode::Uppercase:
+        case TubeState::KeyboardMode::Uppercase:
             return upperLayout;
-        case BrowserState::KeyboardMode::Symbols:
+        case TubeState::KeyboardMode::Symbols:
             return symbolsLayout;
-        case BrowserState::KeyboardMode::Lowercase:
+        case TubeState::KeyboardMode::Lowercase:
         default:
             return lowerLayout;
         }
@@ -2120,7 +1088,7 @@ private:
 
     std::string transformTypedText(const char* text) const {
         std::string transformed{text};
-        if (state_.keyboardMode == BrowserState::KeyboardMode::Uppercase) {
+        if (state_.keyboardMode == TubeState::KeyboardMode::Uppercase) {
             for (char& ch : transformed) {
                 if (std::isalpha(static_cast<unsigned char>(ch))) {
                     ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
@@ -2148,7 +1116,7 @@ private:
             state_.replaceBufferOnNextInput = false;
             return;
         }
-        if (state_.inputMode == BrowserState::InputMode::PageText && activeBuffer().empty()) {
+        if (state_.inputMode == TubeState::InputMode::SearchText && activeBuffer().empty()) {
             backend_.pressKey(delta < 0 ? "Left" : "Right");
             state_.pageTextSelectionArmed = false;
             return;
@@ -2170,15 +1138,15 @@ private:
 
     void toggleKeyboardMode() {
         switch (state_.keyboardMode) {
-        case BrowserState::KeyboardMode::Lowercase:
-            state_.keyboardMode = BrowserState::KeyboardMode::Uppercase;
+        case TubeState::KeyboardMode::Lowercase:
+            state_.keyboardMode = TubeState::KeyboardMode::Uppercase;
             break;
-        case BrowserState::KeyboardMode::Uppercase:
-            state_.keyboardMode = BrowserState::KeyboardMode::Symbols;
+        case TubeState::KeyboardMode::Uppercase:
+            state_.keyboardMode = TubeState::KeyboardMode::Symbols;
             break;
-        case BrowserState::KeyboardMode::Symbols:
+        case TubeState::KeyboardMode::Symbols:
         default:
-            state_.keyboardMode = BrowserState::KeyboardMode::Lowercase;
+            state_.keyboardMode = TubeState::KeyboardMode::Lowercase;
             break;
         }
         ensureKeyboardSelectionValid();
@@ -2422,7 +1390,7 @@ private:
         if (!hasActiveKeyboard()) {
             return;
         }
-        if (state_.inputMode == BrowserState::InputMode::Url) {
+        if (state_.inputMode == TubeState::InputMode::SearchText) {
             commitUrlEdit();
             return;
         }
@@ -2507,10 +1475,39 @@ private:
         }
     }
 
+    
+    void doSearch(const std::string& query) {
+        state_.currentScreen = TubeState::Screen::Search;
+        search_results_.clear();
+        selected_result_idx_ = 0;
+        youtube_api_.search(query, [this](bool success, const std::vector<YouTubeVideo>& results) {
+            if (success) {
+                search_results_ = results;
+            }
+        });
+    }
+
+    void playVideo(const YouTubeVideo& video) {
+        current_video_ = video;
+        youtube_api_.getStreamUrl(video.id, [this](bool success, const std::string& url) {
+            if (success) {
+                state_.currentScreen = TubeState::Screen::Playback;
+                mpv_player_.play(url);
+            }
+        });
+    }
+    
     void commitUrlEdit() {
+        if (!state_.textBuffer.empty()) {
+            doSearch(state_.textBuffer);
+        }
+        state_.inputMode = TubeState::InputMode::None;
+    }
+
+    void commitUrlEdit_old() {
         if (state_.urlBuffer.empty()) {
             state_.urlBuffer = state_.currentUrl;
-            state_.inputMode = BrowserState::InputMode::None;
+            state_.inputMode = TubeState::InputMode::None;
             updateTitle();
             return;
         }
@@ -2519,7 +1516,7 @@ private:
         state_.history.push_back(state_.currentUrl);
         state_.forwardStack.clear();
         state_.requestReload = true;
-        state_.inputMode = BrowserState::InputMode::None;
+        state_.inputMode = TubeState::InputMode::None;
         state_.textCursor = static_cast<int>(state_.urlBuffer.size());
         updateTitle();
     }
@@ -2534,9 +1531,9 @@ private:
 
     void updateTitle() {
         std::string title;
-        if (state_.inputMode == BrowserState::InputMode::Url) {
+        if (state_.inputMode == TubeState::InputMode::SearchText) {
             title = "URL: " + state_.urlBuffer;
-        } else if (state_.inputMode == BrowserState::InputMode::PageText) {
+        } else if (state_.inputMode == TubeState::InputMode::SearchText) {
             title = "Type: " + state_.textBuffer;
         } else {
             title = "Page: " + state_.currentUrl;
@@ -2547,11 +1544,11 @@ private:
 
     std::string keyboardModeLabel() const {
         switch (state_.keyboardMode) {
-        case BrowserState::KeyboardMode::Uppercase:
+        case TubeState::KeyboardMode::Uppercase:
             return "UPPER";
-        case BrowserState::KeyboardMode::Symbols:
+        case TubeState::KeyboardMode::Symbols:
             return "SYMBOLS";
-        case BrowserState::KeyboardMode::Lowercase:
+        case TubeState::KeyboardMode::Lowercase:
         default:
             return "LOWER";
         }
@@ -2760,7 +1757,7 @@ private:
             SDL_Color textColor{226, 230, 236, 255};
             SDL_Color accent{110, 192, 255, 255};
             const std::string header =
-                (state_.inputMode == BrowserState::InputMode::Url ? "URL INPUT " : "TEXT INPUT ") +
+                (state_.inputMode == TubeState::InputMode::SearchText ? "URL INPUT " : "TEXT INPUT ") +
                 std::string("[") + keyboardModeLabel() + "]";
             drawTextShadow(12, 12, header, 2, accent);
             drawTextShadow(12, 34, keyboardPreviewText(), 2, textColor);
@@ -2794,174 +1791,38 @@ private:
         SDL_Rect overlay = layoutInfo.panel;
         SDL_RenderCopy(renderer_, keyboardOverlayTexture_, nullptr, &overlay);
     }
+    
     void renderFrame() {
-        int width = 0;
-        int height = 0;
-        SDL_GetWindowSize(window_, &width, &height);
-        
-        // If nothing changed (frame matches previous AND UI is clean), return early
-        if (!framebuffer_.dirty && !uiDirty_ && framesReceived_ > 0) {
-            return;
-        }
-
-        SDL_SetRenderDrawColor(renderer_, 20, 24, 31, 255);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
+        
+        int width = 0, height = 0;
+        SDL_GetWindowSize(window_, &width, &height);
 
-        // If we have a framebuffer, create/update texture and display it
-        if (!framebuffer_.data.empty()) {
-            // Create texture if needed or if framebuffer size changed
-            // (Compare against framebuffer size, NOT window size — window size is for scaling)
-            if (framebufferTexture_ == nullptr || 
-                framebuffer_.width != lastFramebufferWidth_ || framebuffer_.height != lastFramebufferHeight_) {
-                if (framebufferTexture_ != nullptr) {
-                    SDL_DestroyTexture(framebufferTexture_);
+        // UI rendering
+        if (state_.showUi || state_.inputMode != TubeState::InputMode::None) {
+            if (state_.currentScreen == TubeState::Screen::Home) {
+                drawTextShadow(20, 20, "tubelite - Home", 3, {255, 255, 255, 255});
+                drawText(20, 60, "Press Y to search", 2, {200, 200, 200, 255});
+            } else if (state_.currentScreen == TubeState::Screen::Search) {
+                drawTextShadow(20, 20, "Search Results", 3, {255, 255, 255, 255});
+                int y = 60;
+                int idx = 0;
+                for (const auto& video : search_results_) {
+                    SDL_Color color = (idx == selected_result_idx_) ? SDL_Color{255, 200, 100, 255} : SDL_Color{200, 200, 200, 255};
+                    drawText(20, y, video.title.substr(0, 40), 2, color);
+                    drawText(20, y + 16, video.author + " - " + video.duration_string + " - " + video.view_count_string, 1, {150, 150, 150, 255});
+                    y += 40;
+                    idx++;
                 }
-                framebufferTexture_ = SDL_CreateTexture(
-                    renderer_,
-                    preferredTextureFormat_,
-                    SDL_TEXTUREACCESS_STREAMING,
-                    framebuffer_.width,
-                    framebuffer_.height);
-                // Xvfb pixel padding byte is 0x00; disable alpha blending so
-                // pixels render opaque regardless of the alpha channel value.
-                if (framebufferTexture_ != nullptr) {
-                    SDL_SetTextureBlendMode(framebufferTexture_, SDL_BLENDMODE_NONE);
+            } else if (state_.currentScreen == TubeState::Screen::Playback) {
+                if (state_.showUi) {
+                    drawTextShadow(20, 20, "Playing: " + current_video_.title, 2, {255, 255, 255, 255});
                 }
-                // Cache the framebuffer size for next frame
-                lastFramebufferWidth_ = framebuffer_.width;
-                lastFramebufferHeight_ = framebuffer_.height;
-                
-                // Allocate comparison buffer
-                lastFrameData_.resize(framebuffer_.data.size());
-                std::memset(lastFrameData_.data(), 0, lastFrameData_.size());
-            }
-
-            // Update texture with framebuffer data
-            if (framebufferTexture_ != nullptr) {
-                if (framebuffer_.dirty) {
-                    // Visual Frame Skip: Check if content actually changed
-                    if (framebuffer_.data.size() == lastFrameData_.size() && 
-                        std::memcmp(framebuffer_.data.data(), lastFrameData_.data(), framebuffer_.data.size()) == 0) {
-                        framebuffer_.dirty = false;
-                        // Skip the update, but we still need to render the UI if it's dirty
-                    } else {
-                        // Content changed, update the comparison buffer and texture
-                        std::memcpy(lastFrameData_.data(), framebuffer_.data.data(), framebuffer_.data.size());
-                        
-                        void* pixels = nullptr;
-                        int pitch = 0;
-                        if (SDL_LockTexture(framebufferTexture_, nullptr, &pixels, &pitch) == 0) {
-                            const int h = framebuffer_.height;
-                            const int srcPitch = framebuffer_.width * 4;
-                            if (pitch == srcPitch) {
-                                std::memcpy(pixels, framebuffer_.data.data(), static_cast<size_t>(srcPitch * h));
-                            } else {
-                                const uint8_t* src = framebuffer_.data.data();
-                                uint8_t* dst = static_cast<uint8_t*>(pixels);
-                                for (int row = 0; row < h; ++row) {
-                                    std::memcpy(dst, src, static_cast<size_t>(srcPitch));
-                                    src += srcPitch;
-                                    dst += pitch;
-                                }
-                            }
-                            SDL_UnlockTexture(framebufferTexture_);
-                        }
-                        framebuffer_.dirty = false;
-                        frameChanged_ = true;
-                    }
-                }
-                
-                SDL_Rect dest{0, 0, width, height};
-                SDL_RenderCopy(renderer_, framebufferTexture_, nullptr, &dest);
             }
         }
-
-        // Show loading overlay until first frame arrives from Firefox
-        if (framesReceived_ == 0) {
-            if (loadingOverlayTexture_ == nullptr || loadingOverlayWidth_ != width || loadingOverlayHeight_ != height || loadingOverlayCachedSeconds_ != loadingOverlayCurrentSeconds_) {
-                if (loadingOverlayTexture_ != nullptr) {
-                    SDL_DestroyTexture(loadingOverlayTexture_);
-                    loadingOverlayTexture_ = nullptr;
-                }
-
-                loadingOverlayWidth_ = width;
-                loadingOverlayHeight_ = height;
-                loadingOverlayCachedSeconds_ = loadingOverlayCurrentSeconds_;
-                loadingOverlayTexture_ = createTargetTexture(width, height);
-                if (loadingOverlayTexture_ != nullptr) {
-                    SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer_);
-                    SDL_SetRenderTarget(renderer_, loadingOverlayTexture_);
-                    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-                    SDL_SetRenderDrawColor(renderer_, 14, 16, 20, 255);
-                    SDL_RenderClear(renderer_);
-
-                    std::string msg = "FIRE4ARKOS";
-                    std::string sub = "Starting Firefox " + std::to_string(loadingOverlayCurrentSeconds_) + "s";
-                    int msgW = static_cast<int>(msg.size()) * 3 * 6;
-                    int subW = static_cast<int>(sub.size()) * 2 * 6;
-                    drawTextShadow((width - msgW) / 2, height / 2 - 20, msg, 3, {200, 208, 218, 255});
-                    drawTextShadow((width - subW) / 2, height / 2 + 18, sub, 2, {140, 148, 160, 255});
-
-                    SDL_SetRenderTarget(renderer_, previousTarget);
-                }
-            }
-
-            if (loadingOverlayTexture_ != nullptr) {
-                SDL_RenderCopy(renderer_, loadingOverlayTexture_, nullptr, nullptr);
-            }
-        }
-
-        if (state_.showUi || state_.inputMode != BrowserState::InputMode::None) {
-            const bool keyboardOpen = hasActiveKeyboard();
-            const int keyboardHintScale = 2;
-            const int statusHeight = keyboardOpen ? 64 : 48;
-            if (statusOverlayTexture_ == nullptr || statusOverlayWidth_ != width || statusOverlayHeight_ != statusHeight || uiDirty_) {
-                if (statusOverlayTexture_ != nullptr) {
-                    SDL_DestroyTexture(statusOverlayTexture_);
-                    statusOverlayTexture_ = nullptr;
-                }
-
-                statusOverlayWidth_ = width;
-                statusOverlayHeight_ = statusHeight;
-                statusOverlayTexture_ = createTargetTexture(width, statusHeight);
-                if (statusOverlayTexture_ != nullptr) {
-                    SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer_);
-                    SDL_SetRenderTarget(renderer_, statusOverlayTexture_);
-                    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-                    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 255);
-                    SDL_RenderClear(renderer_);
-                    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 255);
-                    SDL_RenderDrawLine(renderer_, 0, 0, width, 0);
-                    const SDL_Color hintColor{214, 220, 230, 255};
-                    if (keyboardOpen) {
-                        drawTextShadow(12, 8, "A SELECT  B CLOSE  X BKSP  Y SPACE", keyboardHintScale, hintColor);
-                        drawTextShadow(12, 32, "START GO  L1/L3 MODE  L2/R2 CUR", keyboardHintScale, hintColor);
-                    } else {
-                        drawTextShadow(12, 8, "A/L3 LCLICK  B BACK  X RELOAD  Y URL", 2, hintColor);
-                        drawTextShadow(12, 32, "L1 TEXT  R1 HIDE  R3 RCLICK", 2, hintColor);
-                    }
-                    SDL_SetRenderTarget(renderer_, previousTarget);
-                }
-            }
-
-            if (statusOverlayTexture_ != nullptr) {
-                SDL_Rect statusBar{0, height - statusHeight, width, statusHeight};
-                SDL_RenderCopy(renderer_, statusOverlayTexture_, nullptr, &statusBar);
-            }
-        }
-
-        // Show volume control overlay when FN is active
-        auto now = std::chrono::steady_clock::now();
-        if (now < volumeOverlayTime_) {
-            std::string volMsg = "FN: Volume Control Active";
-            int msgW = static_cast<int>(volMsg.size()) * 2 * 6;
-            drawText((width - msgW) / 2, 20, volMsg, 2, {255, 200, 100, 255});
-        }
-
+        
         renderKeyboardOverlay(width, height);
-
-        uiDirty_ = false;
-
         SDL_RenderPresent(renderer_);
     }
 
@@ -3036,7 +1897,7 @@ private:
 #endif
     }
 
-    BrowserState state_;
+    TubeState state_;
     Framebuffer framebuffer_;
     SDL_Texture* framebufferTexture_{nullptr};
     int lastFramebufferWidth_{0};  // Track previous framebuffer size to detect when texture needs recreation
@@ -3070,6 +1931,13 @@ private:
     int volumeStepPercent_{5};
     bool fnPressed_{false};  // Track if FN button is held
     std::chrono::steady_clock::time_point volumeOverlayTime_{std::chrono::steady_clock::now()};  // When to hide volume overlay
+    
+    MpvPlayer mpv_player_;
+    YouTubeAPI youtube_api_;
+    std::vector<YouTubeVideo> search_results_;
+    int selected_result_idx_ = 0;
+    YouTubeVideo current_video_;
+    
     int keyboardNavDirectionX_{0};
     int keyboardNavDirectionY_{0};
     int keyboardDpadDirectionX_{0};
@@ -3082,6 +1950,7 @@ private:
     std::chrono::steady_clock::time_point triggerCursorStartedAt_{};
     std::chrono::steady_clock::time_point triggerCursorNextAt_{};
     bool lastKeyboardCursorVisible_{true};
+
 };
 
 } // namespace

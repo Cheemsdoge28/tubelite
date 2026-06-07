@@ -1,0 +1,117 @@
+#include "youtube_api.hpp"
+#include <iostream>
+#include <memory>
+#include <array>
+#include <stdexcept>
+
+// Since nlohmann/json is a single-header library, we include it here.
+using json = nlohmann::json;
+
+YouTubeAPI::YouTubeAPI() {
+}
+
+YouTubeAPI::~YouTubeAPI() {
+}
+
+std::string YouTubeAPI::executeCommand(const std::string& cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+#ifdef _WIN32
+    std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cmd.c_str(), "r"), _pclose);
+#else
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
+#endif
+    if (!pipe) {
+        throw std::runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
+}
+
+void YouTubeAPI::search(const std::string& query, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback) {
+    std::thread([this, query, callback]() {
+        try {
+            // Use yt-dlp to search. We ask for JSON output.
+            // "ytsearch10:query" limits to 10 results.
+            std::string cmd = "yt-dlp --dump-json \"ytsearch15:" + query + "\" 2>/dev/null";
+            std::string output = executeCommand(cmd);
+            
+            std::vector<YouTubeVideo> results;
+            
+            // yt-dlp outputs one JSON object per line when dumping JSON for multiple results
+            size_t start_pos = 0;
+            while (start_pos < output.length()) {
+                size_t end_pos = output.find('\n', start_pos);
+                if (end_pos == std::string::npos) {
+                    end_pos = output.length();
+                }
+                
+                std::string line = output.substr(start_pos, end_pos - start_pos);
+                start_pos = end_pos + 1;
+                
+                if (line.empty()) continue;
+                
+                try {
+                    auto j = json::parse(line);
+                    YouTubeVideo video;
+                    video.id = j.value("id", "");
+                    video.title = j.value("title", "");
+                    video.author = j.value("uploader", "");
+                    video.duration_seconds = j.value("duration", 0);
+                    
+                    int m = video.duration_seconds / 60;
+                    int s = video.duration_seconds % 60;
+                    video.duration_string = std::to_string(m) + ":" + (s < 10 ? "0" : "") + std::to_string(s);
+                    
+                    video.thumbnail_url = j.value("thumbnail", "");
+                    
+                    int views = j.value("view_count", 0);
+                    if (views > 1000000) {
+                        video.view_count_string = std::to_string(views / 1000000) + "M views";
+                    } else if (views > 1000) {
+                        video.view_count_string = std::to_string(views / 1000) + "K views";
+                    } else {
+                        video.view_count_string = std::to_string(views) + " views";
+                    }
+                    
+                    results.push_back(video);
+                } catch (const std::exception& e) {
+                    // Ignore parse errors for single lines
+                    std::cerr << "JSON parse error on line: " << e.what() << std::endl;
+                }
+            }
+            
+            callback(true, results);
+        } catch (...) {
+            callback(false, {});
+        }
+    }).detach();
+}
+
+void YouTubeAPI::getStreamUrl(const std::string& video_id, std::function<void(bool success, const std::string& url)> callback) {
+    std::thread([this, video_id, callback]() {
+        try {
+            // Get best format that is <= 360p, or worst if not available
+            std::string cmd = "yt-dlp -f \"best[height<=360]/worst\" --get-url \"https://www.youtube.com/watch?v=" + video_id + "\" 2>/dev/null";
+            std::string url = executeCommand(cmd);
+            
+            // Trim whitespace
+            if (!url.empty() && url.back() == '\n') {
+                url.pop_back();
+            }
+            if (!url.empty() && url.back() == '\r') {
+                url.pop_back();
+            }
+            
+            if (url.empty()) {
+                callback(false, "");
+            } else {
+                callback(true, url);
+            }
+        } catch (...) {
+            callback(false, "");
+        }
+    }).detach();
+}

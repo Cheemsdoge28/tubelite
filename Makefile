@@ -1,8 +1,8 @@
 # Fire4ArkOS Browser - Cross-Platform Makefile
 # Supports: Windows (MinGW), ARM64 (aarch64-linux-gnu), Linux native
 
-TARGET ?= browser
-SRC := src/main.cpp
+TARGET ?= tubelite
+SRC := src/main.cpp src/mpv_player.cpp src/youtube_api.cpp
 BUILD_DIR ?= build
 INSTALL_DIR ?= /usr/local/bin
 
@@ -18,7 +18,7 @@ endif
 
 # Default flags
 CXXFLAGS ?= -std=c++17 -O3 -flto -ffast-math -Wall -Wextra -Wpedantic
-LDFLAGS ?= -flto
+LDFLAGS ?= -flto -lmpv
 SDL_CFLAGS ?=
 SDL_LIBS ?=
 
@@ -118,7 +118,7 @@ install: $(BUILD_TARGET)
 # Clean
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f browser browser.exe browser.arm64 fire4arkos.log
+	rm -f tubelite tubelite.exe tubelite.arm64 fire4arkos.log
 	@echo "Cleaned build artifacts and stale logs."
 
 # Cross-compile for ARM64
