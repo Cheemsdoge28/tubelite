@@ -451,8 +451,6 @@ private:
         return std::max(minMs, baseMs - static_cast<int>(heldMs / 250) * 18);
     }
 
-        return bestIndex;
-    }
 
     
     static int keyCenterX(const KeyboardKeyGeometry& key) {
