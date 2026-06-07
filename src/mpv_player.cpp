@@ -1,7 +1,6 @@
 #include "mpv_player.hpp"
 #include <iostream>
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_syswm.h>
 
 MpvPlayer::MpvPlayer() {
 }
@@ -18,22 +17,6 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     if (!mpv_) {
         std::cerr << "Failed to create mpv context" << std::endl;
         return false;
-    }
-
-    SDL_SysWMinfo wmInfo;
-    SDL_VERSION(&wmInfo.version);
-    if (SDL_GetWindowWMInfo(window, &wmInfo)) {
-        int64_t wid = 0;
-#if defined(_WIN32)
-        wid = (int64_t)(intptr_t)wmInfo.info.win.window;
-#elif defined(__linux__)
-        if (wmInfo.subsystem == SDL_SYSWM_X11) {
-            wid = (int64_t)wmInfo.info.x11.window;
-        }
-#endif
-        if (wid != 0) {
-            mpv_set_option_string(mpv_, "wid", std::to_string(wid).c_str());
-        }
     }
 
     // Optimize for weak hardware
