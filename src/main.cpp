@@ -249,8 +249,8 @@ struct KeyboardOverlayLayout {
             state_.replaceBufferOnNextInput = false;
             return;
         }
-        if (state_.inputMode == TubeState::InputMode::PageText && activeBuffer().empty()) {
-            state_.pageTextSelectionArmed = false;
+        if (state_.inputMode == TubeState::InputMode::SearchText && activeBuffer().empty()) {
+            false = false;
             return;
         }
         state_.textCursor = std::clamp(state_.textCursor + delta, 0, static_cast<int>(activeBuffer().size()));
@@ -705,7 +705,7 @@ struct KeyboardOverlayLayout {
             SDL_Color textColor{226, 230, 236, 255};
             SDL_Color accent{110, 192, 255, 255};
             const std::string header =
-                (state_.inputMode == TubeState::InputMode::Url ? "URL INPUT " : "TEXT INPUT ") +
+                (state_.inputMode == TubeState::InputMode::SearchText ? "SEARCH " : "SEARCH ") +
                 std::string("[") + keyboardModeLabel() + "]";
             drawTextShadow(12, 12, header, 2, accent);
             drawTextShadow(12, 34, keyboardPreviewText(), 2, textColor);
@@ -832,18 +832,18 @@ struct KeyboardOverlayLayout {
             SDL_DestroyTexture(keyboardOverlayTexture_);
             keyboardOverlayTexture_ = nullptr;
         }
-        if (statusOverlayTexture_ != nullptr) {
-            SDL_DestroyTexture(statusOverlayTexture_);
-            statusOverlayTexture_ = nullptr;
         }
-        if (loadingOverlayTexture_ != nullptr) {
-            SDL_DestroyTexture(loadingOverlayTexture_);
-            loadingOverlayTexture_ = nullptr;
         }
     }
 
 
+    static constexpr int kKeyboardGridColumns = 12;
+    static constexpr bool kKeyboardWrapAround = true;
+    void updateTitle() {}
+    void logRendererInfo() {}
+
     std::string& activeBuffer() { return state_.textBuffer; }
+    const std::string& activeBuffer() const { return state_.textBuffer; }
 
     void eraseActiveBufferChar() {
         auto& buffer = activeBuffer();
@@ -990,7 +990,7 @@ struct KeyboardOverlayLayout {
             }
             break;
         case SDLK_DOWN:
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < search_results_.size() - 1) {
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) {
                 selected_result_idx_++; uiDirty_ = true;
             }
             break;
@@ -1044,7 +1044,7 @@ struct KeyboardOverlayLayout {
         else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
             if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) selected_result_idx_--;
         } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < search_results_.size() - 1) selected_result_idx_++;
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) selected_result_idx_++;
         }
     }
 
@@ -1054,7 +1054,12 @@ private:
     SDL_GameController* controller_{nullptr};
     SDL_Joystick* joystick_{nullptr};
     SDL_Texture* keyboardOverlayTexture_{nullptr};
+    int keyboardOverlayWidth_{0};
+    int keyboardOverlayHeight_{0};
     bool uiDirty_{true};
+    bool forceVsync_{false};
+    bool maxPerformance_{false};
+    uint32_t preferredTextureFormat_{SDL_PIXELFORMAT_UNKNOWN};
 
     TubeState state_;
     MpvPlayer mpv_player_;
