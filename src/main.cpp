@@ -800,44 +800,6 @@ private:
     // Keyboard overlay rendering
     // -----------------------------------------------------------------------
     
-    SDL_Texture* statusOverlayTexture_{nullptr};
-    int statusOverlayWidth_{0};
-    int statusOverlayHeight_{0};
-
-    void renderStatusOverlay(int width, int height) {
-        int statusBarHeight = 48;
-        if (statusOverlayTexture_ == nullptr || statusOverlayWidth_ != width || statusOverlayHeight_ != statusBarHeight || uiDirty_) {
-            if (statusOverlayTexture_) SDL_DestroyTexture(statusOverlayTexture_);
-            statusOverlayWidth_ = width;
-            statusOverlayHeight_ = statusBarHeight;
-            statusOverlayTexture_ = createTargetTexture(width, statusBarHeight);
-            
-            if (statusOverlayTexture_) {
-                SDL_Texture* prev = SDL_GetRenderTarget(renderer_);
-                SDL_SetRenderTarget(renderer_, statusOverlayTexture_);
-                SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-                SDL_SetRenderDrawColor(renderer_, 12, 14, 18, 255);
-                SDL_RenderClear(renderer_);
-                
-                SDL_Color textColor{150, 160, 170, 255};
-                
-                std::string shortcuts = "A/ENTER: Select | B/ESC: Back/Close | Y: Search | START+SELECT: Quit";
-                if (hasActiveKeyboard()) {
-                    shortcuts = "A: Type | B: Close KB | Y: Space | X: Backspace | L1: Mode | START: Go";
-                }
-                
-                drawTextShadow(20, 16, shortcuts, 1, textColor);
-                
-                SDL_SetRenderTarget(renderer_, prev);
-            }
-        }
-        
-        if (statusOverlayTexture_) {
-            SDL_Rect dst{0, height - statusBarHeight, width, statusBarHeight};
-            SDL_RenderCopy(renderer_, statusOverlayTexture_, nullptr, &dst);
-        }
-    }
-
     void renderKeyboardOverlay(int width, int height) {
         if (!hasActiveKeyboard()) {
             if (keyboardOverlayTexture_ != nullptr) {
@@ -848,6 +810,7 @@ private:
             }
             return;
         }
+
         ensureKeyboardSelectionValid();
         const auto layoutInfo = buildKeyboardOverlayLayout(width, height);
         if (keyboardOverlayTexture_ == nullptr ||
@@ -858,10 +821,13 @@ private:
                 SDL_DestroyTexture(keyboardOverlayTexture_);
                 keyboardOverlayTexture_ = nullptr;
             }
+
             keyboardOverlayWidth_ = layoutInfo.panel.w;
             keyboardOverlayHeight_ = layoutInfo.panel.h;
             keyboardOverlayTexture_ = createTargetTexture(layoutInfo.panel.w, layoutInfo.panel.h);
-            if (keyboardOverlayTexture_ == nullptr) return;
+            if (keyboardOverlayTexture_ == nullptr) {
+                return;
+            }
 
             SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer_);
             SDL_SetRenderTarget(renderer_, keyboardOverlayTexture_);
@@ -871,7 +837,9 @@ private:
 
             SDL_Color textColor{226, 230, 236, 255};
             SDL_Color accent{110, 192, 255, 255};
-            const std::string header = "SEARCH [" + keyboardModeLabel() + "]";
+            const std::string header =
+                (state_.inputMode == TubeState::InputMode::SearchText ? "SEARCH " : "TEXT INPUT ") +
+                std::string("[") + keyboardModeLabel() + "]";
             drawTextShadow(12, 12, header, 2, accent);
             drawTextShadow(12, 34, keyboardPreviewText(), 2, textColor);
 
@@ -882,24 +850,28 @@ private:
                 SDL_Rect keyRect{
                     key.bounds.x - layoutInfo.panel.x,
                     key.bounds.y - layoutInfo.panel.y,
-                    key.bounds.w, key.bounds.h};
+                    key.bounds.w,
+                    key.bounds.h
+                };
                 const bool selected = key.index == state_.keyboardSelectedIndex;
                 SDL_SetRenderDrawColor(renderer_,
-                    selected ? 72 : 28, selected ? 138 : 32, selected ? 190 : 38, 255);
+                                       selected ? 72 : 28,
+                                       selected ? 138 : 32,
+                                       selected ? 190 : 38,
+                                       255);
                 SDL_RenderFillRect(renderer_, &keyRect);
-                SDL_SetRenderDrawColor(renderer_,
-                    selected ? 178 : 46, selected ? 216 : 52, selected ? 240 : 58, 255);
+                SDL_SetRenderDrawColor(renderer_, selected ? 178 : 46, selected ? 216 : 52, selected ? 240 : 58, 255);
                 SDL_RenderDrawRect(renderer_, &keyRect);
-                drawTextShadow(keyRect.x + 8, keyRect.y + 8, key.label, 2,
-                    selected ? SDL_Color{12, 16, 22, 255} : textColor);
+                drawTextShadow(keyRect.x + 8, keyRect.y + 8, key.label, 2, selected ? SDL_Color{12, 16, 22, 255} : textColor);
             }
+
             SDL_SetRenderTarget(renderer_, previousTarget);
             uiDirty_ = false;
         }
+
         SDL_Rect overlay = layoutInfo.panel;
         SDL_RenderCopy(renderer_, keyboardOverlayTexture_, nullptr, &overlay);
     }
-
     // -----------------------------------------------------------------------
     // Main frame rendering
     // -----------------------------------------------------------------------
@@ -960,7 +932,6 @@ private:
         }
         
         if (state_.showUi || state_.inputMode != TubeState::InputMode::None) {
-            renderStatusOverlay(width, height);
         }
         
         renderKeyboardOverlay(width, height);
@@ -1142,10 +1113,11 @@ private:
 
     void handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
         switch (button) {
-        case 0: // B (South)
-            handleControllerButton(SDL_CONTROLLER_BUTTON_A, down); break;
-        case 1: // A (East)
-            if (hasActiveKeyboard()) handleControllerButton(SDL_CONTROLLER_BUTTON_B, down);
+        case 0: // B (South) -> Maps to Cancel
+            handleControllerButton(SDL_CONTROLLER_BUTTON_B, down); break;
+        case 1: // A (East) -> Maps to Accept
+            if (hasActiveKeyboard()) handleControllerButton(SDL_CONTROLLER_BUTTON_A, down);
+            else handleControllerButton(SDL_CONTROLLER_BUTTON_A, down);
             break;
         case 2: // X
             handleControllerButton(SDL_CONTROLLER_BUTTON_X, down); break;
