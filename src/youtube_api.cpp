@@ -35,7 +35,7 @@ void YouTubeAPI::search(const std::string& query, std::function<void(bool succes
         try {
             // Use yt-dlp to search. We ask for JSON output.
             // "ytsearch10:query" limits to 10 results.
-            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 --dump-json \"ytsearch15:" + query + "\" 2> yt-dlp-error.log";
+            std::string cmd = "yt-dlp --flat-playlist --no-check-certificate --force-ipv4 --dump-json \"ytsearch15:" + query + "\" 2> yt-dlp-error.log";
             std::string output = executeCommand(cmd);
             
             std::vector<YouTubeVideo> results;
