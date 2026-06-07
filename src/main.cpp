@@ -177,11 +177,6 @@ private:
     // UI texture lifecycle
     // -----------------------------------------------------------------------
     void destroyUiTextures() {
-        if (statusOverlayTexture_) {
-            SDL_DestroyTexture(statusOverlayTexture_);
-            statusOverlayTexture_ = nullptr;
-        }
-
         if (keyboardOverlayTexture_ != nullptr) {
             SDL_DestroyTexture(keyboardOverlayTexture_);
             keyboardOverlayTexture_ = nullptr;
