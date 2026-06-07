@@ -1,3 +1,6 @@
+// tubelite - Lightweight YouTube client for R36S
+// Refactored from Fire4ArkOS: browser backend replaced with mpv + yt-dlp
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -6,11 +9,18 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <array>
+#include <limits>
+#include <cctype>
+#include <cstdlib>
 #include <SDL2/SDL.h>
 
 #include "mpv_player.hpp"
 #include "youtube_api.hpp"
 
+// ---------------------------------------------------------------------------
+// TubeState - replaces the old BrowserState
+// ---------------------------------------------------------------------------
 struct TubeState {
     enum class Screen { Home, Search, Playback };
     enum class InputMode { None, SearchText };
@@ -19,14 +29,14 @@ struct TubeState {
     Screen currentScreen{Screen::Home};
     InputMode inputMode{InputMode::None};
     KeyboardMode keyboardMode{KeyboardMode::Lowercase};
-    
+
     std::string textBuffer;
     int textCursor{0};
     bool running{true};
     int keyboardSelectedIndex{0};
     bool replaceBufferOnNextInput{false};
     bool showUi{true};
-    
+
     float leftStickX{0.0f};
     float leftStickY{0.0f};
     float rightStickX{0.0f};
@@ -39,18 +49,27 @@ struct TubeState {
     bool dpadRightPressed{false};
 };
 
-inline void logInfo(const std::string& msg) {
+// ---------------------------------------------------------------------------
+// Simple logging helpers
+// ---------------------------------------------------------------------------
+static void logInfo(const std::string& msg) {
     std::cout << "[INFO] " << msg << std::endl;
 }
-inline void logError(const std::string& msg) {
+static void logError(const std::string& msg) {
     std::cerr << "[ERROR] " << msg << std::endl;
 }
 
+// ---------------------------------------------------------------------------
+// App - main application class
+// ---------------------------------------------------------------------------
 class App final {
 public:
-    App() {}
+    App() = default;
     ~App() { shutdown(); }
 
+    // -----------------------------------------------------------------------
+    // Lifecycle
+    // -----------------------------------------------------------------------
     bool initialize() {
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
             logError(std::string("SDL_Init failed: ") + SDL_GetError());
@@ -65,14 +84,6 @@ public:
         }
         SDL_StartTextInput();
         return true;
-    }
-
-    void updateSticks() {
-        if (hasActiveKeyboard()) {
-            if (updateKeyboardSelectionFromDpad()) return;
-            if (updateKeyboardSelectionFromStick()) return;
-            if (updateKeyboardCursorFromTriggers()) return;
-        }
     }
 
     void run() {
@@ -94,141 +105,104 @@ public:
         closeController();
         destroyUiTextures();
         mpv_player_.shutdown();
-        if (renderer_) SDL_DestroyRenderer(renderer_);
-        if (window_) SDL_DestroyWindow(window_);
+        if (renderer_) { SDL_DestroyRenderer(renderer_); renderer_ = nullptr; }
+        if (window_)   { SDL_DestroyWindow(window_);     window_ = nullptr;   }
         SDL_Quit();
     }
-struct KeyboardKey {
-        const char* label;
-        const char* value;
-        int widthUnits;
-    };
 
-struct KeyboardKeyGeometry {
-        SDL_Rect bounds{};
-        std::string label;
-        std::string value;
-        int row{0};
-        int col{0};
-        int index{0};
-    };
+private:
+    // -----------------------------------------------------------------------
+    // Window creation
+    // -----------------------------------------------------------------------
+    bool createWindow() {
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+        SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "1");
+        SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
 
-struct KeyboardOverlayLayout {
-        SDL_Rect panel{};
-        int statusBarHeight{48};
-        std::vector<KeyboardKeyGeometry> keys;
-    };
-
-    const std::vector<std::vector<KeyboardKey>>& keyboardLayout() const {
-        static const std::vector<std::vector<KeyboardKey>> lowerLayout = {
-            {{"1", "1", 1}, {"2", "2", 1}, {"3", "3", 1}, {"4", "4", 1}, {"5", "5", 1}, {"6", "6", 1},
-             {"7", "7", 1}, {"8", "8", 1}, {"9", "9", 1}, {"0", "0", 1}, {"-", "-", 1}, {".", ".", 1}},
-            {{"q", "q", 1}, {"w", "w", 1}, {"e", "e", 1}, {"r", "r", 1}, {"t", "t", 1}, {"y", "y", 1},
-             {"u", "u", 1}, {"i", "i", 1}, {"o", "o", 1}, {"p", "p", 1}, {"/", "/", 1}, {":", ":", 1}},
-            {{"a", "a", 1}, {"s", "s", 1}, {"d", "d", 1}, {"f", "f", 1}, {"g", "g", 1}, {"h", "h", 1},
-             {"j", "j", 1}, {"k", "k", 1}, {"l", "l", 1}, {"_", "_", 1}, {"@", "@", 1}, {"?", "?", 1}},
-            {{"z", "z", 1}, {"x", "x", 1}, {"c", "c", 1}, {"v", "v", 1}, {"b", "b", 1}, {"n", "n", 1},
-             {"m", "m", 1}, {"&", "&", 1}, {"=", "=", 1}, {"+", "+", 1}, {"#", "#", 1}, {"%", "%", 1}},
-            {{"MODE", "__MODE__", 2}, {"SPACE", " ", 3}, {"BKSP", "__BACKSPACE__", 2}, {"<", "__LEFT__", 1},
-             {">", "__RIGHT__", 1}, {"GO", "__ENTER__", 1}, {"ESC", "__CANCEL__", 2}}
-        };
-        static const std::vector<std::vector<KeyboardKey>> upperLayout = {
-            {{"1", "1", 1}, {"2", "2", 1}, {"3", "3", 1}, {"4", "4", 1}, {"5", "5", 1}, {"6", "6", 1},
-             {"7", "7", 1}, {"8", "8", 1}, {"9", "9", 1}, {"0", "0", 1}, {"-", "-", 1}, {".", ".", 1}},
-            {{"Q", "Q", 1}, {"W", "W", 1}, {"E", "E", 1}, {"R", "R", 1}, {"T", "T", 1}, {"Y", "Y", 1},
-             {"U", "U", 1}, {"I", "I", 1}, {"O", "O", 1}, {"P", "P", 1}, {"/", "/", 1}, {":", ":", 1}},
-            {{"A", "A", 1}, {"S", "S", 1}, {"D", "D", 1}, {"F", "F", 1}, {"G", "G", 1}, {"H", "H", 1},
-             {"J", "J", 1}, {"K", "K", 1}, {"L", "L", 1}, {"_", "_", 1}, {"@", "@", 1}, {"?", "?", 1}},
-            {{"Z", "Z", 1}, {"X", "X", 1}, {"C", "C", 1}, {"V", "V", 1}, {"B", "B", 1}, {"N", "N", 1},
-             {"M", "M", 1}, {"&", "&", 1}, {"=", "=", 1}, {"+", "+", 1}, {"#", "#", 1}, {"%", "%", 1}},
-            {{"MODE", "__MODE__", 2}, {"SPACE", " ", 3}, {"BKSP", "__BACKSPACE__", 2}, {"<", "__LEFT__", 1},
-             {">", "__RIGHT__", 1}, {"GO", "__ENTER__", 1}, {"ESC", "__CANCEL__", 2}}
-        };
-        static const std::vector<std::vector<KeyboardKey>> symbolsLayout = {
-            {{"1", "1", 1}, {"2", "2", 1}, {"3", "3", 1}, {"4", "4", 1}, {"5", "5", 1}, {"6", "6", 1},
-             {"7", "7", 1}, {"8", "8", 1}, {"9", "9", 1}, {"0", "0", 1}, {"[", "[", 1}, {"]", "]", 1}},
-            {{"!", "!", 1}, {"@", "@", 1}, {"#", "#", 1}, {"$", "$", 1}, {"%", "%", 1}, {"^", "^", 1},
-             {"&", "&", 1}, {"*", "*", 1}, {"(", "(", 1}, {")", ")", 1}, {"{", "{", 1}, {"}", "}", 1}},
-            {{"<", "<", 1}, {">", ">", 1}, {"/", "/", 1}, {"\\", "\\", 1}, {"|", "|", 1}, {"_", "_", 1},
-             {"+", "+", 1}, {"=", "=", 1}, {"~", "~", 1}, {";", ";", 1}, {":", ":", 1}, {"`", "`", 1}},
-            {{"'", "'", 1}, {"\"", "\"", 1}, {",", ",", 1}, {".", ".", 1}, {"?", "?", 1}, {"-", "-", 1},
-             {"@", "@", 1}, {"#", "#", 1}, {"%", "%", 1}, {"&", "&", 1}, {"*", "*", 1}, {"=", "=", 1}},
-            {{"MODE", "__MODE__", 2}, {"SPACE", " ", 3}, {"BKSP", "__BACKSPACE__", 2}, {"<", "__LEFT__", 1},
-             {">", "__RIGHT__", 1}, {"GO", "__ENTER__", 1}, {"ESC", "__CANCEL__", 2}}
-        };
-
-        switch (state_.keyboardMode) {
-        case TubeState::KeyboardMode::Uppercase:
-            return upperLayout;
-        case TubeState::KeyboardMode::Symbols:
-            return symbolsLayout;
-        case TubeState::KeyboardMode::Lowercase:
-        default:
-            return lowerLayout;
-        }
-    }
-
-    KeyboardOverlayLayout buildKeyboardOverlayLayout(int width, int height) const {
-        KeyboardOverlayLayout layoutInfo;
-        const int outerMargin = 14;
-        const int panelPadding = (width < 480) ? 8 : 10;
-        const int rowHeight = (height < 360) ? 26 : 30;
-        const int rowGap = (height < 360) ? 6 : 7;
-        const int topContent = panelPadding + 18 + 4 + 16 + 8;
-        const int hintHeight = 0;
-        const int gridHeight = static_cast<int>(keyboardLayout().size()) * rowHeight +
-                               (static_cast<int>(keyboardLayout().size()) - 1) * rowGap;
-        const int panelHeight = topContent + gridHeight + hintHeight + panelPadding * 2;
-        const int panelY = std::max(outerMargin, height - layoutInfo.statusBarHeight - panelHeight - 12);
-        layoutInfo.panel = {outerMargin, panelY, std::max(120, width - outerMargin * 2), panelHeight};
-
-        const int cellWidth = std::max(20, (layoutInfo.panel.w - panelPadding * 2) / kKeyboardGridColumns);
-        int keyIndex = 0;
-        int y = layoutInfo.panel.y + topContent;
-        const auto& rows = keyboardLayout();
-        for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
-            const auto& row = rows[rowIndex];
-            int unitsUsed = 0;
-            for (const auto& key : row) {
-                unitsUsed += std::max(1, key.widthUnits);
-            }
-            int x = layoutInfo.panel.x + panelPadding + std::max(0, ((layoutInfo.panel.w - panelPadding * 2) - unitsUsed * cellWidth) / 2);
-            for (size_t colIndex = 0; colIndex < row.size(); ++colIndex) {
-                const auto& key = row[colIndex];
-                KeyboardKeyGeometry geometry;
-                geometry.bounds = {x, y, std::max(18, std::max(1, key.widthUnits) * cellWidth - 6), rowHeight};
-                geometry.label = key.label;
-                geometry.value = key.value;
-                geometry.row = static_cast<int>(rowIndex);
-                geometry.col = static_cast<int>(colIndex);
-                geometry.index = keyIndex++;
-                layoutInfo.keys.push_back(std::move(geometry));
-                x += std::max(1, key.widthUnits) * cellWidth;
-            }
-            y += rowHeight + rowGap;
+        window_ = SDL_CreateWindow(
+            "tubelite",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            640, 480,
+            SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
+        if (window_ == nullptr) {
+            logError(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
+            return false;
         }
 
-        return layoutInfo;
-    }
-
-    const KeyboardKeyGeometry* selectedKeyboardKey(const KeyboardOverlayLayout& layoutInfo) const {
-        if (layoutInfo.keys.empty()) {
-            return nullptr;
+        Uint32 rendererFlags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC;
+        renderer_ = SDL_CreateRenderer(window_, -1, rendererFlags);
+        if (renderer_ == nullptr) {
+            renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);
         }
-        const int index = std::clamp(state_.keyboardSelectedIndex, 0, static_cast<int>(layoutInfo.keys.size()) - 1);
-        return &layoutInfo.keys[static_cast<size_t>(index)];
+        if (renderer_ == nullptr) {
+            logError(std::string("SDL_CreateRenderer failed: ") + SDL_GetError());
+            return false;
+        }
+
+        int w = 0, h = 0;
+        SDL_GetWindowSize(window_, &w, &h);
+        SDL_ShowCursor(SDL_DISABLE);
+        return true;
     }
 
-    std::string transformTypedText(const char* text) const {
-        std::string transformed{text};
-        if (state_.keyboardMode == TubeState::KeyboardMode::Uppercase) {
-            for (char& ch : transformed) {
-                if (std::isalpha(static_cast<unsigned char>(ch))) {
-                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    // -----------------------------------------------------------------------
+    // Controller management
+    // -----------------------------------------------------------------------
+    void openController() {
+        if (controller_ != nullptr) return;
+        const int joystickCount = SDL_NumJoysticks();
+        for (int index = 0; index < joystickCount; ++index) {
+            if (SDL_IsGameController(index)) {
+                controller_ = SDL_GameControllerOpen(index);
+                if (controller_ != nullptr) {
+                    logInfo(std::string("Opened controller: ") + SDL_GameControllerName(controller_));
+                    return;
                 }
             }
         }
-        return transformed;
+        if (joystickCount > 0) {
+            joystick_ = SDL_JoystickOpen(0);
+            if (joystick_ != nullptr) {
+                logInfo(std::string("Opened joystick fallback: ") + SDL_JoystickName(joystick_));
+            }
+        }
+    }
+
+    void closeController() {
+        if (controller_ != nullptr) { SDL_GameControllerClose(controller_); controller_ = nullptr; }
+        if (joystick_ != nullptr)   { SDL_JoystickClose(joystick_);         joystick_ = nullptr;   }
+    }
+
+    // -----------------------------------------------------------------------
+    // UI texture lifecycle
+    // -----------------------------------------------------------------------
+    void destroyUiTextures() {
+        if (keyboardOverlayTexture_ != nullptr) {
+            SDL_DestroyTexture(keyboardOverlayTexture_);
+            keyboardOverlayTexture_ = nullptr;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Active buffer helpers (keyboard text entry)
+    // -----------------------------------------------------------------------
+    std::string& activeBuffer() { return state_.textBuffer; }
+    const std::string& activeBuffer() const { return state_.textBuffer; }
+
+    bool hasActiveKeyboard() const {
+        return state_.inputMode == TubeState::InputMode::SearchText;
+    }
+
+    void eraseActiveBufferChar() {
+        auto& buffer = activeBuffer();
+        if (state_.replaceBufferOnNextInput) {
+            buffer.clear();
+            state_.textCursor = 0;
+            state_.replaceBufferOnNextInput = false;
+        } else if (state_.textCursor > 0 && !buffer.empty()) {
+            buffer.erase(static_cast<size_t>(state_.textCursor - 1), 1);
+            --state_.textCursor;
+        }
     }
 
     void insertActiveText(const std::string& text) {
@@ -249,149 +223,274 @@ struct KeyboardOverlayLayout {
             state_.replaceBufferOnNextInput = false;
             return;
         }
-        if (state_.inputMode == TubeState::InputMode::SearchText && activeBuffer().empty()) {
-            false = false;
-            return;
-        }
         state_.textCursor = std::clamp(state_.textCursor + delta, 0, static_cast<int>(activeBuffer().size()));
     }
 
+    std::string transformTypedText(const char* text) const {
+        std::string transformed{text};
+        if (state_.keyboardMode == TubeState::KeyboardMode::Uppercase) {
+            for (char& ch : transformed) {
+                if (std::isalpha(static_cast<unsigned char>(ch))) {
+                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                }
+            }
+        }
+        return transformed;
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard open / close / search / play
+    // -----------------------------------------------------------------------
+    void openKeyboard() {
+        state_.inputMode = TubeState::InputMode::SearchText;
+        state_.textBuffer.clear();
+        state_.textCursor = 0;
+        state_.keyboardSelectedIndex = 0;
+        resetKeyboardInputRepeat();
+        uiDirty_ = true;
+    }
+
+    void closeKeyboard(bool commit) {
+        state_.inputMode = TubeState::InputMode::None;
+        state_.leftTrigger = 0.0f;
+        state_.rightTrigger = 0.0f;
+        resetKeyboardInputRepeat();
+        if (commit && !state_.textBuffer.empty()) {
+            doSearch(state_.textBuffer);
+        }
+        uiDirty_ = true;
+    }
+
+    void activateKeyboardGo() {
+        if (!hasActiveKeyboard()) return;
+        closeKeyboard(true);
+    }
+
+    void doSearch(const std::string& query) {
+        state_.currentScreen = TubeState::Screen::Search;
+        search_results_.clear();
+        selected_result_idx_ = 0;
+        youtube_api_.search(query, [this](bool success, const std::vector<YouTubeVideo>& results) {
+            if (success) {
+                search_results_ = results;
+                uiDirty_ = true;
+            }
+        });
+    }
+
+    void playVideo(const YouTubeVideo& video) {
+        current_video_ = video;
+        youtube_api_.getStreamUrl(video.id, [this](bool success, const std::string& url) {
+            if (success) {
+                state_.currentScreen = TubeState::Screen::Playback;
+                mpv_player_.play(url);
+                uiDirty_ = true;
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard layout data
+    // -----------------------------------------------------------------------
+    struct KeyboardKey {
+        const char* label;
+        const char* value;
+        int widthUnits;
+    };
+
+    struct KeyboardKeyGeometry {
+        SDL_Rect bounds{};
+        std::string label;
+        std::string value;
+        int row{0};
+        int col{0};
+        int index{0};
+    };
+
+    struct KeyboardOverlayLayout {
+        SDL_Rect panel{};
+        int statusBarHeight{48};
+        std::vector<KeyboardKeyGeometry> keys;
+    };
+
+    static constexpr int kKeyboardGridColumns = 12;
+    static constexpr bool kKeyboardWrapAround = true;
+
+    const std::vector<std::vector<KeyboardKey>>& keyboardLayout() const {
+        static const std::vector<std::vector<KeyboardKey>> lowerLayout = {
+            {{"1","1",1},{"2","2",1},{"3","3",1},{"4","4",1},{"5","5",1},{"6","6",1},
+             {"7","7",1},{"8","8",1},{"9","9",1},{"0","0",1},{"-","-",1},{".",".",1}},
+            {{"q","q",1},{"w","w",1},{"e","e",1},{"r","r",1},{"t","t",1},{"y","y",1},
+             {"u","u",1},{"i","i",1},{"o","o",1},{"p","p",1},{"/","/",1},{":",":",1}},
+            {{"a","a",1},{"s","s",1},{"d","d",1},{"f","f",1},{"g","g",1},{"h","h",1},
+             {"j","j",1},{"k","k",1},{"l","l",1},{"_","_",1},{"@","@",1},{"?","?",1}},
+            {{"z","z",1},{"x","x",1},{"c","c",1},{"v","v",1},{"b","b",1},{"n","n",1},
+             {"m","m",1},{"&","&",1},{"=","=",1},{"+","+",1},{"#","#",1},{"%","%",1}},
+            {{"MODE","__MODE__",2},{"SPACE"," ",3},{"BKSP","__BACKSPACE__",2},{"<","__LEFT__",1},
+             {">","__RIGHT__",1},{"GO","__ENTER__",1},{"ESC","__CANCEL__",2}}
+        };
+        static const std::vector<std::vector<KeyboardKey>> upperLayout = {
+            {{"1","1",1},{"2","2",1},{"3","3",1},{"4","4",1},{"5","5",1},{"6","6",1},
+             {"7","7",1},{"8","8",1},{"9","9",1},{"0","0",1},{"-","-",1},{".",".",1}},
+            {{"Q","Q",1},{"W","W",1},{"E","E",1},{"R","R",1},{"T","T",1},{"Y","Y",1},
+             {"U","U",1},{"I","I",1},{"O","O",1},{"P","P",1},{"/","/",1},{":",":",1}},
+            {{"A","A",1},{"S","S",1},{"D","D",1},{"F","F",1},{"G","G",1},{"H","H",1},
+             {"J","J",1},{"K","K",1},{"L","L",1},{"_","_",1},{"@","@",1},{"?","?",1}},
+            {{"Z","Z",1},{"X","X",1},{"C","C",1},{"V","V",1},{"B","B",1},{"N","N",1},
+             {"M","M",1},{"&","&",1},{"=","=",1},{"+","+",1},{"#","#",1},{"%","%",1}},
+            {{"MODE","__MODE__",2},{"SPACE"," ",3},{"BKSP","__BACKSPACE__",2},{"<","__LEFT__",1},
+             {">","__RIGHT__",1},{"GO","__ENTER__",1},{"ESC","__CANCEL__",2}}
+        };
+        static const std::vector<std::vector<KeyboardKey>> symbolsLayout = {
+            {{"1","1",1},{"2","2",1},{"3","3",1},{"4","4",1},{"5","5",1},{"6","6",1},
+             {"7","7",1},{"8","8",1},{"9","9",1},{"0","0",1},{"[","[",1},{"]","]",1}},
+            {{"!","!",1},{"@","@",1},{"#","#",1},{"$","$",1},{"%","%",1},{"^","^",1},
+             {"&","&",1},{"*","*",1},{"(","(",1},{")",")",1},{"{","{",1},{"}","}",1}},
+            {{"<","<",1},{">",">",1},{"/","/",1},{"\\","\\",1},{"|","|",1},{"_","_",1},
+             {"+","+",1},{"=","=",1},{"~","~",1},{";",";",1},{":",":",1},{"`","`",1}},
+            {{"'","'",1},{"\"","\"",1},{",",",",1},{".",".",1},{"?","?",1},{"-","-",1},
+             {"@","@",1},{"#","#",1},{"%","%",1},{"&","&",1},{"*","*",1},{"=","=",1}},
+            {{"MODE","__MODE__",2},{"SPACE"," ",3},{"BKSP","__BACKSPACE__",2},{"<","__LEFT__",1},
+             {">","__RIGHT__",1},{"GO","__ENTER__",1},{"ESC","__CANCEL__",2}}
+        };
+
+        switch (state_.keyboardMode) {
+        case TubeState::KeyboardMode::Uppercase: return upperLayout;
+        case TubeState::KeyboardMode::Symbols:   return symbolsLayout;
+        case TubeState::KeyboardMode::Lowercase:
+        default: return lowerLayout;
+        }
+    }
+
+    KeyboardOverlayLayout buildKeyboardOverlayLayout(int width, int height) const {
+        KeyboardOverlayLayout layoutInfo;
+        const int outerMargin = 14;
+        const int panelPadding = (width < 480) ? 8 : 10;
+        const int rowHeight = (height < 360) ? 26 : 30;
+        const int rowGap = (height < 360) ? 6 : 7;
+        const int topContent = panelPadding + 18 + 4 + 16 + 8;
+        const int gridHeight = static_cast<int>(keyboardLayout().size()) * rowHeight +
+                               (static_cast<int>(keyboardLayout().size()) - 1) * rowGap;
+        const int panelHeight = topContent + gridHeight + panelPadding * 2;
+        const int panelY = std::max(outerMargin, height - layoutInfo.statusBarHeight - panelHeight - 12);
+        layoutInfo.panel = {outerMargin, panelY, std::max(120, width - outerMargin * 2), panelHeight};
+
+        const int cellWidth = std::max(20, (layoutInfo.panel.w - panelPadding * 2) / kKeyboardGridColumns);
+        int keyIndex = 0;
+        int y = layoutInfo.panel.y + topContent;
+        const auto& rows = keyboardLayout();
+        for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const auto& row = rows[rowIndex];
+            int unitsUsed = 0;
+            for (const auto& key : row) unitsUsed += std::max(1, key.widthUnits);
+            int x = layoutInfo.panel.x + panelPadding +
+                    std::max(0, ((layoutInfo.panel.w - panelPadding * 2) - unitsUsed * cellWidth) / 2);
+            for (size_t colIndex = 0; colIndex < row.size(); ++colIndex) {
+                const auto& key = row[colIndex];
+                KeyboardKeyGeometry geometry;
+                geometry.bounds = {x, y, std::max(18, std::max(1, key.widthUnits) * cellWidth - 6), rowHeight};
+                geometry.label = key.label;
+                geometry.value = key.value;
+                geometry.row = static_cast<int>(rowIndex);
+                geometry.col = static_cast<int>(colIndex);
+                geometry.index = keyIndex++;
+                layoutInfo.keys.push_back(std::move(geometry));
+                x += std::max(1, key.widthUnits) * cellWidth;
+            }
+            y += rowHeight + rowGap;
+        }
+        return layoutInfo;
+    }
+
+    const KeyboardKeyGeometry* selectedKeyboardKey(const KeyboardOverlayLayout& layoutInfo) const {
+        if (layoutInfo.keys.empty()) return nullptr;
+        const int index = std::clamp(state_.keyboardSelectedIndex, 0, static_cast<int>(layoutInfo.keys.size()) - 1);
+        return &layoutInfo.keys[static_cast<size_t>(index)];
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard navigation helpers
+    // -----------------------------------------------------------------------
     void ensureKeyboardSelectionValid() {
-        int width = 0;
-        int height = 0;
+        int width = 0, height = 0;
         SDL_GetWindowSize(window_, &width, &height);
         const auto layoutInfo = buildKeyboardOverlayLayout(width, height);
-        if (layoutInfo.keys.empty()) {
-            state_.keyboardSelectedIndex = 0;
-            return;
-        }
+        if (layoutInfo.keys.empty()) { state_.keyboardSelectedIndex = 0; return; }
         state_.keyboardSelectedIndex = std::clamp(state_.keyboardSelectedIndex, 0, static_cast<int>(layoutInfo.keys.size()) - 1);
     }
 
     void toggleKeyboardMode() {
         switch (state_.keyboardMode) {
-        case TubeState::KeyboardMode::Lowercase:
-            state_.keyboardMode = TubeState::KeyboardMode::Uppercase;
-            break;
-        case TubeState::KeyboardMode::Uppercase:
-            state_.keyboardMode = TubeState::KeyboardMode::Symbols;
-            break;
-        case TubeState::KeyboardMode::Symbols:
-        default:
-            state_.keyboardMode = TubeState::KeyboardMode::Lowercase;
-            break;
+        case TubeState::KeyboardMode::Lowercase: state_.keyboardMode = TubeState::KeyboardMode::Uppercase; break;
+        case TubeState::KeyboardMode::Uppercase: state_.keyboardMode = TubeState::KeyboardMode::Symbols;   break;
+        default:                                 state_.keyboardMode = TubeState::KeyboardMode::Lowercase; break;
         }
         ensureKeyboardSelectionValid();
         uiDirty_ = true;
     }
 
     void resetKeyboardInputRepeat() {
-        keyboardNavDirectionX_ = 0;
-        keyboardNavDirectionY_ = 0;
-        keyboardNavStartedAt_ = std::chrono::steady_clock::time_point{};
-        keyboardNavNextAt_ = std::chrono::steady_clock::time_point{};
-        keyboardDpadDirectionX_ = 0;
-        keyboardDpadDirectionY_ = 0;
-        keyboardDpadStartedAt_ = std::chrono::steady_clock::time_point{};
-        keyboardDpadNextAt_ = std::chrono::steady_clock::time_point{};
+        keyboardNavDirectionX_ = 0; keyboardNavDirectionY_ = 0;
+        keyboardNavStartedAt_ = {}; keyboardNavNextAt_ = {};
+        keyboardDpadDirectionX_ = 0; keyboardDpadDirectionY_ = 0;
+        keyboardDpadStartedAt_ = {}; keyboardDpadNextAt_ = {};
         triggerCursorDirection_ = 0;
-        triggerCursorStartedAt_ = std::chrono::steady_clock::time_point{};
-        triggerCursorNextAt_ = std::chrono::steady_clock::time_point{};
+        triggerCursorStartedAt_ = {}; triggerCursorNextAt_ = {};
     }
 
-    static int keyCenterX(const KeyboardKeyGeometry& key) {
-        return key.bounds.x + key.bounds.w / 2;
-    }
-
-    static int keyCenterY(const KeyboardKeyGeometry& key) {
-        return key.bounds.y + key.bounds.h / 2;
-    }
+    static int keyCenterX(const KeyboardKeyGeometry& key) { return key.bounds.x + key.bounds.w / 2; }
+    static int keyCenterY(const KeyboardKeyGeometry& key) { return key.bounds.y + key.bounds.h / 2; }
 
     int repeatIntervalMs(std::chrono::steady_clock::time_point startedAt, int baseMs, int minMs) const {
-        if (startedAt == std::chrono::steady_clock::time_point{}) {
-            return baseMs;
-        }
+        if (startedAt == std::chrono::steady_clock::time_point{}) return baseMs;
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - startedAt).count();
         return std::max(minMs, baseMs - static_cast<int>(heldMs / 250) * 18);
     }
 
     int resolveWrappedKeyboardSelection(const KeyboardOverlayLayout& layoutInfo, int directionX, int directionY) const {
-        if (!kKeyboardWrapAround || layoutInfo.keys.empty()) {
-            return -1;
-        }
+        if (!kKeyboardWrapAround || layoutInfo.keys.empty()) return -1;
         const KeyboardKeyGeometry* current = selectedKeyboardKey(layoutInfo);
-        if (current == nullptr) {
-            return 0;
-        }
+        if (current == nullptr) return 0;
         int bestIndex = -1;
         int bestScore = std::numeric_limits<int>::max();
         for (const auto& candidate : layoutInfo.keys) {
-            if (candidate.index == current->index) {
-                continue;
-            }
+            if (candidate.index == current->index) continue;
             int score = std::numeric_limits<int>::max();
-            if (directionX > 0) {
-                score = candidate.bounds.x * 10 + std::abs(keyCenterY(candidate) - keyCenterY(*current));
-            } else if (directionX < 0) {
-                score = (layoutInfo.panel.x + layoutInfo.panel.w - candidate.bounds.x) * 10 +
-                        std::abs(keyCenterY(candidate) - keyCenterY(*current));
-            } else if (directionY > 0) {
-                score = candidate.bounds.y * 10 + std::abs(keyCenterX(candidate) - keyCenterX(*current));
-            } else if (directionY < 0) {
-                score = (layoutInfo.panel.y + layoutInfo.panel.h - candidate.bounds.y) * 10 +
-                        std::abs(keyCenterX(candidate) - keyCenterX(*current));
-            }
-            if (score < bestScore) {
-                bestScore = score;
-                bestIndex = candidate.index;
-            }
+            if (directionX > 0) score = candidate.bounds.x * 10 + std::abs(keyCenterY(candidate) - keyCenterY(*current));
+            else if (directionX < 0) score = (layoutInfo.panel.x + layoutInfo.panel.w - candidate.bounds.x) * 10 + std::abs(keyCenterY(candidate) - keyCenterY(*current));
+            else if (directionY > 0) score = candidate.bounds.y * 10 + std::abs(keyCenterX(candidate) - keyCenterX(*current));
+            else if (directionY < 0) score = (layoutInfo.panel.y + layoutInfo.panel.h - candidate.bounds.y) * 10 + std::abs(keyCenterX(candidate) - keyCenterX(*current));
+            if (score < bestScore) { bestScore = score; bestIndex = candidate.index; }
         }
         return bestIndex;
     }
 
     void moveKeyboardSelection(int directionX, int directionY) {
-        if (!hasActiveKeyboard()) {
-            return;
-        }
-        int width = 0;
-        int height = 0;
+        if (!hasActiveKeyboard()) return;
+        int width = 0, height = 0;
         SDL_GetWindowSize(window_, &width, &height);
         const auto layoutInfo = buildKeyboardOverlayLayout(width, height);
-        if (layoutInfo.keys.empty()) {
-            return;
-        }
+        if (layoutInfo.keys.empty()) return;
         state_.keyboardSelectedIndex = std::clamp(state_.keyboardSelectedIndex, 0, static_cast<int>(layoutInfo.keys.size()) - 1);
         const KeyboardKeyGeometry& current = layoutInfo.keys[static_cast<size_t>(state_.keyboardSelectedIndex)];
-
         int bestIndex = -1;
         float bestScore = std::numeric_limits<float>::max();
         for (const auto& candidate : layoutInfo.keys) {
-            if (candidate.index == current.index) {
-                continue;
-            }
+            if (candidate.index == current.index) continue;
             const float dx = static_cast<float>(keyCenterX(candidate) - keyCenterX(current));
             const float dy = static_cast<float>(keyCenterY(candidate) - keyCenterY(current));
             if (directionX > 0 && dx <= 0.0f) continue;
             if (directionX < 0 && dx >= 0.0f) continue;
             if (directionY > 0 && dy <= 0.0f) continue;
             if (directionY < 0 && dy >= 0.0f) continue;
-
             const float primary = (directionX != 0) ? std::abs(dx) : std::abs(dy);
             const float secondary = (directionX != 0) ? std::abs(dy) : std::abs(dx);
             const float score = primary + secondary * 2.6f;
-            if (score < bestScore) {
-                bestScore = score;
-                bestIndex = candidate.index;
-            }
+            if (score < bestScore) { bestScore = score; bestIndex = candidate.index; }
         }
-
-        if (bestIndex < 0) {
-            bestIndex = resolveWrappedKeyboardSelection(layoutInfo, directionX, directionY);
-        }
-        if (bestIndex >= 0) {
-            state_.keyboardSelectedIndex = bestIndex;
-        }
+        if (bestIndex < 0) bestIndex = resolveWrappedKeyboardSelection(layoutInfo, directionX, directionY);
+        if (bestIndex >= 0) state_.keyboardSelectedIndex = bestIndex;
         uiDirty_ = true;
     }
 
@@ -399,34 +498,24 @@ struct KeyboardOverlayLayout {
         const float absX = std::abs(state_.leftStickX);
         const float absY = std::abs(state_.leftStickY);
         const float threshold = 0.45f;
-        int dirX = 0;
-        int dirY = 0;
+        int dirX = 0, dirY = 0;
         if (absX >= threshold || absY >= threshold) {
-            if (absX >= absY) {
-                dirX = (state_.leftStickX > 0.0f) ? 1 : -1;
-            } else {
-                dirY = (state_.leftStickY > 0.0f) ? 1 : -1;
-            }
+            if (absX >= absY) dirX = (state_.leftStickX > 0.0f) ? 1 : -1;
+            else              dirY = (state_.leftStickY > 0.0f) ? 1 : -1;
         }
-
         if (dirX == 0 && dirY == 0) {
-            keyboardNavDirectionX_ = 0;
-            keyboardNavDirectionY_ = 0;
-            keyboardNavStartedAt_ = std::chrono::steady_clock::time_point{};
-            keyboardNavNextAt_ = std::chrono::steady_clock::time_point{};
+            keyboardNavDirectionX_ = 0; keyboardNavDirectionY_ = 0;
+            keyboardNavStartedAt_ = {}; keyboardNavNextAt_ = {};
             return false;
         }
-
         const auto now = std::chrono::steady_clock::now();
         if (dirX != keyboardNavDirectionX_ || dirY != keyboardNavDirectionY_) {
-            keyboardNavDirectionX_ = dirX;
-            keyboardNavDirectionY_ = dirY;
+            keyboardNavDirectionX_ = dirX; keyboardNavDirectionY_ = dirY;
             keyboardNavStartedAt_ = now;
             keyboardNavNextAt_ = now + std::chrono::milliseconds(220);
             moveKeyboardSelection(dirX, dirY);
             return true;
         }
-
         if (now >= keyboardNavNextAt_) {
             moveKeyboardSelection(dirX, dirY);
             keyboardNavNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(keyboardNavStartedAt_, 135, 70));
@@ -436,33 +525,22 @@ struct KeyboardOverlayLayout {
     }
 
     bool updateKeyboardSelectionFromDpad() {
-        int dirX = 0;
-        int dirY = 0;
-
-        if (state_.dpadLeftPressed != state_.dpadRightPressed) {
-            dirX = state_.dpadRightPressed ? 1 : -1;
-        } else if (state_.dpadUpPressed != state_.dpadDownPressed) {
-            dirY = state_.dpadDownPressed ? 1 : -1;
-        }
-
+        int dirX = 0, dirY = 0;
+        if (state_.dpadLeftPressed != state_.dpadRightPressed) dirX = state_.dpadRightPressed ? 1 : -1;
+        else if (state_.dpadUpPressed != state_.dpadDownPressed) dirY = state_.dpadDownPressed ? 1 : -1;
         if (dirX == 0 && dirY == 0) {
-            keyboardDpadDirectionX_ = 0;
-            keyboardDpadDirectionY_ = 0;
-            keyboardDpadStartedAt_ = std::chrono::steady_clock::time_point{};
-            keyboardDpadNextAt_ = std::chrono::steady_clock::time_point{};
+            keyboardDpadDirectionX_ = 0; keyboardDpadDirectionY_ = 0;
+            keyboardDpadStartedAt_ = {}; keyboardDpadNextAt_ = {};
             return false;
         }
-
         const auto now = std::chrono::steady_clock::now();
         if (dirX != keyboardDpadDirectionX_ || dirY != keyboardDpadDirectionY_) {
-            keyboardDpadDirectionX_ = dirX;
-            keyboardDpadDirectionY_ = dirY;
+            keyboardDpadDirectionX_ = dirX; keyboardDpadDirectionY_ = dirY;
             keyboardDpadStartedAt_ = now;
             keyboardDpadNextAt_ = now + std::chrono::milliseconds(220);
             moveKeyboardSelection(dirX, dirY);
             return true;
         }
-
         if (now >= keyboardDpadNextAt_) {
             moveKeyboardSelection(dirX, dirY);
             keyboardDpadNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(keyboardDpadStartedAt_, 135, 70));
@@ -473,47 +551,43 @@ struct KeyboardOverlayLayout {
 
     bool updateKeyboardCursorFromTriggers() {
         int direction = 0;
-        if (state_.leftTrigger > 0.55f && state_.rightTrigger <= 0.55f) {
-            direction = -1;
-        } else if (state_.rightTrigger > 0.55f && state_.leftTrigger <= 0.55f) {
-            direction = 1;
-        }
-
+        if (state_.leftTrigger > 0.55f && state_.rightTrigger <= 0.55f) direction = -1;
+        else if (state_.rightTrigger > 0.55f && state_.leftTrigger <= 0.55f) direction = 1;
         if (direction == 0) {
-            triggerCursorDirection_ = 0;
-            triggerCursorStartedAt_ = std::chrono::steady_clock::time_point{};
-            triggerCursorNextAt_ = std::chrono::steady_clock::time_point{};
+            triggerCursorDirection_ = 0; triggerCursorStartedAt_ = {}; triggerCursorNextAt_ = {};
             return false;
         }
-
         const auto now = std::chrono::steady_clock::now();
         if (direction != triggerCursorDirection_) {
-            triggerCursorDirection_ = direction;
-            triggerCursorStartedAt_ = now;
+            triggerCursorDirection_ = direction; triggerCursorStartedAt_ = now;
             triggerCursorNextAt_ = now + std::chrono::milliseconds(220);
             moveActiveCursor(direction);
-            updateTitle();
             return true;
         }
-
         if (now >= triggerCursorNextAt_) {
             moveActiveCursor(direction);
-            updateTitle();
             triggerCursorNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(triggerCursorStartedAt_, 140, 90));
             return true;
         }
         return false;
     }
 
+    void updateSticks() {
+        if (hasActiveKeyboard()) {
+            if (updateKeyboardSelectionFromDpad()) return;
+            if (updateKeyboardSelectionFromStick()) return;
+            updateKeyboardCursorFromTriggers();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard overlay text helpers
+    // -----------------------------------------------------------------------
     std::string keyboardModeLabel() const {
         switch (state_.keyboardMode) {
-        case TubeState::KeyboardMode::Uppercase:
-            return "UPPER";
-        case TubeState::KeyboardMode::Symbols:
-            return "SYMBOLS";
-        case TubeState::KeyboardMode::Lowercase:
-        default:
-            return "LOWER";
+        case TubeState::KeyboardMode::Uppercase: return "UPPER";
+        case TubeState::KeyboardMode::Symbols:   return "SYMBOLS";
+        default: return "LOWER";
         }
     }
 
@@ -522,11 +596,8 @@ struct KeyboardOverlayLayout {
         const int cursor = state_.replaceBufferOnNextInput
             ? 0
             : std::clamp(state_.textCursor, 0, static_cast<int>(preview.size()));
-        if (keyboardCursorVisible()) {
-            preview.insert(static_cast<size_t>(cursor), "|");
-        } else {
-            preview.insert(static_cast<size_t>(cursor), " ");
-        }
+        if (keyboardCursorVisible()) preview.insert(static_cast<size_t>(cursor), "|");
+        else                         preview.insert(static_cast<size_t>(cursor), " ");
         constexpr int maxChars = 38;
         if (static_cast<int>(preview.size()) > maxChars) {
             int start = std::clamp(cursor - (maxChars / 2), 0, static_cast<int>(preview.size()) - maxChars);
@@ -546,7 +617,6 @@ struct KeyboardOverlayLayout {
             lastKeyboardCursorVisible_ = keyboardCursorVisible();
             return;
         }
-
         const bool visible = keyboardCursorVisible();
         if (visible != lastKeyboardCursorVisible_) {
             lastKeyboardCursorVisible_ = visible;
@@ -554,6 +624,30 @@ struct KeyboardOverlayLayout {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Activate selected keyboard key
+    // -----------------------------------------------------------------------
+    void activateSelectedKey() {
+        if (!hasActiveKeyboard()) return;
+        int width = 0, height = 0;
+        SDL_GetWindowSize(window_, &width, &height);
+        const auto layoutInfo = buildKeyboardOverlayLayout(width, height);
+        const KeyboardKeyGeometry* key = selectedKeyboardKey(layoutInfo);
+        if (key == nullptr) return;
+        const std::string value = key->value;
+        if (value == "__BACKSPACE__")     eraseActiveBufferChar();
+        else if (value == "__MODE__")     { toggleKeyboardMode(); return; }
+        else if (value == "__LEFT__")     moveActiveCursor(-1);
+        else if (value == "__RIGHT__")    moveActiveCursor(1);
+        else if (value == "__ENTER__")    { activateKeyboardGo(); return; }
+        else if (value == "__CANCEL__")   { closeKeyboard(false); return; }
+        else                              insertActiveText(value);
+        uiDirty_ = true;
+    }
+
+    // -----------------------------------------------------------------------
+    // 5x7 pixel font glyph data
+    // -----------------------------------------------------------------------
     static std::array<uint8_t, 7> glyphFor(char ch) {
         switch (static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(ch)))) {
         case 'A': return {14, 17, 17, 31, 17, 17, 17};
@@ -623,8 +717,9 @@ struct KeyboardOverlayLayout {
         case '|': return {4, 4, 4, 4, 4, 4, 4};
         case '~': return {0, 0, 13, 18, 0, 0, 0};
         case '`': return {8, 4, 2, 0, 0, 0, 0};
+        case ',': return {0, 0, 0, 0, 0, 4, 8};
         case ' ': return {0, 0, 0, 0, 0, 0, 0};
-        default: return {0, 0, 0, 0, 0, 0, 0};
+        default:  return {0, 0, 0, 0, 0, 0, 0};
         }
     }
 
@@ -643,30 +738,26 @@ struct KeyboardOverlayLayout {
 
     void drawText(int x, int y, const std::string& text, int scale, SDL_Color color) {
         int cursor = x;
-        for (char ch : text) {
-            drawGlyph(cursor, y, ch, scale, color);
-            cursor += scale * 6;
-        }
+        for (char ch : text) { drawGlyph(cursor, y, ch, scale, color); cursor += scale * 6; }
     }
 
     void drawTextShadow(int x, int y, const std::string& text, int scale, SDL_Color color) {
-        const int shadowOffset = std::max(1, scale / 2);
-        const SDL_Color shadow{8, 10, 12, 200};
-        drawText(x + shadowOffset, y + shadowOffset, text, scale, shadow);
+        const int off = std::max(1, scale / 2);
+        drawText(x + off, y + off, text, scale, {8, 10, 12, 200});
         drawText(x, y, text, scale, color);
     }
 
     SDL_Texture* createTargetTexture(int width, int height) {
         SDL_Texture* texture = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, width, height);
-        if (texture == nullptr) {
+        if (texture == nullptr)
             texture = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, width, height);
-        }
-        if (texture != nullptr) {
-            SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-        }
+        if (texture != nullptr) SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
         return texture;
     }
 
+    // -----------------------------------------------------------------------
+    // Keyboard overlay rendering
+    // -----------------------------------------------------------------------
     void renderKeyboardOverlay(int width, int height) {
         if (!hasActiveKeyboard()) {
             if (keyboardOverlayTexture_ != nullptr) {
@@ -677,7 +768,6 @@ struct KeyboardOverlayLayout {
             }
             return;
         }
-
         ensureKeyboardSelectionValid();
         const auto layoutInfo = buildKeyboardOverlayLayout(width, height);
         if (keyboardOverlayTexture_ == nullptr ||
@@ -688,13 +778,10 @@ struct KeyboardOverlayLayout {
                 SDL_DestroyTexture(keyboardOverlayTexture_);
                 keyboardOverlayTexture_ = nullptr;
             }
-
             keyboardOverlayWidth_ = layoutInfo.panel.w;
             keyboardOverlayHeight_ = layoutInfo.panel.h;
             keyboardOverlayTexture_ = createTargetTexture(layoutInfo.panel.w, layoutInfo.panel.h);
-            if (keyboardOverlayTexture_ == nullptr) {
-                return;
-            }
+            if (keyboardOverlayTexture_ == nullptr) return;
 
             SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer_);
             SDL_SetRenderTarget(renderer_, keyboardOverlayTexture_);
@@ -704,9 +791,7 @@ struct KeyboardOverlayLayout {
 
             SDL_Color textColor{226, 230, 236, 255};
             SDL_Color accent{110, 192, 255, 255};
-            const std::string header =
-                (state_.inputMode == TubeState::InputMode::SearchText ? "SEARCH " : "SEARCH ") +
-                std::string("[") + keyboardModeLabel() + "]";
+            const std::string header = "SEARCH [" + keyboardModeLabel() + "]";
             drawTextShadow(12, 12, header, 2, accent);
             drawTextShadow(12, 34, keyboardPreviewText(), 2, textColor);
 
@@ -717,211 +802,27 @@ struct KeyboardOverlayLayout {
                 SDL_Rect keyRect{
                     key.bounds.x - layoutInfo.panel.x,
                     key.bounds.y - layoutInfo.panel.y,
-                    key.bounds.w,
-                    key.bounds.h
-                };
+                    key.bounds.w, key.bounds.h};
                 const bool selected = key.index == state_.keyboardSelectedIndex;
                 SDL_SetRenderDrawColor(renderer_,
-                                       selected ? 72 : 28,
-                                       selected ? 138 : 32,
-                                       selected ? 190 : 38,
-                                       255);
+                    selected ? 72 : 28, selected ? 138 : 32, selected ? 190 : 38, 255);
                 SDL_RenderFillRect(renderer_, &keyRect);
-                SDL_SetRenderDrawColor(renderer_, selected ? 178 : 46, selected ? 216 : 52, selected ? 240 : 58, 255);
+                SDL_SetRenderDrawColor(renderer_,
+                    selected ? 178 : 46, selected ? 216 : 52, selected ? 240 : 58, 255);
                 SDL_RenderDrawRect(renderer_, &keyRect);
-                drawTextShadow(keyRect.x + 8, keyRect.y + 8, key.label, 2, selected ? SDL_Color{12, 16, 22, 255} : textColor);
+                drawTextShadow(keyRect.x + 8, keyRect.y + 8, key.label, 2,
+                    selected ? SDL_Color{12, 16, 22, 255} : textColor);
             }
-
             SDL_SetRenderTarget(renderer_, previousTarget);
             uiDirty_ = false;
         }
-
         SDL_Rect overlay = layoutInfo.panel;
         SDL_RenderCopy(renderer_, keyboardOverlayTexture_, nullptr, &overlay);
     }
 
-    void openController() {
-        if (controller_ != nullptr) {
-            return;
-        }
-
-        const int joystickCount = SDL_NumJoysticks();
-        for (int index = 0; index < joystickCount; ++index) {
-            if (SDL_IsGameController(index)) {
-                controller_ = SDL_GameControllerOpen(index);
-                if (controller_ != nullptr) {
-                    std::ostringstream ss;
-                    ss << "Opened SDL game controller: " << SDL_GameControllerName(controller_);
-                    logInfo(ss.str());
-                    return;
-                }
-            }
-        }
-
-        if (joystickCount > 0) {
-            joystick_ = SDL_JoystickOpen(0);
-            if (joystick_ != nullptr) {
-                std::ostringstream ss;
-                ss << "Opened SDL joystick fallback: " << SDL_JoystickName(joystick_);
-                logInfo(ss.str());
-            }
-        }
-    }
-
-    void closeController() {
-        if (controller_ != nullptr) {
-            SDL_GameControllerClose(controller_);
-            controller_ = nullptr;
-        }
-        if (joystick_ != nullptr) {
-            SDL_JoystickClose(joystick_);
-            joystick_ = nullptr;
-        }
-    }
-
-    bool createWindow() {
-        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-        SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "1");
-
-        const bool useVsync = forceVsync_ || !maxPerformance_;
-        SDL_SetHint(SDL_HINT_RENDER_VSYNC, useVsync ? "1" : "0");
-
-        window_ = SDL_CreateWindow(
-            "R36S Browser",
-            SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED,
-            640,
-            480,
-            SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
-
-        if (window_ == nullptr) {
-            std::string err = std::string("SDL_CreateWindow failed: ") + SDL_GetError();
-            std::cerr << err << '\n';
-            logError(err);
-            return false;
-        }
-
-        Uint32 rendererFlags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE;
-        if (useVsync) {
-            rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
-        }
-
-        renderer_ = SDL_CreateRenderer(window_, -1, rendererFlags);
-        if (renderer_ == nullptr) {
-            renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);
-        }
-
-        if (renderer_ == nullptr) {
-            std::string err = std::string("SDL_CreateRenderer failed: ") + SDL_GetError();
-            std::cerr << err << '\n';
-            logError(err);
-            return false;
-        }
-
-        logRendererInfo();
-
-        int width = 0;
-        int height = 0;
-        SDL_GetWindowSize(window_, &width, &height);
-        SDL_ShowCursor(SDL_DISABLE);
-        return true;
-    }
-
-    void destroyUiTextures() {
-        if (keyboardOverlayTexture_ != nullptr) {
-            SDL_DestroyTexture(keyboardOverlayTexture_);
-            keyboardOverlayTexture_ = nullptr;
-        }
-        }
-        }
-    }
-
-
-    static constexpr int kKeyboardGridColumns = 12;
-    static constexpr bool kKeyboardWrapAround = true;
-    void updateTitle() {}
-    void logRendererInfo() {}
-
-    std::string& activeBuffer() { return state_.textBuffer; }
-    const std::string& activeBuffer() const { return state_.textBuffer; }
-
-    void eraseActiveBufferChar() {
-        auto& buffer = activeBuffer();
-        if (state_.replaceBufferOnNextInput) {
-            buffer.clear();
-            state_.textCursor = 0;
-            state_.replaceBufferOnNextInput = false;
-        } else if (!buffer.empty() && state_.textCursor > 0) {
-            buffer.erase(static_cast<size_t>(state_.textCursor - 1), 1);
-            state_.textCursor--;
-        }
-    }
-
-    bool hasActiveKeyboard() const { return state_.inputMode == TubeState::InputMode::SearchText; }
-
-    void openKeyboard() {
-        state_.inputMode = TubeState::InputMode::SearchText;
-        state_.textBuffer.clear();
-        state_.textCursor = 0;
-        state_.keyboardSelectedIndex = 0;
-        uiDirty_ = true;
-    }
-
-    void closeKeyboard(bool commit) {
-        state_.inputMode = TubeState::InputMode::None;
-        if (commit && !state_.textBuffer.empty()) {
-            doSearch(state_.textBuffer);
-        }
-        uiDirty_ = true;
-    }
-
-    void doSearch(const std::string& query) {
-        state_.currentScreen = TubeState::Screen::Search;
-        search_results_.clear();
-        selected_result_idx_ = 0;
-        youtube_api_.search(query, [this](bool success, const std::vector<YouTubeVideo>& results) {
-            if (success) {
-                search_results_ = results;
-                uiDirty_ = true;
-            }
-        });
-    }
-
-    void playVideo(const YouTubeVideo& video) {
-        current_video_ = video;
-        youtube_api_.getStreamUrl(video.id, [this](bool success, const std::string& url) {
-            if (success) {
-                state_.currentScreen = TubeState::Screen::Playback;
-                mpv_player_.play(url);
-                uiDirty_ = true;
-            }
-        });
-    }
-
-    void activateKeyboardGo() {
-        if (!hasActiveKeyboard()) return;
-        closeKeyboard(true);
-    }
-
-    void activateSelectedKey() {
-        if (!hasActiveKeyboard()) return;
-        int width = 0, height = 0;
-        SDL_GetWindowSize(window_, &width, &height);
-        const auto layoutInfo = buildKeyboardOverlayLayout(width, height);
-        const KeyboardKeyGeometry* key = selectedKeyboardKey(layoutInfo);
-        if (key == nullptr) return;
-        const std::string value = key->value;
-
-        if (value == "__BACKSPACE__") eraseActiveBufferChar();
-        else if (value == "__MODE__") toggleKeyboardMode();
-        else if (value == "__LEFT__") moveActiveCursor(-1);
-        else if (value == "__RIGHT__") moveActiveCursor(1);
-        else if (value == "__ENTER__") activateKeyboardGo();
-        else if (value == "__CANCEL__") closeKeyboard(false);
-        else insertActiveText(value);
-        uiDirty_ = true;
-    }
-
+    // -----------------------------------------------------------------------
+    // Main frame rendering
+    // -----------------------------------------------------------------------
     void renderFrame() {
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
@@ -930,18 +831,18 @@ struct KeyboardOverlayLayout {
 
         if (state_.showUi || state_.inputMode != TubeState::InputMode::None) {
             if (state_.currentScreen == TubeState::Screen::Home) {
-                drawTextShadow(20, 20, "tubelite - Home", 3, {255, 255, 255, 255});
-                drawText(20, 60, "Press Y to search", 2, {200, 200, 200, 255});
+                drawTextShadow(20, 20, "tubelite", 3, {255, 255, 255, 255});
+                drawText(20, 60, "Press Y to search YouTube", 2, {200, 200, 200, 255});
             } else if (state_.currentScreen == TubeState::Screen::Search) {
                 drawTextShadow(20, 20, "Search Results", 3, {255, 255, 255, 255});
                 int y = 60;
-                int idx = 0;
-                for (const auto& video : search_results_) {
-                    SDL_Color color = (idx == selected_result_idx_) ? SDL_Color{255, 200, 100, 255} : SDL_Color{200, 200, 200, 255};
+                for (int idx = 0; idx < static_cast<int>(search_results_.size()); ++idx) {
+                    const auto& video = search_results_[static_cast<size_t>(idx)];
+                    SDL_Color color = (idx == selected_result_idx_)
+                        ? SDL_Color{255, 200, 100, 255} : SDL_Color{200, 200, 200, 255};
                     drawText(20, y, video.title.substr(0, 40), 2, color);
                     drawText(20, y + 16, video.author + " - " + video.duration_string, 1, {150, 150, 150, 255});
                     y += 40;
-                    idx++;
                 }
             } else if (state_.currentScreen == TubeState::Screen::Playback) {
                 if (state_.showUi) {
@@ -949,117 +850,174 @@ struct KeyboardOverlayLayout {
                 }
             }
         }
-        
         renderKeyboardOverlay(width, height);
         SDL_RenderPresent(renderer_);
     }
 
+    // -----------------------------------------------------------------------
+    // Event dispatch
+    // -----------------------------------------------------------------------
     void handleEvent(SDL_Event& event) {
-        if (event.type == SDL_QUIT) {
+        switch (event.type) {
+        case SDL_QUIT:
             state_.running = false;
-        } else if (event.type == SDL_KEYDOWN) {
+            break;
+        case SDL_KEYDOWN:
             handleKey(event.key.keysym.sym);
-        } else if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+            break;
+        case SDL_CONTROLLERDEVICEADDED:
+            openController();
+            break;
+        case SDL_CONTROLLERDEVICEREMOVED:
+            closeController();
+            openController();
+            break;
+        case SDL_CONTROLLERBUTTONDOWN:
             handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), true);
-        } else if (event.type == SDL_CONTROLLERBUTTONUP) {
+            break;
+        case SDL_CONTROLLERBUTTONUP:
             handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), false);
-        } else if (event.type == SDL_TEXTINPUT) {
+            break;
+        case SDL_CONTROLLERAXISMOTION:
+            handleControllerAxis(event.caxis);
+            break;
+        case SDL_TEXTINPUT:
             if (hasActiveKeyboard()) {
                 insertActiveText(transformTypedText(event.text.text));
                 uiDirty_ = true;
             }
+            break;
+        default:
+            break;
         }
     }
 
     void handleKey(SDL_Keycode key) {
         if (hasActiveKeyboard()) {
-            if (key == SDLK_RETURN) activateKeyboardGo();
+            if (key == SDLK_RETURN)    activateKeyboardGo();
             else if (key == SDLK_BACKSPACE) eraseActiveBufferChar();
-            else if (key == SDLK_LEFT) moveActiveCursor(-1);
-            else if (key == SDLK_RIGHT) moveActiveCursor(1);
-            else if (key == SDLK_ESCAPE) closeKeyboard(false);
+            else if (key == SDLK_LEFT)      moveActiveCursor(-1);
+            else if (key == SDLK_RIGHT)     moveActiveCursor(1);
+            else if (key == SDLK_UP)        moveKeyboardSelection(0, -1);
+            else if (key == SDLK_DOWN)      moveKeyboardSelection(0, 1);
+            else if (key == SDLK_ESCAPE)    closeKeyboard(false);
             return;
         }
         switch (key) {
         case SDLK_q:
-        case SDLK_ESCAPE: state_.running = false; break;
-        case SDLK_y: openKeyboard(); break;
+        case SDLK_ESCAPE:
+            state_.running = false;
+            break;
+        case SDLK_y:
+            openKeyboard();
+            break;
         case SDLK_UP:
             if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) {
-                selected_result_idx_--; uiDirty_ = true;
+                selected_result_idx_--;
+                uiDirty_ = true;
             }
             break;
         case SDLK_DOWN:
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) {
-                selected_result_idx_++; uiDirty_ = true;
+            if (state_.currentScreen == TubeState::Screen::Search &&
+                selected_result_idx_ < static_cast<int>(search_results_.size()) - 1) {
+                selected_result_idx_++;
+                uiDirty_ = true;
             }
             break;
         case SDLK_RETURN:
             if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
-                playVideo(search_results_[selected_result_idx_]);
+                playVideo(search_results_[static_cast<size_t>(selected_result_idx_)]);
             }
+            break;
+        default:
             break;
         }
     }
 
     void handleControllerButton(SDL_GameControllerButton button, bool down) {
-        if (button == SDL_CONTROLLER_BUTTON_START && SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
+        // Exit combo: Start + Select
+        if (button == SDL_CONTROLLER_BUTTON_START &&
+            controller_ != nullptr &&
+            SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
             state_.running = false;
             return;
         }
-        
-        if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) state_.dpadUpPressed = down;
-        if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) state_.dpadDownPressed = down;
-        if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) state_.dpadLeftPressed = down;
+
+        // Track D-pad state
+        if (button == SDL_CONTROLLER_BUTTON_DPAD_UP)    state_.dpadUpPressed = down;
+        if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)  state_.dpadDownPressed = down;
+        if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT)  state_.dpadLeftPressed = down;
         if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) state_.dpadRightPressed = down;
 
-        if (!down) return;
-        
+        if (!down) return; // Only handle press, not release
+
+        // Keyboard-specific controls
         if (hasActiveKeyboard()) {
-            if (button == SDL_CONTROLLER_BUTTON_A) activateSelectedKey();
-            else if (button == SDL_CONTROLLER_BUTTON_X) eraseActiveBufferChar();
-            else if (button == SDL_CONTROLLER_BUTTON_Y) insertActiveText(" ");
+            if (button == SDL_CONTROLLER_BUTTON_A)             activateSelectedKey();
+            else if (button == SDL_CONTROLLER_BUTTON_X)        eraseActiveBufferChar();
+            else if (button == SDL_CONTROLLER_BUTTON_Y)        insertActiveText(" ");
             else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) toggleKeyboardMode();
-            else if (button == SDL_CONTROLLER_BUTTON_START) activateKeyboardGo();
-            else if (button == SDL_CONTROLLER_BUTTON_B) closeKeyboard(false);
+            else if (button == SDL_CONTROLLER_BUTTON_START)    activateKeyboardGo();
+            else if (button == SDL_CONTROLLER_BUTTON_B)        closeKeyboard(false);
             return;
         }
 
-        if (button == SDL_CONTROLLER_BUTTON_Y) openKeyboard();
-        else if (button == SDL_CONTROLLER_BUTTON_A) {
+        // Non-keyboard controls
+        if (button == SDL_CONTROLLER_BUTTON_Y) {
+            openKeyboard();
+        } else if (button == SDL_CONTROLLER_BUTTON_A) {
             if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
-                playVideo(search_results_[selected_result_idx_]);
+                playVideo(search_results_[static_cast<size_t>(selected_result_idx_)]);
             } else if (state_.currentScreen == TubeState::Screen::Playback) {
-                if (mpv_player_.isPlaying()) mpv_player_.pause(); else mpv_player_.resume();
+                if (mpv_player_.isPlaying()) mpv_player_.pause();
+                else mpv_player_.resume();
             }
-        }
-        else if (button == SDL_CONTROLLER_BUTTON_B) {
+        } else if (button == SDL_CONTROLLER_BUTTON_B) {
             if (state_.currentScreen == TubeState::Screen::Playback) {
                 mpv_player_.stop();
                 state_.currentScreen = TubeState::Screen::Home;
             } else if (state_.currentScreen == TubeState::Screen::Search) {
                 state_.currentScreen = TubeState::Screen::Home;
             }
-        }
-        else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) selected_result_idx_--;
+        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0)
+                selected_result_idx_--;
         } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-            if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) selected_result_idx_++;
+            if (state_.currentScreen == TubeState::Screen::Search &&
+                selected_result_idx_ < static_cast<int>(search_results_.size()) - 1)
+                selected_result_idx_++;
+        } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+            state_.showUi = !state_.showUi;
+            uiDirty_ = true;
         }
     }
 
-private:
+    void handleControllerAxis(const SDL_ControllerAxisEvent& caxis) {
+        float normalized = static_cast<float>(caxis.value) / 32767.0f;
+        if (std::abs(caxis.value) < 8000) normalized = 0.0f;
+        switch (caxis.axis) {
+        case SDL_CONTROLLER_AXIS_LEFTX:       state_.leftStickX = normalized; break;
+        case SDL_CONTROLLER_AXIS_LEFTY:       state_.leftStickY = normalized; break;
+        case SDL_CONTROLLER_AXIS_RIGHTX:      state_.rightStickX = normalized; break;
+        case SDL_CONTROLLER_AXIS_RIGHTY:      state_.rightStickY = normalized; break;
+        case SDL_CONTROLLER_AXIS_TRIGGERLEFT: state_.leftTrigger = normalized; break;
+        case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: state_.rightTrigger = normalized; break;
+        default: break;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Member data
+    // -----------------------------------------------------------------------
     SDL_Window* window_{nullptr};
     SDL_Renderer* renderer_{nullptr};
     SDL_GameController* controller_{nullptr};
     SDL_Joystick* joystick_{nullptr};
+
     SDL_Texture* keyboardOverlayTexture_{nullptr};
     int keyboardOverlayWidth_{0};
     int keyboardOverlayHeight_{0};
     bool uiDirty_{true};
-    bool forceVsync_{false};
-    bool maxPerformance_{false};
-    uint32_t preferredTextureFormat_{SDL_PIXELFORMAT_UNKNOWN};
 
     TubeState state_;
     MpvPlayer mpv_player_;
@@ -1082,11 +1040,12 @@ private:
     bool lastKeyboardCursorVisible_{true};
 };
 
-int main(int argc, char* argv[]) {
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+int main(int /*argc*/, char* /*argv*/[]) {
     App app;
-    if (!app.initialize()) {
-        return 1;
-    }
+    if (!app.initialize()) return 1;
     app.run();
     return 0;
 }
