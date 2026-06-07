@@ -35,7 +35,7 @@ void YouTubeAPI::search(const std::string& query, std::function<void(bool succes
         try {
             // Use yt-dlp to search. We ask for JSON output.
             // "ytsearch10:query" limits to 10 results.
-            std::string cmd = "yt-dlp --dump-json \"ytsearch15:" + query + "\" 2>/dev/null";
+            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 --dump-json \"ytsearch15:" + query + "\" 2>/dev/null";
             std::string output = executeCommand(cmd);
             
             std::vector<YouTubeVideo> results;
@@ -94,7 +94,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, std::function<void(bo
     std::thread([this, video_id, callback]() {
         try {
             // Get best format that is <= 360p, or worst if not available
-            std::string cmd = "yt-dlp -f \"best[height<=360]/worst\" --get-url \"https://www.youtube.com/watch?v=" + video_id + "\" 2>/dev/null";
+            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 -f \"best[height<=360]/worst\" --get-url \"https://www.youtube.com/watch?v=" + video_id + "\" 2>/dev/null";
             std::string url = executeCommand(cmd);
             
             // Trim whitespace
