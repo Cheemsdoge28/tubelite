@@ -98,7 +98,7 @@ $(BUILD_TARGET): $(SRC) | $(BUILD_DIR) check_compiler
 	@echo "  CXX: $(CXX)"
 	@echo "  SDL_CFLAGS: $(SDL_CFLAGS)"
 	@echo "  SDL_LIBS: $(SDL_LIBS)"
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) $(LDFLAGS) $< -o $@ $(SDL_LIBS)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) $(LDFLAGS) $(SRC) -o $@ $(SDL_LIBS)
 	@echo "Build complete: $@"
 	@ls -lh $@
 
