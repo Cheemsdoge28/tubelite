@@ -443,8 +443,6 @@ private:
         triggerCursorStartedAt_ = {}; triggerCursorNextAt_ = {};
     }
 
-    static int keyCenterX(const KeyboardKeyGeometry& key) { return key.bounds.x + key.bounds.w / 2; }
-    static int keyCenterY(const KeyboardKeyGeometry& key) { return key.bounds.y + key.bounds.h / 2; }
 
     int repeatIntervalMs(std::chrono::steady_clock::time_point startedAt, int baseMs, int minMs) const {
         if (startedAt == std::chrono::steady_clock::time_point{}) return baseMs;
@@ -453,21 +451,6 @@ private:
         return std::max(minMs, baseMs - static_cast<int>(heldMs / 250) * 18);
     }
 
-    int resolveWrappedKeyboardSelection(const KeyboardOverlayLayout& layoutInfo, int directionX, int directionY) const {
-        if (!kKeyboardWrapAround || layoutInfo.keys.empty()) return -1;
-        const KeyboardKeyGeometry* current = selectedKeyboardKey(layoutInfo);
-        if (current == nullptr) return 0;
-        int bestIndex = -1;
-        int bestScore = std::numeric_limits<int>::max();
-        for (const auto& candidate : layoutInfo.keys) {
-            if (candidate.index == current->index) continue;
-            int score = std::numeric_limits<int>::max();
-            if (directionX > 0) score = candidate.bounds.x * 10 + std::abs(keyCenterY(candidate) - keyCenterY(*current));
-            else if (directionX < 0) score = (layoutInfo.panel.x + layoutInfo.panel.w - candidate.bounds.x) * 10 + std::abs(keyCenterY(candidate) - keyCenterY(*current));
-            else if (directionY > 0) score = candidate.bounds.y * 10 + std::abs(keyCenterX(candidate) - keyCenterX(*current));
-            else if (directionY < 0) score = (layoutInfo.panel.y + layoutInfo.panel.h - candidate.bounds.y) * 10 + std::abs(keyCenterX(candidate) - keyCenterX(*current));
-            if (score < bestScore) { bestScore = score; bestIndex = candidate.index; }
-        }
         return bestIndex;
     }
 
@@ -839,7 +822,6 @@ private:
                 SDL_RenderClear(renderer_);
                 
                 SDL_Color textColor{150, 160, 170, 255};
-                SDL_Color accent{255, 100, 100, 255};
                 
                 std::string shortcuts = "A/ENTER: Select | B/ESC: Back/Close | Y: Search | START+SELECT: Quit";
                 if (hasActiveKeyboard()) {
