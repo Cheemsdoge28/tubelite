@@ -1,6 +1,7 @@
 #include "mpv_player.hpp"
 #include <iostream>
 #include <SDL2/SDL.h>
+#include <cmath>
 
 MpvPlayer::MpvPlayer() {
 }
@@ -113,13 +114,37 @@ void MpvPlayer::setMute(bool mute) {
 
 void MpvPlayer::setGeometry(int x, int y, int w, int h) {
     if (!mpv_) return;
+    
+    // Standard window geometry
     std::string geom = std::to_string(w) + "x" + std::to_string(h) + "+" + std::to_string(x) + "+" + std::to_string(y);
     mpv_set_property_string(mpv_, "geometry", geom.c_str());
+
+    // DRM/KMS scaling workaround using video-zoom and video-pan
+    int screenW = 640;
+    int screenH = 480;
+    
+    double scale = static_cast<double>(w) / screenW;
+    double zoom = std::log2(scale);
+    
+    double centerX = x + w / 2.0;
+    double centerY = y + h / 2.0;
+    double screenCenterX = screenW / 2.0;
+    double screenCenterY = screenH / 2.0;
+    
+    double panX = (centerX - screenCenterX) / w;
+    double panY = (centerY - screenCenterY) / h;
+    
+    mpv_set_property_string(mpv_, "video-zoom", std::to_string(zoom).c_str());
+    mpv_set_property_string(mpv_, "video-pan-x", std::to_string(panX).c_str());
+    mpv_set_property_string(mpv_, "video-pan-y", std::to_string(panY).c_str());
 }
 
 void MpvPlayer::resetGeometry() {
     if (!mpv_) return;
     mpv_set_property_string(mpv_, "geometry", "100%x100%+0+0");
+    mpv_set_property_string(mpv_, "video-zoom", "0");
+    mpv_set_property_string(mpv_, "video-pan-x", "0");
+    mpv_set_property_string(mpv_, "video-pan-y", "0");
 }
 
 void MpvPlayer::setSpeed(double speed) {

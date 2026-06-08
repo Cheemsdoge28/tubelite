@@ -986,7 +986,7 @@ void App::loadMoreSearchResults() {
 }
 
 void App::updateHoverPreviews() {
-    if (state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) {
+    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo || state_.isSearching) {
         stopBrowsePreviewState();
         return;
     }
