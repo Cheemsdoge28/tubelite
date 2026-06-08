@@ -395,12 +395,7 @@ void App::renderFrame() {
     bool shouldPresent = (state_.currentScreen != TubeState::Screen::Playback) || state_.isLoadingVideo || uiDirty_;
     if (!shouldPresent) return;
 
-    if (state_.currentScreen == TubeState::Screen::Playback && !state_.isLoadingVideo) {
-        uiDirty_ = false;
-        return;
-    }
-
-    if (state_.currentScreen == TubeState::Screen::Playback && state_.isLoadingVideo) {
+    if (state_.currentScreen == TubeState::Screen::Playback) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
         SDL_RenderClear(renderer_);
@@ -424,11 +419,6 @@ void App::renderFrame() {
         } else {
             home_grid_->render(renderer_, 0.0f, 0.0f);
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
-            if (state_.isSearching) {
-                float time = SDL_GetTicks() / 1000.0f;
-                drawSpinner(renderer_, width - 30, 30, 15, time);
-                uiDirty_ = true;
-            }
         }
         auto focusedCard = focus_manager_.getFocusedCard();
         std::string subtitle = focusedCard ? focusedCard->video.title : "";
@@ -445,18 +435,23 @@ void App::renderFrame() {
         } else {
             search_grid_->render(renderer_, 0.0f, 0.0f);
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
-            if (state_.isSearching) {
-                float time = SDL_GetTicks() / 1000.0f;
-                drawSpinner(renderer_, width - 30, 30, 15, time);
-                uiDirty_ = true;
-            }
         }
         std::string subtitle = current_search_query_.empty() ? "Controller-first search and fast paging" : current_search_query_;
         renderBrowseHeader(width, height, "Search", subtitle, scrollY, true);
     }
 
+    // Render header-level spinner if searching and grid is not empty
+    if (state_.isSearching && activeGrid() && !activeGrid()->cards.empty()) {
+        const int expandedHeight = 84;
+        const int collapsedHeight = 58;
+        const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
+        float time = SDL_GetTicks() / 1000.0f;
+        drawSpinner(renderer_, width - 30, headerHeight / 2, 10, time);
+        uiDirty_ = true;
+    }
+
     // Bottom tooltips (Status Bar)
-    if (state_.showUi && state_.currentScreen != TubeState::Screen::Playback) {
+    if (state_.showUi) {
         status_.render(renderer_, state_, width, height, uiDirty_);
     }
     
@@ -473,8 +468,8 @@ void App::renderFrame() {
         uiDirty_ = true;
     }
     
-    // Draw custom volume/speed overlays if not in playback
-    if (state_.currentScreen != TubeState::Screen::Playback) {
+    // Draw custom volume/speed overlays
+    {
         auto now = std::chrono::steady_clock::now();
         bool volumeActive = (now < volume_overlay_timeout_);
         bool speedActive = (now < speed_overlay_timeout_);
