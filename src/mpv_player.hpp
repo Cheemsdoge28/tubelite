@@ -1,8 +1,8 @@
 #pragma once
-
 #include <string>
 #include <functional>
 #include <mpv/client.h>
+#include <mpv/render_gl.h>
 
 struct SDL_Window;
 struct SDL_Renderer;
@@ -33,7 +33,8 @@ public:
     void showProgress();
     void cycleStatsOverlay();
 
-    void update(); // Pump events
+    void render(int winWidth, int winHeight);
+    bool update(); // Pump events, returns true if a new frame was loaded
     
     bool isPlaying() const { return is_playing_; }
     double getPlaybackTime() const { return playback_time_; }
@@ -41,10 +42,17 @@ public:
 
 private:
     mpv_handle* mpv_ = nullptr;
+    mpv_render_context* mpv_gl_ = nullptr;
     bool is_playing_ = false;
     double playback_time_ = 0.0;
     double duration_ = 0.0;
     
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
+
+    int target_x_ = 0;
+    int target_y_ = 0;
+    int target_w_ = 0;
+    int target_h_ = 0;
+    bool has_custom_geometry_ = false;
 };

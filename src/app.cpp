@@ -3,73 +3,6 @@
 #include "stb_image.h"
 #include <iostream>
 #include <algorithm>
-#if defined(SDL_VIDEO_DRIVER_X11)
-#undef SDL_VIDEO_DRIVER_X11
-#endif
-#if defined(SDL_VIDEO_DRIVER_WAYLAND)
-#undef SDL_VIDEO_DRIVER_WAYLAND
-#endif
-#include <SDL2/SDL_syswm.h>
-#include <libdrm/xf86drm.h>
-#include <libdrm/xf86drmMode.h>
-
-static void setupDrmPlaneszpos(int drm_fd) {
-    if (drm_fd < 0) return;
-    
-    drmModePlaneRes* plane_res = drmModeGetPlaneResources(drm_fd);
-    if (!plane_res) {
-        std::cerr << "[DRM] Failed to get plane resources" << std::endl;
-        return;
-    }
-    
-    for (uint32_t i = 0; i < plane_res->count_planes; ++i) {
-        uint32_t plane_id = plane_res->planes[i];
-        drmModePlane* plane = drmModeGetPlane(drm_fd, plane_id);
-        if (!plane) continue;
-        
-        drmModeObjectProperties* props = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
-        if (props) {
-            uint32_t zpos_prop_id = 0;
-            uint32_t type_prop_id = 0;
-            uint64_t type_val = 0;
-            
-            for (uint32_t j = 0; j < props->count_props; ++j) {
-                drmModePropertyRes* prop = drmModeGetProperty(drm_fd, props->props[j]);
-                if (prop) {
-                    std::string name = prop->name;
-                    if (name == "zpos") {
-                        zpos_prop_id = prop->prop_id;
-                    } else if (name == "type") {
-                        type_prop_id = prop->prop_id;
-                        type_val = props->prop_values[j];
-                    }
-                    drmModeFreeProperty(prop);
-                }
-            }
-            
-            if (zpos_prop_id != 0) {
-                uint64_t target_zpos = 0;
-                if (type_val == 1) { // Primary (SDL)
-                    target_zpos = 2; 
-                } else if (type_val == 0) { // Overlay (MPV)
-                    target_zpos = 1;
-                }
-                
-                if (type_val == 1 || type_val == 0) {
-                    int ret = drmModeObjectSetParameter(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE, zpos_prop_id, target_zpos);
-                    if (ret == 0) {
-                        std::cout << "[DRM] Set plane " << plane_id << " (type " << type_val << ") zpos to " << target_zpos << std::endl;
-                    } else {
-                        std::cerr << "[DRM] Failed to set plane " << plane_id << " zpos: " << ret << std::endl;
-                    }
-                }
-            }
-            drmModeFreeObjectProperties(props);
-        }
-        drmModeFreePlane(plane);
-    }
-    drmModeFreePlaneResources(plane_res);
-}
 
 // static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
 static void logError(const std::string& msg) { std::cerr << "[ERROR] " << msg << std::endl; }
@@ -95,14 +28,7 @@ bool App::initialize() {
     SDL_GameControllerEventState(SDL_ENABLE);
     if (!createWindow()) return false;
     
-    SDL_SysWMinfo info;
-    SDL_VERSION(&info.version);
-    if (SDL_GetWindowWMInfo(window_, &info)) {
-        if (info.subsystem == SDL_SYSWM_KMSDRM) {
-            int drm_fd = info.info.kmsdrm.drm_fd;
-            setupDrmPlaneszpos(drm_fd);
-        }
-    }
+
     
     if (!initFonts()) {
         logError("Failed to initialize TTF fonts, falling back to pixel font");
@@ -140,7 +66,9 @@ void App::run() {
         updateSticks();
         updateKeyboardCursorBlinkState();
         updateHoverPreviews();
-        mpv_player_.update();
+        if (mpv_player_.update()) {
+            uiDirty_ = true;
+        }
         focus_manager_.update(16.0f / 1000.0f); // dt for 60fps
         renderFrame();
         SDL_Delay(16);
@@ -180,9 +108,15 @@ bool App::createWindow() {
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "1");
     SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     window_ = SDL_CreateWindow("tubelite", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               640, 480, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
+                               640, 480, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
     if (window_ == nullptr) return false;
 
     renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
@@ -502,12 +436,18 @@ void App::renderFrame() {
 
     if (state_.currentScreen == TubeState::Screen::Playback) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
+        SDL_RenderFlush(renderer_);
+        mpv_player_.render(width, height);
     } else {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // #0f0f0f background
         SDL_RenderClear(renderer_);
+        if (is_playing_preview_) {
+            SDL_RenderFlush(renderer_);
+            mpv_player_.render(width, height);
+        }
     }
 
     auto currentGrid = activeGrid();

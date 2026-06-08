@@ -2,6 +2,7 @@
 #include <iostream>
 #include <SDL2/SDL.h>
 #include <cmath>
+#include <GLES2/gl2.h>
 
 MpvPlayer::MpvPlayer() {
 }
@@ -23,9 +24,6 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     // Optimize for weak hardware
     mpv_set_option_string(mpv_, "hwdec", "auto");
     mpv_set_option_string(mpv_, "profile", "fast");
-    mpv_set_option_string(mpv_, "vo", "drm,gpu,sdl,x11");
-    mpv_set_option_string(mpv_, "drm-draw-plane", "overlay");
-    mpv_set_option_string(mpv_, "drm-drmprime-video-plane", "overlay");
     mpv_set_option_string(mpv_, "ao", "alsa");
     mpv_set_option_string(mpv_, "keepaspect", "yes");
     mpv_set_option_string(mpv_, "osc", "no");
@@ -41,6 +39,27 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
         return false;
     }
 
+    // Initialize mpv render context for GLES2
+    mpv_opengl_init_params gl_init_params{
+        [](void*, const char* name) -> void* {
+            return (void*)SDL_GL_GetProcAddress(name);
+        },
+        nullptr
+    };
+
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_API_TYPE, (void*)MPV_RENDER_API_TYPE_OPENGL},
+        {MPV_RENDER_PARAM_API_INIT_PARAMS, &gl_init_params},
+        {MPV_RENDER_PARAM_ADVANCED_CONTROL, (void*)(intptr_t)1},
+        {MPV_RENDER_PARAM_INVALID, nullptr}
+    };
+
+    int err = mpv_render_context_create(&mpv_gl_, mpv_, params);
+    if (err < 0) {
+        std::cerr << "Failed to create mpv GL render context: " << mpv_error_string(err) << std::endl;
+        return false;
+    }
+
     mpv_observe_property(mpv_, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "pause", MPV_FORMAT_FLAG);
@@ -49,6 +68,10 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
 }
 
 void MpvPlayer::shutdown() {
+    if (mpv_gl_) {
+        mpv_render_context_free(mpv_gl_);
+        mpv_gl_ = nullptr;
+    }
     if (mpv_) {
         mpv_terminate_destroy(mpv_);
         mpv_ = nullptr;
@@ -115,39 +138,19 @@ void MpvPlayer::setMute(bool mute) {
 }
 
 void MpvPlayer::setGeometry(int x, int y, int w, int h) {
-    if (!mpv_) return;
-    
-    // Standard window geometry
-    std::string geom = std::to_string(w) + "x" + std::to_string(h) + "+" + std::to_string(x) + "+" + std::to_string(y);
-    mpv_set_property_string(mpv_, "geometry", geom.c_str());
-
-    // DRM/KMS scaling workaround using video-zoom and video-pan
-    int screenW = 640;
-    int screenH = 480;
-    
-    double scale = static_cast<double>(w) / screenW;
-    double zoom = std::log2(scale);
-    
-    double centerX = x + w / 2.0;
-    double centerY = y + h / 2.0;
-    double screenCenterX = screenW / 2.0;
-    double screenCenterY = screenH / 2.0;
-    
-    double panX = (centerX - screenCenterX) / w;
-    double panY = (centerY - screenCenterY) / h;
-    
-    mpv_set_property(mpv_, "video-zoom", MPV_FORMAT_DOUBLE, &zoom);
-    mpv_set_property(mpv_, "video-pan-x", MPV_FORMAT_DOUBLE, &panX);
-    mpv_set_property(mpv_, "video-pan-y", MPV_FORMAT_DOUBLE, &panY);
+    target_x_ = x;
+    target_y_ = y;
+    target_w_ = w;
+    target_h_ = h;
+    has_custom_geometry_ = true;
 }
 
 void MpvPlayer::resetGeometry() {
-    if (!mpv_) return;
-    mpv_set_property_string(mpv_, "geometry", "100%x100%+0+0");
-    double zero = 0.0;
-    mpv_set_property(mpv_, "video-zoom", MPV_FORMAT_DOUBLE, &zero);
-    mpv_set_property(mpv_, "video-pan-x", MPV_FORMAT_DOUBLE, &zero);
-    mpv_set_property(mpv_, "video-pan-y", MPV_FORMAT_DOUBLE, &zero);
+    target_x_ = 0;
+    target_y_ = 0;
+    target_w_ = 0;
+    target_h_ = 0;
+    has_custom_geometry_ = false;
 }
 
 void MpvPlayer::setSpeed(double speed) {
@@ -189,8 +192,15 @@ void MpvPlayer::cycleStatsOverlay() {
     mpv_command(mpv_, cmd);
 }
 
-void MpvPlayer::update() {
-    if (!mpv_) return;
+bool MpvPlayer::update() {
+    if (!mpv_) return false;
+    bool needs_redraw = false;
+    if (mpv_gl_) {
+        uint64_t flags = mpv_render_context_update(mpv_gl_);
+        if (flags & MPV_RENDER_UPDATE_FRAME) {
+            needs_redraw = true;
+        }
+    }
     while (mpv_event* event = mpv_wait_event(mpv_, 0)) {
         if (event->event_id == MPV_EVENT_NONE) {
             break;
@@ -223,4 +233,46 @@ void MpvPlayer::update() {
             }
         }
     }
+    return needs_redraw;
+}
+
+void MpvPlayer::render(int winWidth, int winHeight) {
+    if (!mpv_gl_) return;
+
+    int rx = 0, ry = 0, rw = winWidth, rh = winHeight;
+    if (has_custom_geometry_) {
+        rx = target_x_;
+        ry = target_y_;
+        rw = target_w_;
+        rh = target_h_;
+    }
+
+    // Standard OpenGL viewport has y=0 at bottom.
+    // Flip y coordinate from SDL's top-left to GL's bottom-left.
+    int gl_x = rx;
+    int gl_y = winHeight - (ry + rh);
+    int gl_w = rw;
+    int gl_h = rh;
+
+    glViewport(gl_x, gl_y, gl_w, gl_h);
+    glScissor(gl_x, gl_y, gl_w, gl_h);
+    glEnable(GL_SCISSOR_TEST);
+
+    mpv_opengl_fbo fbo{
+        .fbo = 0,
+        .w = winWidth,
+        .h = winHeight,
+        .internal_format = 0
+    };
+
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
+        {MPV_RENDER_PARAM_INVALID, nullptr}
+    };
+
+    mpv_render_context_render(mpv_gl_, params);
+
+    // Reset standard GLES states
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, winWidth, winHeight);
 }

@@ -44,10 +44,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
     
     if (is_previewing) {
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-        SDL_RenderFillRect(renderer, &thumbRect);
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        // Do nothing: GLES video frame was already drawn to this region in the first pass
     } else {
         if (thumb) {
             int texW = 0, texH = 0;
