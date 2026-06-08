@@ -51,22 +51,21 @@ else
     # Linux native (builds directly on the R36S or any Linux host)
     CXX ?= g++
     PKG_CONFIG ?= pkg-config
-    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf glesv2 2>/dev/null)
-    SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 SDL2_ttf glesv2 2>/dev/null)
+    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf 2>/dev/null)
+    SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 SDL2_ttf 2>/dev/null)
 
     ifeq ($(strip $(SDL_CFLAGS)),)
         SDL_CFLAGS := -I/usr/include/SDL2
     endif
 
     ifeq ($(strip $(SDL_LIBS)),)
-        SDL_LIBS := -lSDL2 -lSDL2_ttf -lGLESv2
+        SDL_LIBS := -lSDL2 -lSDL2_ttf
     endif
 
-    # Add -lrt for POSIX shared memory (shm_open/mmap)
-    SDL_LIBS += -lrt -lGLESv2
+    # Add -lrt for POSIX timers/shared memory
+    SDL_LIBS += -lrt
 
     # When building natively on ARM, tune for the actual host CPU.
-    # -march=native enables NEON SIMD for the memcpy-heavy SHM framebuffer path.
     UNAME_M_NATIVE := $(shell uname -m)
     ifeq ($(UNAME_M_NATIVE),aarch64)
         # RK3326 is Cortex-A35. We use -mcpu=cortex-a35 for best optimization.

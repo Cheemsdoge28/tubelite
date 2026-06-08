@@ -2,7 +2,6 @@
 #include <string>
 #include <functional>
 #include <mpv/client.h>
-#include <mpv/render_gl.h>
 
 struct SDL_Window;
 struct SDL_Renderer;
@@ -42,11 +41,10 @@ public:
 
 private:
     mpv_handle* mpv_ = nullptr;
-    mpv_render_context* mpv_gl_ = nullptr;
     bool is_playing_ = false;
     double playback_time_ = 0.0;
     double duration_ = 0.0;
-    
+
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
 

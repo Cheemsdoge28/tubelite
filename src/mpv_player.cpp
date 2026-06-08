@@ -1,8 +1,8 @@
 #include "mpv_player.hpp"
 #include <iostream>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 #include <cmath>
-#include <GLES2/gl2.h>
 
 MpvPlayer::MpvPlayer() {
 }
@@ -14,14 +14,14 @@ MpvPlayer::~MpvPlayer() {
 bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     window_ = window;
     renderer_ = renderer;
-    
+
     mpv_ = mpv_create();
     if (!mpv_) {
         std::cerr << "Failed to create mpv context" << std::endl;
         return false;
     }
 
-    // Optimize for weak hardware
+    // Optimize for weak ARM hardware (RK3326 / Cortex-A35)
     mpv_set_option_string(mpv_, "hwdec", "auto");
     mpv_set_option_string(mpv_, "profile", "fast");
     mpv_set_option_string(mpv_, "ao", "alsa");
@@ -34,29 +34,13 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "cache", "yes");
     mpv_set_option_string(mpv_, "demuxer-max-bytes", "16MiB");
 
+    // Use DRM/KMS video output — most stable on ArkOS/Mali hardware.
+    // mpv manages its own video plane; SDL renders the 2D UI overlay on top.
+    mpv_set_option_string(mpv_, "vo", "drm");
+    mpv_set_option_string(mpv_, "drm-draw-surface-size", "640x480");
+
     if (mpv_initialize(mpv_) < 0) {
         std::cerr << "Failed to initialize mpv" << std::endl;
-        return false;
-    }
-
-    // Initialize mpv render context for GLES2
-    mpv_opengl_init_params gl_init_params;
-    gl_init_params.get_proc_address = [](void*, const char* name) -> void* {
-        return (void*)SDL_GL_GetProcAddress(name);
-    };
-    gl_init_params.get_proc_address_ctx = nullptr;
-    gl_init_params.extra_exts = nullptr;
-
-    mpv_render_param params[] = {
-        {MPV_RENDER_PARAM_API_TYPE, (void*)MPV_RENDER_API_TYPE_OPENGL},
-        {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},
-        {MPV_RENDER_PARAM_ADVANCED_CONTROL, (void*)(intptr_t)1},
-        {MPV_RENDER_PARAM_INVALID, nullptr}
-    };
-
-    int err = mpv_render_context_create(&mpv_gl_, mpv_, params);
-    if (err < 0) {
-        std::cerr << "Failed to create mpv GL render context: " << mpv_error_string(err) << std::endl;
         return false;
     }
 
@@ -68,10 +52,6 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
 }
 
 void MpvPlayer::shutdown() {
-    if (mpv_gl_) {
-        mpv_render_context_free(mpv_gl_);
-        mpv_gl_ = nullptr;
-    }
     if (mpv_) {
         mpv_terminate_destroy(mpv_);
         mpv_ = nullptr;
@@ -195,12 +175,6 @@ void MpvPlayer::cycleStatsOverlay() {
 bool MpvPlayer::update() {
     if (!mpv_) return false;
     bool needs_redraw = false;
-    if (mpv_gl_) {
-        uint64_t flags = mpv_render_context_update(mpv_gl_);
-        if (flags & MPV_RENDER_UPDATE_FRAME) {
-            needs_redraw = true;
-        }
-    }
     while (mpv_event* event = mpv_wait_event(mpv_, 0)) {
         if (event->event_id == MPV_EVENT_NONE) {
             break;
@@ -215,6 +189,7 @@ bool MpvPlayer::update() {
             if (name == "time-pos") {
                 if (prop->format == MPV_FORMAT_DOUBLE && prop->data) {
                     playback_time_ = *static_cast<double*>(prop->data);
+                    needs_redraw = true;
                 } else {
                     playback_time_ = 0.0;
                 }
@@ -236,42 +211,8 @@ bool MpvPlayer::update() {
     return needs_redraw;
 }
 
-void MpvPlayer::render(int winWidth, int winHeight) {
-    if (!mpv_gl_) return;
-
-    int rx = 0, ry = 0, rw = winWidth, rh = winHeight;
-    if (has_custom_geometry_) {
-        rx = target_x_;
-        ry = target_y_;
-        rw = target_w_;
-        rh = target_h_;
-    }
-
-    // Standard OpenGL viewport has y=0 at bottom.
-    // Flip y coordinate from SDL's top-left to GL's bottom-left.
-    int gl_x = rx;
-    int gl_y = winHeight - (ry + rh);
-    int gl_w = rw;
-    int gl_h = rh;
-
-    glViewport(gl_x, gl_y, gl_w, gl_h);
-    glScissor(gl_x, gl_y, gl_w, gl_h);
-    glEnable(GL_SCISSOR_TEST);
-
-    mpv_opengl_fbo fbo;
-    fbo.fbo = 0;
-    fbo.w = winWidth;
-    fbo.h = winHeight;
-    fbo.internal_format = 0;
-
-    mpv_render_param params[] = {
-        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
-        {MPV_RENDER_PARAM_INVALID, nullptr}
-    };
-
-    mpv_render_context_render(mpv_gl_, params);
-
-    // Reset standard GLES states
-    glDisable(GL_SCISSOR_TEST);
-    glViewport(0, 0, winWidth, winHeight);
+void MpvPlayer::render(int /*winWidth*/, int /*winHeight*/) {
+    // Video rendering is handled natively by mpv's vo=drm.
+    // SDL_Renderer handles 2D UI overlays only.
+    // No explicit render call needed here.
 }
