@@ -20,19 +20,20 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);
             SDL_SetRenderTarget(renderer, texture_);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer, 12, 14, 18, 255);
+            SDL_SetRenderDrawColor(renderer, 11, 11, 11, 255); // Modern YouTube dark mode black (#0b0b0b)
             SDL_RenderClear(renderer);
             
-            SDL_Color textColor{150, 160, 170, 255};
+            SDL_Color textColor{140, 140, 140, 255}; // Modern slate grey text
             
-            std::string shortcuts = "A: Select | B: Back/Close | Y: Search | START+SELECT: Quit";
+            std::string shortcuts = "A:Play B:Back Y:Search X:" + std::to_string(state.maxQualityHeight) + "p R3:Reload R1:UI";
             if (state.inputMode == TubeState::InputMode::SearchText) {
-                shortcuts = "A: Type | B: Close KB | L1: Mode | START: Go";
+                shortcuts = "A:Type B:Close L1:Caps/Sym START:Go";
             } else if (state.currentScreen == TubeState::Screen::Playback) {
-                shortcuts = "A: Pause/Play | B: Stop | R1: Toggle UI | START+SELECT: Quit";
+                shortcuts = "A:Pause B:Stop Y:Subs L/R:Seek R1:UI";
             }
             
-            drawTextShadow(renderer, 20, 16, shortcuts, 1, textColor);
+            // Centered vertically (statusBarHeight 48 - scale 2 font height 14) / 2 = 17
+            drawTextShadow(renderer, 20, 17, shortcuts, 2, textColor);
             
             SDL_SetRenderTarget(renderer, prev);
         }

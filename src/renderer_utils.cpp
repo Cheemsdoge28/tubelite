@@ -103,14 +103,20 @@ void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& tex
 }
 
 void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time) {
-    int numDots = 8;
-    for (int i = 0; i < numDots; ++i) {
-        float angle = i * (2.0f * 3.1415926535f / numDots);
-        float dotX = x + std::cos(angle) * radius;
-        float dotY = y + std::sin(angle) * radius;
+    struct Point2D { float x; float y; };
+    static const Point2D directions[8] = {
+        {1.0f, 0.0f}, {0.7071f, 0.7071f}, {0.0f, 1.0f}, {-0.7071f, 0.7071f},
+        {-1.0f, 0.0f}, {-0.7071f, -0.7071f}, {0.0f, -1.0f}, {0.7071f, -0.7071f}
+    };
+    int tick = static_cast<int>(time * 8.0f);
+    for (int i = 0; i < 8; ++i) {
+        float dotX = x + directions[i].x * radius;
+        float dotY = y + directions[i].y * radius;
         
-        float offset = std::fmod(time * 8.0f + i, static_cast<float>(numDots));
-        int alpha = 255 - static_cast<int>((offset / static_cast<float>(numDots)) * 220);
+        int index = (8 - tick + i) % 8;
+        if (index < 0) index += 8;
+        int alpha = 255 - (index * 28);
+        if (alpha < 30) alpha = 30;
         
         SDL_SetRenderDrawColor(renderer, 255, 60, 60, alpha);
         SDL_Rect r{static_cast<int>(dotX) - 3, static_cast<int>(dotY) - 3, 6, 6};

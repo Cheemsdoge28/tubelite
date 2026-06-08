@@ -21,6 +21,7 @@ public:
     void stop();
     void setVolume(int volume);
     void seek(int seconds);
+    void toggleSubtitles();
 
     void update(); // Pump events
     

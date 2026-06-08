@@ -76,6 +76,9 @@ private:
     int lastStickDirX_{0};
     int lastStickDirY_{0};
     std::chrono::steady_clock::time_point nextStickNavAt_;
+
+    std::vector<YouTubeVideo> cached_trending_videos_;
+    std::chrono::steady_clock::time_point trending_cache_time_;
     
     void loadHomeFeeds();
     void loadMoreHomeFeeds();

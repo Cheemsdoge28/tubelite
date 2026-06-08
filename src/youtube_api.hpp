@@ -27,7 +27,7 @@ public:
     void search(const std::string& query, int page, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback);
 
     // Get direct playback URL for libmpv.
-    void getStreamUrl(const std::string& video_id, std::function<void(bool success, const std::string& url)> callback);
+    void getStreamUrl(const std::string& video_id, int max_height, std::function<void(bool success, const std::string& url)> callback);
 
 private:
     std::string executeCommand(const std::string& cmd);

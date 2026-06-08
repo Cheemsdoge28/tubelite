@@ -109,11 +109,11 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
     }).detach();
 }
 
-void YouTubeAPI::getStreamUrl(const std::string& video_id, std::function<void(bool success, const std::string& url)> callback) {
-    std::thread([this, video_id, callback]() {
+void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::function<void(bool success, const std::string& url)> callback) {
+    std::thread([this, video_id, max_height, callback]() {
         try {
-            // Get best format that is <= 360p, or worst if not available
-            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 -f \"best[height<=360]/worst\" --get-url \"https://www.youtube.com/watch?v=" + video_id + "\" 2>> yt-dlp-error.log";
+            // Get best format that is <= max_height, or worst if not available
+            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 -f \"best[height<=" + std::to_string(max_height) + "]/worst\" --get-url \"https://www.youtube.com/watch?v=" + video_id + "\" 2>> yt-dlp-error.log";
             std::string url = executeCommand(cmd);
             
             // Trim whitespace

@@ -30,7 +30,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     SDL_Rect cardRect{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
     
-    SDL_SetRenderDrawColor(renderer, 40, 44, 50, 255);
+    SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255); // Modern card dark grey (#1a1a1a)
     SDL_RenderFillRect(renderer, &cardRect);
     
     SDL_Texture* thumb = im_->getThumbnail(video.id);
@@ -43,7 +43,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
         SDL_RenderCopy(renderer, thumb, nullptr, &thumbRect);
     } else {
-        SDL_SetRenderDrawColor(renderer, 30, 32, 38, 255);
+        SDL_SetRenderDrawColor(renderer, 37, 37, 37, 255); // Fallback thumb background (#252525)
         SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
         SDL_RenderFillRect(renderer, &thumbRect);
     }
@@ -190,7 +190,7 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderDrawRect(renderer, &ring);
     ring.x -= 1; ring.y -= 1; ring.w += 2; ring.h += 2;
-    SDL_SetRenderDrawColor(renderer, 100, 150, 255, 150);
+    SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Brand YouTube red focus ring outer border
     SDL_RenderDrawRect(renderer, &ring);
 }
 

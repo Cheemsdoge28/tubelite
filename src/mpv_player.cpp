@@ -80,6 +80,16 @@ void MpvPlayer::seek(int seconds) {
     mpv_command(mpv_, cmd);
 }
 
+void MpvPlayer::toggleSubtitles() {
+    if (!mpv_) return;
+    char* sub_vis = mpv_get_property_string(mpv_, "sub-visibility");
+    std::string current = sub_vis ? sub_vis : "yes";
+    if (sub_vis) mpv_free(sub_vis);
+    
+    std::string next = (current == "yes") ? "no" : "yes";
+    mpv_set_property_string(mpv_, "sub-visibility", next.c_str());
+}
+
 void MpvPlayer::update() {
     if (!mpv_) return;
     while (mpv_event* event = mpv_wait_event(mpv_, 0)) {
