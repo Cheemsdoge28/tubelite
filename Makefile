@@ -4,6 +4,7 @@
 TARGET ?= tubelite
 SRC := $(wildcard src/*.cpp)
 BUILD_DIR ?= build
+OBJ := $(SRC:src/%.cpp=$(BUILD_DIR)/%.o)
 INSTALL_DIR ?= /usr/local/bin
 
 # Detect platform
@@ -92,13 +93,18 @@ check_compiler:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# Compile
-$(BUILD_TARGET): $(SRC) | $(BUILD_DIR) check_compiler
-	@echo "[$(PLATFORM)] Building $(BUILD_TARGET)"
+# Compile object files
+$(BUILD_DIR)/%.o: src/%.cpp | $(BUILD_DIR) check_compiler
+	@echo "  CXX $<"
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
+
+# Link target
+$(BUILD_TARGET): $(OBJ) | $(BUILD_DIR) check_compiler
+	@echo "[$(PLATFORM)] Linking $(BUILD_TARGET)"
 	@echo "  CXX: $(CXX)"
-	@echo "  SDL_CFLAGS: $(SDL_CFLAGS)"
+	@echo "  LDFLAGS: $(LDFLAGS)"
 	@echo "  SDL_LIBS: $(SDL_LIBS)"
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) $(SRC) -o $@ $(LDFLAGS) $(SDL_LIBS)
+	$(CXX) $(CXXFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(SDL_LIBS)
 	@echo "Build complete: $@"
 	@ls -lh $@
 
