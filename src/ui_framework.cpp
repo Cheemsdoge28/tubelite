@@ -93,7 +93,8 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
             
             SDL_Rect textClip{textX, textY, maxPixelW, 30};
             SDL_Rect oldClip;
-            SDL_bool hasOldClip = SDL_RenderGetClipRect(renderer, &oldClip);
+            SDL_RenderGetClipRect(renderer, &oldClip);
+            SDL_bool hasOldClip = SDL_RenderIsClipEnabled(renderer);
             
             SDL_Rect activeClip = textClip;
             if (hasOldClip) {
