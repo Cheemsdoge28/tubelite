@@ -35,9 +35,6 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     SDL_Rect cardRect{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
     
     fillRoundedRect(renderer, cardRect, 8, {26, 26, 26, 255});
-    if (focused) {
-        drawRoundedRect(renderer, cardRect, 8, {48, 48, 52, 255});
-    }
     
     SDL_Texture* thumb = im_->getThumbnail(video.id);
     bool horizontal = (bounds.w > 400);
@@ -159,6 +156,14 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     if (!video.duration_string.empty()) {
         drawTextShadow(renderer, cardRect.x + thumbW - 35, cardRect.y + thumbH - 15, video.duration_string, 1, {255, 255, 255, 255});
+    }
+
+    // Mask card corners to prevent thumbnail bleed
+    maskRoundedCorners(renderer, cardRect, 8, {15, 15, 15, 255});
+
+    // Draw card border on top of masked corners
+    if (focused) {
+        drawRoundedRect(renderer, cardRect, 8, {48, 48, 52, 255});
     }
 }
 

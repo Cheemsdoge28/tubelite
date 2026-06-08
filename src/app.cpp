@@ -181,8 +181,6 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
     const int expandedHeight = 84;
     const int collapsedHeight = 58;
     const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
-    const int titleY = 12;
-    const int subtitleY = 44;
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(renderer_, 12, 12, 14, 255);
@@ -193,19 +191,21 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
     SDL_Rect accent{0, headerHeight - 1, width, 1};
     SDL_RenderFillRect(renderer_, &accent);
 
-    drawTextShadow(renderer_, 18, titleY, title, searchScreen ? 2 : 3, searchScreen ? SDL_Color{255, 96, 96, 255} : SDL_Color{255, 52, 52, 255});
-    if (!subtitle.empty()) {
-        drawText(renderer_, 20, subtitleY, utf8Truncate(subtitle, 52, true), 1, {170, 170, 176, 255});
-    }
+    float t = (headerHeight - collapsedHeight) / (float)(expandedHeight - collapsedHeight);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
 
-    if (headerHeight > 68) {
-        drawText(renderer_, width - 168, 16, "Y Search", 1, {220, 220, 220, 255});
-        drawText(renderer_, width - 168, 34, "X Quality", 1, {220, 220, 220, 255});
-        if (subtitle.empty()) {
-            drawText(renderer_, width - 168, 52, "A Play", 1, {220, 220, 220, 255});
-        }
-    } else {
-        drawText(renderer_, width - 162, 18, "Y Search  X " + std::to_string(state_.maxQualityHeight) + "P", 1, {220, 220, 220, 255});
+    int titleW = 0, titleH = 0;
+    getTextSize(title, searchScreen ? 2 : 3, &titleW, &titleH);
+    int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
+
+    SDL_Color titleColor = searchScreen ? SDL_Color{255, 96, 96, 255} : SDL_Color{255, 52, 52, 255};
+    drawTextShadow(renderer_, 18, titleY, title, searchScreen ? 2 : 3, titleColor);
+
+    if (!subtitle.empty() && t > 0.1f) {
+        Uint8 alpha = static_cast<Uint8>(255.0f * t);
+        int subtitleY = static_cast<int>(titleY + titleH + 8.0f * t - 4.0f * (1.0f - t));
+        drawText(renderer_, 20, subtitleY, utf8Truncate(subtitle, 52, true), 1, {170, 170, 176, alpha});
     }
 }
 
@@ -583,6 +583,11 @@ void App::handleKey(SDL_Keycode key) {
             cached_trending_videos_.clear();
             loadHomeFeeds();
             uiDirty_ = true;
+        } else if (state_.currentScreen == TubeState::Screen::Search) {
+            if (!current_search_query_.empty()) {
+                doSearch(current_search_query_);
+                uiDirty_ = true;
+            }
         }
         break;
     case SDLK_x:
@@ -727,6 +732,11 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             cached_trending_videos_.clear();
             loadHomeFeeds();
             uiDirty_ = true;
+        } else if (state_.currentScreen == TubeState::Screen::Search) {
+            if (!current_search_query_.empty()) {
+                doSearch(current_search_query_);
+                uiDirty_ = true;
+            }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -839,6 +849,14 @@ void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
         }
         if (button == 12) handleControllerButton(SDL_CONTROLLER_BUTTON_BACK, down);
         else handleControllerButton(SDL_CONTROLLER_BUTTON_START, down);
+        break;
+    case 6:
+    case 14:
+        handleControllerButton(SDL_CONTROLLER_BUTTON_LEFTSTICK, down);
+        break;
+    case 7:
+    case 15:
+        handleControllerButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, down);
         break;
     default: break;
     }

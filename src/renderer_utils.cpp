@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <map>
 
 #ifdef _WIN32
 #include <SDL_ttf.h>
@@ -214,7 +215,53 @@ bool initFonts() {
     return true;
 }
 
+struct TextCacheKey {
+    std::string text;
+    int scale;
+    uint32_t color_rgba;
+
+    bool operator<(const TextCacheKey& o) const {
+        if (scale != o.scale) return scale < o.scale;
+        if (color_rgba != o.color_rgba) return color_rgba < o.color_rgba;
+        return text < o.text;
+    }
+};
+
+struct CachedText {
+    SDL_Texture* texture;
+    int w;
+    int h;
+    uint32_t last_used;
+};
+
+static std::map<TextCacheKey, CachedText> g_text_cache;
+static uint32_t g_last_prune_time = 0;
+
+void pruneTextCache(uint32_t now) {
+    g_last_prune_time = now;
+    for (auto it = g_text_cache.begin(); it != g_text_cache.end(); ) {
+        if (now - it->second.last_used > 5000) {
+            if (it->second.texture) {
+                SDL_DestroyTexture(it->second.texture);
+            }
+            it = g_text_cache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void clearTextCache() {
+    for (auto& pair : g_text_cache) {
+        if (pair.second.texture) {
+            SDL_DestroyTexture(pair.second.texture);
+        }
+    }
+    g_text_cache.clear();
+}
+
 void cleanupFonts() {
+    clearTextCache();
     if (g_font_small)  { TTF_CloseFont(g_font_small);  g_font_small = nullptr; }
     if (g_font_medium) { TTF_CloseFont(g_font_medium); g_font_medium = nullptr; }
     if (g_font_large)  { TTF_CloseFont(g_font_large);  g_font_large = nullptr; }
@@ -230,15 +277,42 @@ void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int
     else                 font = g_font_large;
     
     if (font) {
+        uint32_t color_rgba = (static_cast<uint32_t>(color.r) << 24) |
+                              (static_cast<uint32_t>(color.g) << 16) |
+                              (static_cast<uint32_t>(color.b) << 8) |
+                              color.a;
+        TextCacheKey key{text, scale, color_rgba};
+        uint32_t now = SDL_GetTicks();
+        
+        auto it = g_text_cache.find(key);
+        if (it != g_text_cache.end()) {
+            it->second.last_used = now;
+            SDL_Rect dst{x, y, it->second.w, it->second.h};
+            SDL_RenderCopy(renderer, it->second.texture, nullptr, &dst);
+            
+            if (now - g_last_prune_time > 5000) {
+                pruneTextCache(now);
+            }
+            return;
+        }
+        
         SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
         if (surface) {
             SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
             if (texture) {
-                SDL_Rect dst{x, y, surface->w, surface->h};
+                int w = surface->w;
+                int h = surface->h;
+                SDL_Rect dst{x, y, w, h};
                 SDL_RenderCopy(renderer, texture, nullptr, &dst);
-                SDL_DestroyTexture(texture);
+                
+                CachedText cached{texture, w, h, now};
+                g_text_cache[key] = cached;
             }
             SDL_FreeSurface(surface);
+            
+            if (now - g_last_prune_time > 5000) {
+                pruneTextCache(now);
+            }
             return;
         }
     }
@@ -397,6 +471,31 @@ void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
             d = d + 4 * (x - y) + 10;
         } else {
             d = d + 4 * x + 6;
+        }
+    }
+}
+
+void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
+    if (radius <= 0) return;
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    
+    int right = rect.x + rect.w - 1;
+    int bottom = rect.y + rect.h - 1;
+    
+    for (int y = 0; y < radius; ++y) {
+        for (int x = 0; x < radius; ++x) {
+            int dx = radius - x;
+            int dy = radius - y;
+            if (dx * dx + dy * dy > radius * radius) {
+                // Top-left
+                SDL_RenderDrawPoint(renderer, rect.x + x, rect.y + y);
+                // Top-right
+                SDL_RenderDrawPoint(renderer, right - x, rect.y + y);
+                // Bottom-left
+                SDL_RenderDrawPoint(renderer, rect.x + x, bottom - y);
+                // Bottom-right
+                SDL_RenderDrawPoint(renderer, right - x, bottom - y);
+            }
         }
     }
 }

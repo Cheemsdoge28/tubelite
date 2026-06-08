@@ -20,3 +20,6 @@ SDL_Texture* createTargetTexture(SDL_Renderer* renderer, int width, int height);
 
 bool initFonts();
 void cleanupFonts();
+void clearTextCache();
+
+void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);

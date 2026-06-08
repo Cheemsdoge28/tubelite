@@ -1,5 +1,7 @@
 #include "status_overlay.hpp"
 #include "renderer_utils.hpp"
+#include <vector>
+#include <algorithm>
 
 void StatusOverlay::destroyTexture() {
     if (texture_) {
@@ -38,35 +40,81 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             const SDL_Color panel{24, 28, 34, 255};
             const int boxY = 8;
             const int boxH = 30;
-            const int gap = 10;
 
-            auto drawHint = [&](int x, int w, const std::string& button, SDL_Color buttonColor, const std::string& action) {
-                SDL_Rect box{x, boxY, w, boxH};
-                SDL_SetRenderDrawColor(renderer, panel.r, panel.g, panel.b, panel.a);
-                SDL_RenderFillRect(renderer, &box);
-                SDL_SetRenderDrawColor(renderer, 42, 48, 56, 255);
-                SDL_RenderDrawRect(renderer, &box);
-                drawTextShadow(renderer, x + 8, boxY + 7, button, 2, buttonColor);
-                drawTextShadow(renderer, x + 30, boxY + 7, action, 2, textColor);
+            struct HintItem {
+                std::string button;
+                SDL_Color btnColor;
+                std::string action;
             };
 
+            std::vector<HintItem> activeHints;
             if (state.inputMode == TubeState::InputMode::SearchText) {
-                drawHint(10, 128, "A", red, "TYPE");
-                drawHint(148, 132, "B", yellow, "CLOSE");
-                drawHint(290, 152, "Y", green, "SPACE");
-                drawHint(452, 176, "START", textColor, "GO");
+                activeHints = {
+                    {"A", red, "TYPE"},
+                    {"B", yellow, "CLOSE"},
+                    {"Y", green, "SPACE"},
+                    {"START", textColor, "GO"}
+                };
             } else if (state.currentScreen == TubeState::Screen::Playback) {
-                drawHint(10, 124, "A", red, "PAUSE");
-                drawHint(144, 116, "B", yellow, "STOP");
-                drawHint(270, 116, "Y", green, "SUBS");
-                drawHint(396, 108, "X", blue, "INFO");
-                drawHint(514, 114, "L1/R1", textColor, "SPD");
+                activeHints = {
+                    {"A", red, "PAUSE"},
+                    {"B", yellow, "STOP"},
+                    {"Y", green, "SUBS"},
+                    {"X", blue, "INFO"},
+                    {"L1/R1", textColor, "SPD"}
+                };
             } else {
-                drawHint(10, 110, "A", red, "PLAY");
-                drawHint(130, 112, "B", yellow, "BACK");
-                drawHint(252, 132, "Y", green, "SEARCH");
-                drawHint(394, 108, "X", blue, std::to_string(state.maxQualityHeight) + "P");
-                drawHint(512, 116, "R3", textColor, "RELOAD");
+                activeHints = {
+                    {"A", red, "PLAY"},
+                    {"B", yellow, "BACK"},
+                    {"Y", green, "SEARCH"},
+                    {"X", blue, std::to_string(state.maxQualityHeight) + "P"},
+                    {"R3", textColor, "RELOAD"}
+                };
+            }
+
+            int totalWidth = 0;
+            std::vector<int> boxWidths;
+            std::vector<int> btnWidths;
+            std::vector<int> actWidths;
+            
+            for (const auto& item : activeHints) {
+                int btnW = 0, actW = 0;
+                getTextSize(item.button, 2, &btnW, nullptr);
+                getTextSize(item.action, 2, &actW, nullptr);
+                int boxW = btnW + actW + 24;
+                boxWidths.push_back(boxW);
+                btnWidths.push_back(btnW);
+                actWidths.push_back(actW);
+                totalWidth += boxW;
+            }
+            if (!activeHints.empty()) {
+                totalWidth += (static_cast<int>(activeHints.size()) - 1) * 12;
+            }
+
+            int fontHeight = 18;
+            getTextSize("Ay", 2, nullptr, &fontHeight);
+
+            int currentX = (width - totalWidth) / 2;
+            for (size_t i = 0; i < activeHints.size(); ++i) {
+                const auto& item = activeHints[i];
+                int boxW = boxWidths[i];
+                int btnW = btnWidths[i];
+                int actW = actWidths[i];
+                
+                SDL_Rect box{currentX, boxY, boxW, boxH};
+                fillRoundedRect(renderer, box, 4, panel);
+                drawRoundedRect(renderer, box, 4, {42, 48, 56, 255});
+                
+                int contentW = btnW + 8 + actW;
+                int contentX = currentX + (boxW - contentW) / 2;
+                
+                int textY = boxY + (boxH - fontHeight) / 2;
+                
+                drawTextShadow(renderer, contentX, textY, item.button, 2, item.btnColor);
+                drawTextShadow(renderer, contentX + btnW + 8, textY, item.action, 2, textColor);
+                
+                currentX += boxW + 12;
             }
             
             SDL_SetRenderTarget(renderer, prev);
