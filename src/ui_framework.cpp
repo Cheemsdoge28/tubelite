@@ -12,11 +12,16 @@ VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
     bounds.h = 240; 
 }
 
-void VideoCard::update(float /*dt*/) {
+void VideoCard::update(float dt) {
     // Scaling removed to save CPU. 
     // The focus border is sufficient for handheld feedback.
     targetScale = 1.0f;
     scale = 1.0f;
+    if (focused) {
+        focusedTime_ += dt;
+    } else {
+        focusedTime_ = 0.0f;
+    }
 }
 
 void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
@@ -50,7 +55,23 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     std::string title = video.title;
     int maxChars = horizontal ? ((bounds.w - thumbW - 20) / 12) : ((bounds.w - 10) / 12);
-    if (title.length() > static_cast<size_t>(maxChars)) title = title.substr(0, maxChars - 3) + "...";
+    if (title.length() > static_cast<size_t>(maxChars)) {
+        if (focused && focusedTime_ > 1.5f) {
+            int charOffset = static_cast<int>((focusedTime_ - 1.5f) * 3.0f);
+            int maxOffset = title.length() - maxChars + 3;
+            if (charOffset > maxOffset) {
+                if (charOffset > maxOffset + 2) {
+                    focusedTime_ = 1.5f;
+                    charOffset = 0;
+                } else {
+                    charOffset = maxOffset;
+                }
+            }
+            title = title.substr(charOffset, maxChars);
+        } else {
+            title = title.substr(0, maxChars - 3) + "...";
+        }
+    }
     
     int textX = cardRect.x + (horizontal ? thumbW + 10 : 5);
     int textY = cardRect.y + (horizontal ? 5 : thumbH + 5);

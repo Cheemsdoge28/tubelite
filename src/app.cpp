@@ -46,6 +46,7 @@ void App::run() {
         while (SDL_PollEvent(&event)) { handleEvent(event); }
         updateSticks();
         updateKeyboardCursorBlinkState();
+        updateHoverPreviews();
         mpv_player_.update();
         focus_manager_.update(16.0f / 1000.0f); // dt for 60fps
         renderFrame();
@@ -165,6 +166,15 @@ void App::doSearch(const std::string& query) {
 void App::playVideo(const YouTubeVideo& video) {
     if (state_.isLoadingVideo || state_.currentScreen == TubeState::Screen::Playback) return;
     
+    if (is_playing_preview_ || is_loading_preview_) {
+        mpv_player_.stop();
+        mpv_player_.resetGeometry();
+        mpv_player_.setMute(false);
+        preview_card_ = nullptr;
+        is_playing_preview_ = false;
+        is_loading_preview_ = false;
+    }
+    
     current_video_ = video;
     state_.isLoadingVideo = true;
     uiDirty_ = true;
@@ -262,12 +272,12 @@ void App::renderFrame() {
         
         if (home_grid_->cards.empty()) {
             if (homeLoadFailed_) {
-                drawText(renderer_, width / 2 - 144, height / 2 - 10, "Failed to load trending.", 2, {255, 100, 100, 255});
+                drawText(renderer_, width / 2 - 150, height / 2 - 10, "Failed to load trending.", 2, {255, 100, 100, 255});
                 drawText(renderer_, width / 2 - 144, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
             } else {
                 float time = SDL_GetTicks() / 1000.0f;
                 drawSpinner(renderer_, width / 2, height / 2, 20, time);
-                drawText(renderer_, width / 2 - 152, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
+                drawText(renderer_, width / 2 - 114, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
                 uiDirty_ = true;
             }
         } else {
@@ -290,13 +300,13 @@ void App::renderFrame() {
         if (state_.isSearching && search_grid_->cards.empty()) {
             float time = SDL_GetTicks() / 1000.0f;
             drawSpinner(renderer_, width / 2, height / 2, 20, time);
-            drawText(renderer_, width / 2 - 96, height / 2 + 30, "Searching...", 2, {150, 150, 150, 255});
+            drawText(renderer_, width / 2 - 72, height / 2 + 30, "Searching...", 2, {150, 150, 150, 255});
             uiDirty_ = true;
         } else if (search_grid_->cards.empty()) {
             if (current_search_query_.empty()) {
                 drawText(renderer_, width / 2 - 144, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
             } else {
-                drawText(renderer_, width / 2 - 96, height / 2, "No results found.", 2, {150, 150, 150, 255});
+                drawText(renderer_, width / 2 - 102, height / 2, "No results found.", 2, {150, 150, 150, 255});
             }
         } else {
             search_grid_->render(renderer_, 0.0f, 0.0f);
@@ -368,7 +378,7 @@ void App::renderFrame() {
         drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
         
         std::string text = "Extracting Stream URL...";
-        drawTextShadow(renderer_, width / 2 - 192, height / 2 + 25, text, 2, {255, 255, 255, 255});
+        drawTextShadow(renderer_, width / 2 - 144, height / 2 + 25, text, 2, {255, 255, 255, 255});
         uiDirty_ = true;
     }
     
@@ -708,4 +718,83 @@ void App::loadMoreSearchResults() {
         }
         uiDirty_ = true;
     });
+}
+
+void App::updateHoverPreviews() {
+    if (state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) {
+        if (is_playing_preview_ || is_loading_preview_) {
+            mpv_player_.stop();
+            mpv_player_.resetGeometry();
+            mpv_player_.setMute(false);
+            preview_card_ = nullptr;
+            is_playing_preview_ = false;
+            is_loading_preview_ = false;
+        }
+        return;
+    }
+
+    auto focusedCard = focus_manager_.getFocusedCard();
+    if (focusedCard && focusedCard->focusedTime_ > 3.0f) {
+        if (preview_card_ != focusedCard) {
+            if (is_playing_preview_ || is_loading_preview_) {
+                mpv_player_.stop();
+                mpv_player_.resetGeometry();
+                mpv_player_.setMute(false);
+                preview_card_ = nullptr;
+                is_playing_preview_ = false;
+                is_loading_preview_ = false;
+            }
+            
+            preview_card_ = focusedCard;
+            is_loading_preview_ = true;
+            uiDirty_ = true;
+            
+            youtube_api_.getStreamUrl(focusedCard->video.id, 240, [this, focusedCard](bool success, const std::string& url) {
+                if (success && focus_manager_.getFocusedCard() == focusedCard) {
+                    is_loading_preview_ = false;
+                    is_playing_preview_ = true;
+                    
+                    mpv_player_.setMute(true);
+                    
+                    int width = 0, height = 0;
+                    SDL_GetWindowSize(window_, &width, &height);
+                    
+                    float scrollY = 0.0f;
+                    if (state_.currentScreen == TubeState::Screen::Home) {
+                        scrollY = home_grid_->scrollY;
+                    } else {
+                        scrollY = search_grid_->scrollY;
+                    }
+                    
+                    bool horizontal = (focusedCard->bounds.w > 400);
+                    int thumbW = horizontal ? 160 : static_cast<int>(focusedCard->bounds.w);
+                    int thumbH = horizontal ? 90 : static_cast<int>(focusedCard->bounds.w * (9.0f / 16.0f));
+                    
+                    int screenX = static_cast<int>(focusedCard->bounds.x);
+                    int screenY = static_cast<int>(focusedCard->bounds.y - scrollY);
+                    
+                    mpv_player_.setGeometry(screenX, screenY, thumbW, thumbH);
+                    mpv_player_.play(url);
+                    uiDirty_ = true;
+                } else {
+                    is_loading_preview_ = false;
+                    if (preview_card_ == focusedCard) {
+                        preview_card_ = nullptr;
+                    }
+                }
+            });
+        }
+    } else {
+        if (focusedCard != preview_card_ || focusedCard == nullptr) {
+            if (is_playing_preview_ || is_loading_preview_) {
+                mpv_player_.stop();
+                mpv_player_.resetGeometry();
+                mpv_player_.setMute(false);
+                preview_card_ = nullptr;
+                is_playing_preview_ = false;
+                is_loading_preview_ = false;
+                uiDirty_ = true;
+            }
+        }
+    }
 }

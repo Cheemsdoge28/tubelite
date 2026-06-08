@@ -103,6 +103,7 @@ void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& tex
 }
 
 void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time) {
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     struct Point2D { float x; float y; };
     static const Point2D directions[8] = {
         {1.0f, 0.0f}, {0.7071f, 0.7071f}, {0.0f, 1.0f}, {-0.7071f, 0.7071f},

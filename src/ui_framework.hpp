@@ -41,6 +41,7 @@ public:
     
     ImageManager* im_;
     YouTubeVideo video;
+    float focusedTime_ = 0.0f;
 };
 
 class GridContainer : public View {
