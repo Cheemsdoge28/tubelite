@@ -134,17 +134,18 @@ void MpvPlayer::setGeometry(int x, int y, int w, int h) {
     double panX = (centerX - screenCenterX) / w;
     double panY = (centerY - screenCenterY) / h;
     
-    mpv_set_property_string(mpv_, "video-zoom", std::to_string(zoom).c_str());
-    mpv_set_property_string(mpv_, "video-pan-x", std::to_string(panX).c_str());
-    mpv_set_property_string(mpv_, "video-pan-y", std::to_string(panY).c_str());
+    mpv_set_property(mpv_, "video-zoom", MPV_FORMAT_DOUBLE, &zoom);
+    mpv_set_property(mpv_, "video-pan-x", MPV_FORMAT_DOUBLE, &panX);
+    mpv_set_property(mpv_, "video-pan-y", MPV_FORMAT_DOUBLE, &panY);
 }
 
 void MpvPlayer::resetGeometry() {
     if (!mpv_) return;
     mpv_set_property_string(mpv_, "geometry", "100%x100%+0+0");
-    mpv_set_property_string(mpv_, "video-zoom", "0");
-    mpv_set_property_string(mpv_, "video-pan-x", "0");
-    mpv_set_property_string(mpv_, "video-pan-y", "0");
+    double zero = 0.0;
+    mpv_set_property(mpv_, "video-zoom", MPV_FORMAT_DOUBLE, &zero);
+    mpv_set_property(mpv_, "video-pan-x", MPV_FORMAT_DOUBLE, &zero);
+    mpv_set_property(mpv_, "video-pan-y", MPV_FORMAT_DOUBLE, &zero);
 }
 
 void MpvPlayer::setSpeed(double speed) {

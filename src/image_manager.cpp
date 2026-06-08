@@ -33,10 +33,15 @@ SDL_Texture* ImageManager::getThumbnail(const std::string& videoId) {
 }
 
 void ImageManager::update() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    while (!textureQueue_.empty()) {
-        auto pending = textureQueue_.front();
-        textureQueue_.pop();
+    std::queue<PendingImage> pendingTextures;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::swap(pendingTextures, textureQueue_);
+    }
+
+    while (!pendingTextures.empty()) {
+        auto pending = pendingTextures.front();
+        pendingTextures.pop();
         
         if (pending.data) {
             SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, pending.width, pending.height);

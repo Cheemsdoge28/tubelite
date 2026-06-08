@@ -13,7 +13,6 @@ struct YouTubeVideo {
     std::string title;
     std::string author;
     std::string duration_string;
-    std::string thumbnail_url;
     std::string view_count_string;
     int duration_seconds = 0;
 };

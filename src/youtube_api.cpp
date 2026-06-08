@@ -93,8 +93,6 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
                     int s = video.duration_seconds % 60;
                     video.duration_string = std::to_string(m) + ":" + (s < 10 ? "0" : "") + std::to_string(s);
                     
-                    video.thumbnail_url = j.value("thumbnail", "");
-                    
                     int views = j.value("view_count", 0);
                     if (views > 1000000) {
                         video.view_count_string = std::to_string(views / 1000000) + "M views";
@@ -109,19 +107,6 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
                     // Ignore parse errors for single lines
                     std::cerr << "JSON parse error on line: " << e.what() << std::endl;
                 }
-            }
-            
-            // Kick off asynchronous downloads of thumbnails using curl
-            std::string mkdirCmd = "mkdir -p /tmp/tubelite_thumbs";
-            int ret = system(mkdirCmd.c_str());
-            (void)ret;
-            for (auto& v : results) {
-                // yt-dlp sometimes gives WebP, which stb_image doesn't support.
-                // We construct the guaranteed JPEG thumbnail URL manually.
-                v.thumbnail_url = "https://i.ytimg.com/vi/" + v.id + "/hqdefault.jpg";
-                std::string dl = "curl -s -o /tmp/tubelite_thumbs/" + v.id + ".jpg \"" + v.thumbnail_url + "\" &";
-                int ret = system(dl.c_str());
-                (void)ret;
             }
             
             callback(true, results);

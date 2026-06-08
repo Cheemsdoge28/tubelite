@@ -59,6 +59,7 @@ bool App::initialize() {
 void App::run() {
     while (state_.running) {
         processMainThreadQueue();
+        processPresentationQueue();
         SDL_Event event;
         while (SDL_PollEvent(&event)) { handleEvent(event); }
         updateSticks();
@@ -261,6 +262,7 @@ void App::doSearch(const std::string& query) {
     uiDirty_ = true;
     current_search_query_ = query;
     search_page_ = 1;
+    presentation_jobs_.clear();
     
     search_grid_->cards.clear();
     focus_manager_.setGrid(search_grid_);
@@ -269,15 +271,12 @@ void App::doSearch(const std::string& query) {
 
     youtube_api_.search(query, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
-            state_.isSearching = false;
             if (success) {
-                search_grid_->cards.clear();
-                for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    search_grid_->addCard(card);
-                }
-                focus_manager_.setGrid(search_grid_);
+                schedulePresentation(search_grid_, results, true, [this]() {
+                    state_.isSearching = false;
+                });
+            } else {
+                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -901,18 +900,14 @@ void App::loadHomeFeeds() {
     state_.isSearching = true;
     state_.isLoadingVideo = false;
     uiDirty_ = true;
+    presentation_jobs_.clear();
     
     using namespace std::chrono;
     auto now = steady_clock::now();
     if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 15) {
-        state_.isSearching = false;
-        home_grid_->cards.clear();
-        for (const auto& v : cached_trending_videos_) {
-            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-            card->onClick = [this, v]() { playVideo(v); };
-            home_grid_->addCard(card);
-        }
-        focus_manager_.setGrid(home_grid_);
+        schedulePresentation(home_grid_, cached_trending_videos_, true, [this]() {
+            state_.isSearching = false;
+        });
         uiDirty_ = true;
         return;
     }
@@ -922,19 +917,15 @@ void App::loadHomeFeeds() {
     
     youtube_api_.search("trending", home_page_, [this, now](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, now, success, results]() {
-            state_.isSearching = false;
             if (success && !results.empty()) {
                 cached_trending_videos_ = results;
                 trending_cache_time_ = now;
-                home_grid_->cards.clear();
-                for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    home_grid_->addCard(card);
-                }
-                focus_manager_.setGrid(home_grid_);
+                schedulePresentation(home_grid_, results, true, [this]() {
+                    state_.isSearching = false;
+                });
             } else {
                 homeLoadFailed_ = true;
+                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -949,14 +940,13 @@ void App::loadMoreHomeFeeds() {
     
     youtube_api_.search("trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
-            state_.isSearching = false;
             if (success && !results.empty()) {
-                for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    home_grid_->addCard(card);
-                }
-                focus_manager_.pruneGridIfNeeded(40);
+                schedulePresentation(home_grid_, results, false, [this]() {
+                    state_.isSearching = false;
+                    focus_manager_.pruneGridIfNeeded(40);
+                });
+            } else {
+                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -971,18 +961,70 @@ void App::loadMoreSearchResults() {
     
     youtube_api_.search(current_search_query_, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
-            state_.isSearching = false;
             if (success && !results.empty()) {
-                for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    search_grid_->addCard(card);
-                }
-                focus_manager_.pruneGridIfNeeded(40);
+                schedulePresentation(search_grid_, results, false, [this]() {
+                    state_.isSearching = false;
+                    focus_manager_.pruneGridIfNeeded(40);
+                });
+            } else {
+                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
     });
+}
+
+void App::schedulePresentation(std::shared_ptr<ui::GridContainer> grid, std::vector<YouTubeVideo> results, bool clearGrid, std::function<void()> onComplete) {
+    if (!grid) return;
+
+    PresentationJob job;
+    job.grid = std::move(grid);
+    job.results = std::move(results);
+    job.onComplete = std::move(onComplete);
+    job.clearGrid = clearGrid;
+    presentation_jobs_.push_back(std::move(job));
+}
+
+void App::processPresentationQueue() {
+    if (presentation_jobs_.empty()) return;
+
+    const size_t maxCardsPerFrame = 4;
+    size_t cardsRemaining = maxCardsPerFrame;
+    bool changed = false;
+
+    while (!presentation_jobs_.empty() && cardsRemaining > 0) {
+        auto& job = presentation_jobs_.front();
+
+        if (job.clearGrid && job.nextIndex == 0) {
+            job.grid->cards.clear();
+            focus_manager_.setGrid(job.grid);
+            job.clearGrid = false;
+            changed = true;
+        }
+
+        if (job.nextIndex >= job.results.size()) {
+            auto onComplete = std::move(job.onComplete);
+            presentation_jobs_.erase(presentation_jobs_.begin());
+            if (onComplete) onComplete();
+            changed = true;
+            continue;
+        }
+
+        const size_t batch = std::min(cardsRemaining, job.results.size() - job.nextIndex);
+        for (size_t i = 0; i < batch; ++i) {
+            const auto& v = job.results[job.nextIndex++];
+            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+            card->onClick = [this, v]() { playVideo(v); };
+            job.grid->addCard(card);
+        }
+
+        cardsRemaining -= batch;
+        changed = true;
+
+        if (job.nextIndex < job.results.size()) break;
+    }
+
+    if (changed) uiDirty_ = true;
 }
 
 void App::updateHoverPreviews() {
