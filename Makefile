@@ -2,7 +2,7 @@
 # Supports: Windows (MinGW), ARM64 (aarch64-linux-gnu), Linux native
 
 TARGET ?= tubelite
-SRC := src/main.cpp src/mpv_player.cpp src/youtube_api.cpp
+SRC := $(wildcard src/*.cpp)
 BUILD_DIR ?= build
 INSTALL_DIR ?= /usr/local/bin
 
