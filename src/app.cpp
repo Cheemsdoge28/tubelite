@@ -3,6 +3,12 @@
 #include "stb_image.h"
 #include <iostream>
 #include <algorithm>
+#if defined(SDL_VIDEO_DRIVER_X11)
+#undef SDL_VIDEO_DRIVER_X11
+#endif
+#if defined(SDL_VIDEO_DRIVER_WAYLAND)
+#undef SDL_VIDEO_DRIVER_WAYLAND
+#endif
 #include <SDL2/SDL_syswm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
