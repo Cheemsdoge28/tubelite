@@ -1,20 +1,37 @@
 #pragma once
 #include <string>
 #include <mpv/client.h>
-#include <mpv/render.h>    // MPV_RENDER_API_TYPE_SW, MPV_RENDER_PARAM_SW_*
+#include <mpv/render_gl.h>
+#include <GLES2/gl2.h>
 
 struct SDL_Window;
 struct SDL_Renderer;
-struct SDL_Texture;
 
+// MpvPlayer manages a libmpv instance and its GLES render context.
+//
+// Architecture:
+//   SDL_CreateRenderer(opengles2) creates the EGL context on the main thread.
+//   mpv_render_context_create uses THAT same EGL context (already current).
+//   mpv renders directly to FBO=0 (the display framebuffer) via glViewport/scissor.
+//   SDL draws 2D UI overlays after mpv — no GPU→CPU→GPU roundtrip.
 class MpvPlayer {
 public:
-    MpvPlayer();
-    ~MpvPlayer();
+    MpvPlayer()  = default;
+    ~MpvPlayer() { shutdown(); }
 
+    // Call AFTER SDL_CreateRenderer. Primes the EGL context then inits mpv.
     bool initialize(SDL_Window* window, SDL_Renderer* renderer);
     void shutdown();
 
+    // Render the latest video frame directly into the current framebuffer.
+    // Internally: SDL_RenderFlush → mpv → reset viewport.
+    // Call before any SDL overlays that should appear above video.
+    void render(int winWidth, int winHeight);
+
+    // Pump mpv events + check for new frame. Returns true if redraw needed.
+    bool update();
+
+    // ── Playback controls ─────────────────────────────────────────────────────
     void play(const std::string& url);
     void pause();
     void resume();
@@ -33,38 +50,23 @@ public:
     void showProgress();
     void cycleStatsOverlay();
 
-    // Render the current video frame into the SDL scene at the configured rect.
-    // Call after SDL_RenderClear and before SDL_RenderPresent.
-    void render(int winWidth, int winHeight);
-
-    // Pump mpv events. Returns true if a new video frame is ready (caller should re-render).
-    bool update();
-
+    // ── State ─────────────────────────────────────────────────────────────────
     bool   isPlaying()       const { return is_playing_; }
     double getPlaybackTime() const { return playback_time_; }
     double getDuration()     const { return duration_; }
 
 private:
-    void destroyTexture();
+    mpv_handle*         mpv_       = nullptr;
+    mpv_render_context* mpv_gl_    = nullptr;
 
-    mpv_handle*         mpv_        = nullptr;
-    mpv_render_context* mpv_render_ = nullptr;
-
-    // Video texture (recreated whenever the target rect size changes)
-    SDL_Texture*  video_texture_ = nullptr;
-    int           tex_w_         = 0;
-    int           tex_h_         = 0;
+    SDL_Window*   window_   = nullptr;
+    SDL_Renderer* renderer_ = nullptr;
 
     bool   is_playing_   = false;
     double playback_time_ = 0.0;
     double duration_      = 0.0;
 
-    SDL_Window*   window_   = nullptr;
-    SDL_Renderer* renderer_ = nullptr;
-
-    int  target_x_ = 0;
-    int  target_y_ = 0;
-    int  target_w_ = 0;
-    int  target_h_ = 0;
+    int  target_x_ = 0, target_y_ = 0;
+    int  target_w_ = 0, target_h_ = 0;
     bool has_custom_geometry_ = false;
 };

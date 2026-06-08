@@ -108,6 +108,14 @@ bool App::createWindow() {
     SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "1");
     SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
 
+    // Force SDL to use its OpenGL ES 2.0 renderer (backed by EGL).
+    // This is REQUIRED before SDL_CreateWindow so the KMSDRM backend
+    // initialises EGL instead of its raw framebuffer path.
+    // mpv's render context will then attach to the same EGL context.
+    // Do NOT add SDL_WINDOW_OPENGL here — that flag fights with the
+    // opengles2 renderer's internal EGL surface setup and causes a segfault.
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+
     window_ = SDL_CreateWindow("tubelite", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                640, 480, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
     if (window_ == nullptr) {
@@ -115,17 +123,33 @@ bool App::createWindow() {
         return false;
     }
 
-    renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
-    if (renderer_ == nullptr) renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);
+    renderer_ = SDL_CreateRenderer(window_, -1,
+        SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_PRESENTVSYNC);
     if (renderer_ == nullptr) {
-        logError(std::string("SDL_CreateRenderer failed: ") + SDL_GetError());
+        // opengles2 unavailable — try without vsync
+        renderer_ = SDL_CreateRenderer(window_, -1,
+            SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+    }
+    if (renderer_ == nullptr) {
+        logError(std::string("SDL_CreateRenderer (opengles2) failed: ") + SDL_GetError());
+        logError("Falling back to software renderer (mpv video will be disabled)");
+        renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (renderer_ == nullptr) {
+        logError(std::string("SDL_CreateRenderer failed entirely: ") + SDL_GetError());
         return false;
     }
+
+    // Log which renderer SDL chose
+    SDL_RendererInfo info;
+    if (SDL_GetRendererInfo(renderer_, &info) == 0)
+        std::cerr << "[SDL] renderer: " << info.name << "\n";
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
     SDL_ShowCursor(SDL_DISABLE);
     return true;
 }
+
 
 void App::openController() {
     if (controller_ != nullptr) return;

@@ -52,23 +52,22 @@ else
     CXX ?= g++
     PKG_CONFIG ?= pkg-config
     SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf 2>/dev/null)
-    SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 SDL2_ttf 2>/dev/null)
+    SDL_LIBS   ?= $(shell $(PKG_CONFIG) --libs   sdl2 SDL2_ttf 2>/dev/null)
 
     ifeq ($(strip $(SDL_CFLAGS)),)
         SDL_CFLAGS := -I/usr/include/SDL2
     endif
-
     ifeq ($(strip $(SDL_LIBS)),)
         SDL_LIBS := -lSDL2 -lSDL2_ttf
     endif
 
-    # Add -lrt for POSIX timers/shared memory
-    SDL_LIBS += -lrt
+    # GLESv2 needed for glViewport/glScissor called directly in mpv_player.cpp.
+    SDL_CFLAGS += -Isrc
+    SDL_LIBS   += -lGLESv2 -lrt
 
     # When building natively on ARM, tune for the actual host CPU.
     UNAME_M_NATIVE := $(shell uname -m)
     ifeq ($(UNAME_M_NATIVE),aarch64)
-        # RK3326 is Cortex-A35. We use -mcpu=cortex-a35 for best optimization.
         CXXFLAGS += -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35
     endif
 
