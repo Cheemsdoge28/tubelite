@@ -143,6 +143,14 @@ native: PLATFORM=native
 native: $(BUILD_TARGET)
 	@echo "Native build complete: $<"
 
+# Faster dev build for iteration (disables LTO, uses -O2, keeps debug symbols)
+.PHONY: dev
+dev: CXXFLAGS := $(filter-out -flto,$(CXXFLAGS)) -O2 -g
+dev: LDFLAGS := $(filter-out -flto,$(LDFLAGS))
+dev: PLATFORM=native
+dev: $(BUILD_TARGET)
+    @echo "Dev build complete: $<"
+
 # Show current configuration
 config:
 	@echo "=== Fire4ArkOS Browser Build Configuration ==="

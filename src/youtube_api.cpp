@@ -63,14 +63,14 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
             if (query.find("http") == 0) {
                 cmd =
                     "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 "
-                    "--no-check-formats --extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                    "--no-check-formats --extractor-args \"youtube:player_client=android,ios;skip=dash,hls\" "
                     "--flat-playlist --dump-json \"" + safeQuery +
                     "\" --playlist-start " + std::to_string(startIdx) +
                     " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
             } else {
                 cmd =
                     "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 "
-                    "--no-check-formats --extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                    "--no-check-formats --extractor-args \"youtube:player_client=android,ios;skip=dash,hls\" "
                     "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery +
                     "\" --playlist-start " + std::to_string(startIdx) +
                     " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
@@ -135,14 +135,14 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::
 
             const std::vector<std::string> commands = {
                 "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
-                "--extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                "--extractor-args \"youtube:player_client=android,ios;skip=dash,hls\" "
                 "-f \"bestvideo[height<=" + std::to_string(max_height) + "][vcodec^=avc1]+bestaudio/best[height<=" +
                 std::to_string(max_height) + "]/best\" --get-url \"" + watchUrl + "\" 2>&1",
                 "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
-                "--extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                "--extractor-args \"youtube:player_client=android,web;skip=dash,hls\" "
                 "-f \"best[height<=" + std::to_string(max_height) + "]/best\" --get-url \"" + watchUrl + "\" 2>&1",
                 "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
-                "--extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                "--extractor-args \"youtube:skip=dash,hls\" "
                 "--get-url \"" + watchUrl + "\" 2>&1"
             };
 
