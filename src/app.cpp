@@ -7,6 +7,17 @@
 // static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
 static void logError(const std::string& msg) { std::cerr << "[ERROR] " << msg << std::endl; }
 
+static void drawTextCentered(SDL_Renderer* renderer, int centerX, int y, const std::string& text, int scale, SDL_Color color, bool shadow = false) {
+    int w = 0, h = 0;
+    getTextSize(text, scale, &w, &h);
+    int x = centerX - w / 2;
+    if (shadow) {
+        drawTextShadow(renderer, x, y, text, scale, color);
+    } else {
+        drawText(renderer, x, y, text, scale, color);
+    }
+}
+
 App::~App() { shutdown(); }
 
 bool App::initialize() {
