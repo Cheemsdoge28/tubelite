@@ -3,6 +3,8 @@
 #include <memory>
 #include <array>
 #include <stdexcept>
+#include <fstream>
+#include <ctime>
 
 // Since nlohmann/json is a single-header library, we include it here.
 using json = nlohmann::json;
@@ -38,6 +40,15 @@ std::string YouTubeAPI::executeCommand(const std::string& cmd) {
         result += buffer.data();
     }
     return result;
+}
+
+static void appendLog(const std::string& title, const std::string& body) {
+    std::ofstream ofs("yt-dlp-error.log", std::ios::app);
+    if (!ofs) return;
+    std::time_t t = std::time(nullptr);
+    ofs << "===== " << title << " =====\n";
+    ofs << "Time: " << std::asctime(std::localtime(&t));
+    ofs << body << "\n\n";
 }
 
 void YouTubeAPI::search(const std::string& query, int page, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback) {
@@ -138,6 +149,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::
             std::string url;
             for (const auto& cmd : commands) {
                 const std::string output = executeCommand(cmd);
+                appendLog(std::string("Command: ") + cmd, output);
                 size_t lineEnd = output.find_last_not_of("\r\n \t");
                 if (lineEnd == std::string::npos) continue;
                 size_t lineStart = output.find_last_of("\r\n", lineEnd);
@@ -145,11 +157,13 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::
                 std::string candidate = output.substr(lineStart, lineEnd - lineStart + 1);
                 if (candidate.rfind("http://", 0) == 0 || candidate.rfind("https://", 0) == 0) {
                     url = candidate;
+                    appendLog("Selected URL", url);
                     break;
                 }
             }
 
             if (url.empty()) {
+                appendLog("yt-dlp: no URL found", "No playable URL was extracted by yt-dlp probes.");
                 callback(false, "");
             } else {
                 callback(true, url);
