@@ -72,6 +72,11 @@ public:
 
     void resetRepeatState();
     
+    static void eraseActiveBufferChar(TubeState& state);
+    static void insertActiveText(TubeState& state, const std::string& text);
+    static void moveActiveCursor(TubeState& state, int delta);
+    static std::string transformTypedText(const TubeState& state, const char* text);
+    
     static std::string keyboardModeLabel(const TubeState& state);
     static std::string keyboardPreviewText(const TubeState& state, bool cursorVisible);
 
