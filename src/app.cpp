@@ -435,14 +435,16 @@ void App::renderFrame() {
 
     if (state_.currentScreen == TubeState::Screen::Playback) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
-        // mpv video is rendered natively by vo=drm underneath.
-        // We render a transparent frame so the SDL overlay stays alive.
+        mpv_player_.render(width, height);  // blits video texture fullscreen
     } else {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // #0f0f0f background
         SDL_RenderClear(renderer_);
+        if (is_playing_preview_) {
+            mpv_player_.render(width, height);  // blits video texture at thumbnail rect
+        }
     }
 
     auto currentGrid = activeGrid();

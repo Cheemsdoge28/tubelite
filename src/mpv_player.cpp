@@ -3,15 +3,14 @@
 #include <SDL2/SDL.h>
 #include <cmath>
 
-MpvPlayer::MpvPlayer() {
-}
+MpvPlayer::MpvPlayer() {}
 
 MpvPlayer::~MpvPlayer() {
     shutdown();
 }
 
 bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
-    window_ = window;
+    window_   = window;
     renderer_ = renderer;
 
     mpv_ = mpv_create();
@@ -20,42 +19,70 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
         return false;
     }
 
-    // Optimize for weak ARM hardware (RK3326 / Cortex-A35)
-    mpv_set_option_string(mpv_, "hwdec", "auto");
-    mpv_set_option_string(mpv_, "profile", "fast");
-    mpv_set_option_string(mpv_, "ao", "alsa");
-    mpv_set_option_string(mpv_, "keepaspect", "yes");
-    mpv_set_option_string(mpv_, "osc", "no");
-    mpv_set_option_string(mpv_, "input-default-bindings", "no");
-    mpv_set_option_string(mpv_, "input-vo-keyboard", "no");
-    mpv_set_option_string(mpv_, "osd-level", "1");
-    mpv_set_option_string(mpv_, "sub-auto", "fuzzy");
-    mpv_set_option_string(mpv_, "cache", "yes");
-    mpv_set_option_string(mpv_, "demuxer-max-bytes", "16MiB");
-
-    // Use DRM/KMS video output — most stable on ArkOS/Mali hardware.
-    // mpv manages its own video plane; SDL renders the 2D UI overlay on top.
-    mpv_set_option_string(mpv_, "vo", "drm");
-    mpv_set_option_string(mpv_, "drm-draw-surface-size", "640x480");
+    // Optimise for weak ARM hardware (RK3326 / Cortex-A35)
+    mpv_set_option_string(mpv_, "hwdec",                 "no");   // SW decode; hwdec readback to CPU is slow on Mali
+    mpv_set_option_string(mpv_, "profile",               "fast");
+    mpv_set_option_string(mpv_, "ao",                    "alsa");
+    mpv_set_option_string(mpv_, "keepaspect",            "yes");
+    mpv_set_option_string(mpv_, "osc",                   "no");
+    mpv_set_option_string(mpv_, "input-default-bindings","no");
+    mpv_set_option_string(mpv_, "input-vo-keyboard",     "no");
+    mpv_set_option_string(mpv_, "osd-level",             "0");   // OSD unsupported in SW render path
+    mpv_set_option_string(mpv_, "sub-auto",              "fuzzy");
+    mpv_set_option_string(mpv_, "cache",                 "yes");
+    mpv_set_option_string(mpv_, "demuxer-max-bytes",     "16MiB");
+    // Keep video small so SW render stays cheap on the weak CPU
+    mpv_set_option_string(mpv_, "vf",                    "scale=640:480");
 
     if (mpv_initialize(mpv_) < 0) {
         std::cerr << "Failed to initialize mpv" << std::endl;
         return false;
     }
 
-    mpv_observe_property(mpv_, 0, "time-pos", MPV_FORMAT_DOUBLE);
-    mpv_observe_property(mpv_, 0, "duration", MPV_FORMAT_DOUBLE);
-    mpv_observe_property(mpv_, 0, "pause", MPV_FORMAT_FLAG);
+    // SW render context: mpv outputs frames to a CPU pixel buffer.
+    // This avoids any GL/EGL context and any DRM plane ownership conflict.
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_API_TYPE, (void*)MPV_RENDER_API_TYPE_SW},
+        {MPV_RENDER_PARAM_INVALID,  nullptr}
+    };
+
+    int err = mpv_render_context_create(&mpv_render_, mpv_, params);
+    if (err < 0) {
+        std::cerr << "Failed to create mpv SW render context: "
+                  << mpv_error_string(err) << std::endl;
+        // Non-fatal: fall back to no video rendering
+        mpv_render_ = nullptr;
+    }
+
+    mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "pause",     MPV_FORMAT_FLAG);
 
     return true;
 }
 
 void MpvPlayer::shutdown() {
+    destroyTexture();
+    if (mpv_render_) {
+        mpv_render_context_free(mpv_render_);
+        mpv_render_ = nullptr;
+    }
     if (mpv_) {
         mpv_terminate_destroy(mpv_);
         mpv_ = nullptr;
     }
 }
+
+void MpvPlayer::destroyTexture() {
+    if (video_texture_) {
+        SDL_DestroyTexture(video_texture_);
+        video_texture_ = nullptr;
+        tex_w_ = 0;
+        tex_h_ = 0;
+    }
+}
+
+// ── Playback controls ────────────────────────────────────────────────────────
 
 void MpvPlayer::play(const std::string& url) {
     if (!mpv_) return;
@@ -65,14 +92,14 @@ void MpvPlayer::play(const std::string& url) {
 
 void MpvPlayer::pause() {
     if (!mpv_) return;
-    int pause = 1;
-    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &pause);
+    int v = 1;
+    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &v);
 }
 
 void MpvPlayer::resume() {
     if (!mpv_) return;
-    int pause = 0;
-    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &pause);
+    int v = 0;
+    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &v);
 }
 
 void MpvPlayer::stop() {
@@ -96,12 +123,10 @@ void MpvPlayer::seek(int seconds) {
 
 void MpvPlayer::toggleSubtitles() {
     if (!mpv_) return;
-    char* sub_vis = mpv_get_property_string(mpv_, "sub-visibility");
-    std::string current = sub_vis ? sub_vis : "yes";
-    if (sub_vis) mpv_free(sub_vis);
-    
-    std::string next = (current == "yes") ? "no" : "yes";
-    mpv_set_property_string(mpv_, "sub-visibility", next.c_str());
+    char* sv = mpv_get_property_string(mpv_, "sub-visibility");
+    std::string cur = sv ? sv : "yes";
+    if (sv) mpv_free(sv);
+    mpv_set_property_string(mpv_, "sub-visibility", (cur == "yes") ? "no" : "yes");
 }
 
 void MpvPlayer::cycleSubtitleTrack() {
@@ -117,19 +142,15 @@ void MpvPlayer::setMute(bool mute) {
 }
 
 void MpvPlayer::setGeometry(int x, int y, int w, int h) {
-    target_x_ = x;
-    target_y_ = y;
-    target_w_ = w;
-    target_h_ = h;
+    target_x_ = x; target_y_ = y;
+    target_w_ = w; target_h_ = h;
     has_custom_geometry_ = true;
 }
 
 void MpvPlayer::resetGeometry() {
-    target_x_ = 0;
-    target_y_ = 0;
-    target_w_ = 0;
-    target_h_ = 0;
+    target_x_ = target_y_ = target_w_ = target_h_ = 0;
     has_custom_geometry_ = false;
+    destroyTexture(); // recreate at new size next render
 }
 
 void MpvPlayer::setSpeed(double speed) {
@@ -139,30 +160,29 @@ void MpvPlayer::setSpeed(double speed) {
 
 void MpvPlayer::adjustSpeed(double delta) {
     if (!mpv_) return;
-    double speed = getSpeed() + delta;
-    if (speed < 0.25) speed = 0.25;
-    if (speed > 2.0) speed = 2.0;
-    setSpeed(speed);
+    double s = getSpeed() + delta;
+    if (s < 0.25) s = 0.25;
+    if (s > 2.0)  s = 2.0;
+    setSpeed(s);
 }
 
 double MpvPlayer::getSpeed() const {
     if (!mpv_) return 1.0;
-    double speed = 1.0;
-    mpv_get_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &speed);
-    return speed;
+    double s = 1.0;
+    mpv_get_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &s);
+    return s;
 }
 
 void MpvPlayer::showText(const std::string& text, int duration_ms) {
     if (!mpv_) return;
-    std::string duration = std::to_string(duration_ms);
-    const char* cmd[] = {"show-text", text.c_str(), duration.c_str(), NULL};
-    mpv_command(mpv_, cmd);
+    // OSD not available in SW render mode; print to stderr for debug
+    (void)duration_ms;
+    std::cerr << "[mpv] " << text << std::endl;
 }
 
 void MpvPlayer::showProgress() {
     if (!mpv_) return;
-    const char* cmd[] = {"show-progress", NULL};
-    mpv_command(mpv_, cmd);
+    // no-op in SW render mode
 }
 
 void MpvPlayer::cycleStatsOverlay() {
@@ -171,19 +191,25 @@ void MpvPlayer::cycleStatsOverlay() {
     mpv_command(mpv_, cmd);
 }
 
+// ── Per-frame update (pump mpv events) ──────────────────────────────────────
+
 bool MpvPlayer::update() {
     if (!mpv_) return false;
     bool needs_redraw = false;
-    while (mpv_event* event = mpv_wait_event(mpv_, 0)) {
-        if (event->event_id == MPV_EVENT_NONE) {
-            break;
-        }
-        if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-            auto* prop = static_cast<mpv_event_property*>(event->data);
-            if (!prop || !prop->name) {
-                continue;
-            }
 
+    // Check if mpv has a new decoded frame ready
+    if (mpv_render_) {
+        uint64_t flags = mpv_render_context_update(mpv_render_);
+        if (flags & MPV_RENDER_UPDATE_FRAME) {
+            needs_redraw = true;
+        }
+    }
+
+    while (mpv_event* ev = mpv_wait_event(mpv_, 0)) {
+        if (ev->event_id == MPV_EVENT_NONE) break;
+        if (ev->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            auto* prop = static_cast<mpv_event_property*>(ev->data);
+            if (!prop || !prop->name) continue;
             const std::string name = prop->name;
             if (name == "time-pos") {
                 if (prop->format == MPV_FORMAT_DOUBLE && prop->data) {
@@ -193,25 +219,77 @@ bool MpvPlayer::update() {
                     playback_time_ = 0.0;
                 }
             } else if (name == "duration") {
-                if (prop->format == MPV_FORMAT_DOUBLE && prop->data) {
+                if (prop->format == MPV_FORMAT_DOUBLE && prop->data)
                     duration_ = *static_cast<double*>(prop->data);
-                } else {
+                else
                     duration_ = 0.0;
-                }
             } else if (name == "pause") {
-                if (prop->format == MPV_FORMAT_FLAG && prop->data) {
+                if (prop->format == MPV_FORMAT_FLAG && prop->data)
                     is_playing_ = !(*static_cast<int*>(prop->data));
-                } else {
+                else
                     is_playing_ = false;
-                }
             }
         }
     }
     return needs_redraw;
 }
 
-void MpvPlayer::render(int /*winWidth*/, int /*winHeight*/) {
-    // Video rendering is handled natively by mpv's vo=drm.
-    // SDL_Renderer handles 2D UI overlays only.
-    // No explicit render call needed here.
+// ── SW render → SDL_Texture → blit at target rect ───────────────────────────
+
+void MpvPlayer::render(int winWidth, int winHeight) {
+    if (!mpv_render_ || !renderer_) return;
+
+    // Determine destination rect
+    SDL_Rect dest;
+    if (has_custom_geometry_) {
+        dest = {target_x_, target_y_, target_w_, target_h_};
+    } else {
+        dest = {0, 0, winWidth, winHeight};
+    }
+
+    if (dest.w <= 0 || dest.h <= 0) return;
+
+    // (Re)create texture if size changed
+    if (!video_texture_ || tex_w_ != dest.w || tex_h_ != dest.h) {
+        destroyTexture();
+        // ARGB8888 in SDL = [B][G][R][A] in memory on little-endian ARM,
+        // which matches mpv SW format "bgra".
+        video_texture_ = SDL_CreateTexture(renderer_,
+                                           SDL_PIXELFORMAT_ARGB8888,
+                                           SDL_TEXTUREACCESS_STREAMING,
+                                           dest.w, dest.h);
+        if (!video_texture_) {
+            std::cerr << "SDL_CreateTexture failed: " << SDL_GetError() << std::endl;
+            return;
+        }
+        tex_w_ = dest.w;
+        tex_h_ = dest.h;
+    }
+
+    // Lock texture — pass the pixel buffer directly to mpv SW renderer
+    void* pixels = nullptr;
+    int   pitch  = 0;
+    if (SDL_LockTexture(video_texture_, nullptr, &pixels, &pitch) != 0) return;
+
+    int    sw_size[2]  = {dest.w, dest.h};
+    size_t sw_stride   = static_cast<size_t>(pitch);
+    const char* sw_fmt = "bgra";   // matches ARGB8888 on little-endian ARM
+
+    mpv_render_param rp[] = {
+        {MPV_RENDER_PARAM_SW_SIZE,    sw_size},
+        {MPV_RENDER_PARAM_SW_FORMAT,  (void*)sw_fmt},
+        {MPV_RENDER_PARAM_SW_STRIDE,  &sw_stride},
+        {MPV_RENDER_PARAM_SW_POINTER, pixels},
+        {MPV_RENDER_PARAM_INVALID,    nullptr}
+    };
+
+    int err = mpv_render_context_render(mpv_render_, rp);
+    SDL_UnlockTexture(video_texture_);
+
+    if (err < 0) {
+        // Frame not ready yet — don't blit stale garbage
+        return;
+    }
+
+    SDL_RenderCopy(renderer_, video_texture_, nullptr, &dest);
 }
