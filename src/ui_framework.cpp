@@ -124,10 +124,6 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         layout_cached_ = true;
     }
     
-    int maxPixelW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
-    int textX = cardRect.x + (horizontal ? thumbW + 12 : 10);
-    int textY = cardRect.y + (horizontal ? 8 : thumbH + 8);
-    
     if (titleW_ > maxPixelW) {
         if (focused && focusedTime_ > 1.5f) {
             int maxScroll = titleW_ - maxPixelW + 20;
