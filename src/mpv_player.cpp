@@ -11,23 +11,23 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     renderer_ = renderer;
 
     // ── Prime the EGL context ────────────────────────────────────────────────
-    // SDL_CreateRenderer(opengles2) created an EGL context but may not have made
-    // it current yet. Issuing a trivial render call forces SDL to bind the context
-    // on this thread — after this, SDL_GL_GetProcAddress and mpv_render_context_create
-    // will see a valid, current GL context.
+    std::cerr << "[mpv] priming SDL GL context...\n";
     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
     SDL_RenderClear(renderer_);
-    SDL_RenderFlush(renderer_);   // submit; ensures EGL context is bound
+    SDL_RenderFlush(renderer_);
+    std::cerr << "[mpv] SDL_GL_GetCurrentContext = "
+              << reinterpret_cast<void*>(SDL_GL_GetCurrentContext()) << "\n";
 
     // ── Create mpv ───────────────────────────────────────────────────────────
+    std::cerr << "[mpv] mpv_create...\n";
     mpv_ = mpv_create();
     if (!mpv_) {
         std::cerr << "[mpv] mpv_create failed\n";
         return false;
     }
 
-    // Optimise for weak ARM hardware (RK3326 Cortex-A35)
-    mpv_set_option_string(mpv_, "hwdec",                  "auto");
+    std::cerr << "[mpv] setting options...\n";
+    mpv_set_option_string(mpv_, "hwdec",                  "no");   // "auto" probes RKVDEC and can crash
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     mpv_set_option_string(mpv_, "keepaspect",             "yes");
@@ -39,21 +39,25 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "cache",                  "yes");
     mpv_set_option_string(mpv_, "demuxer-max-bytes",      "16MiB");
 
+    std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) {
         std::cerr << "[mpv] mpv_initialize failed\n";
         return false;
     }
 
     // ── Create GLES render context ────────────────────────────────────────────
-    // The EGL context is current on this thread (we forced it above).
-    // SDL_GL_GetProcAddress resolves GL function pointers through EGL.
+    std::cerr << "[mpv] building gl_params...\n";
     mpv_opengl_init_params gl_params;
     gl_params.get_proc_address = [](void*, const char* name) -> void* {
-        return reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
+        void* fn = reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
+        if (!fn)
+            std::cerr << "[mpv] WARNING: SDL_GL_GetProcAddress(\"" << name << "\") = null\n";
+        return fn;
     };
     gl_params.get_proc_address_ctx = nullptr;
     gl_params.extra_exts           = nullptr;
 
+    std::cerr << "[mpv] calling mpv_render_context_create...\n";
     int adv_ctrl = 1;
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE,           const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL)},
@@ -68,17 +72,19 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
                   << mpv_error_string(err) << "\n"
                   << "     Video will not render (audio only).\n";
         mpv_gl_ = nullptr;
-        // Non-fatal: audio playback still works
     } else {
         std::cerr << "[mpv] GLES render context OK\n";
     }
 
+    std::cerr << "[mpv] observing properties...\n";
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "pause",     MPV_FORMAT_FLAG);
 
+    std::cerr << "[mpv] initialize complete\n";
     return true;
 }
+
 
 void MpvPlayer::shutdown() {
     if (mpv_gl_) { mpv_render_context_free(mpv_gl_); mpv_gl_ = nullptr; }
