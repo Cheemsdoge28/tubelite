@@ -2,11 +2,10 @@
 #include "stb_image.h"
 #include <iostream>
 #include <cstdlib>
+#include <vector>
+#include <cstdio>
 
 ImageManager::ImageManager(SDL_Renderer* renderer) : renderer_(renderer) {
-    std::string mkdirCmd = "mkdir -p /tmp/tubelite_thumbs";
-    int ret = system(mkdirCmd.c_str());
-    (void)ret;
     worker_ = std::thread(&ImageManager::workerThread, this);
 }
 
@@ -97,36 +96,48 @@ void ImageManager::workerThread() {
             downloadQueue_.pop();
         }
         
-        std::string path = "/tmp/tubelite_thumbs/" + videoId + ".jpg";
+        std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
+        std::string dl = "curl -s -L \"" + url + "\"";
         
-        FILE* f = fopen(path.c_str(), "rb");
-        if (!f) {
-            std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
-            std::string dl = "curl -s -o " + path + " \"" + url + "\"";
-            int ret = system(dl.c_str());
-            (void)ret;
-            f = fopen(path.c_str(), "rb");
+#ifdef _WIN32
+        FILE* pipe = _popen(dl.c_str(), "rb");
+#else
+        FILE* pipe = popen(dl.c_str(), "r");
+#endif
+
+        std::vector<unsigned char> buffer;
+        if (pipe) {
+            unsigned char temp[4096];
+            while (true) {
+                size_t n = fread(temp, 1, sizeof(temp), pipe);
+                if (n == 0) break;
+                buffer.insert(buffer.end(), temp, temp + n);
+            }
+#ifdef _WIN32
+            _pclose(pipe);
+#else
+            pclose(pipe);
+#endif
         }
         
-        if (f) {
-            fclose(f);
-            int w, h, channels;
-            unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
-            std::remove(path.c_str()); // Free disk space immediately
-            
-            // Swap Red and Blue channels (RGBA -> BGRA) to match SDL_PIXELFORMAT_ARGB8888 byte order
+        unsigned char* data = nullptr;
+        int w = 0, h = 0, channels = 0;
+        if (!buffer.empty()) {
+            data = stbi_load_from_memory(buffer.data(), buffer.size(), &w, &h, &channels, 4);
             if (data) {
+                // Swap Red and Blue channels (RGBA -> BGRA) to match SDL_PIXELFORMAT_ARGB8888 byte order
                 for (int i = 0; i < w * h; ++i) {
                     unsigned char r = data[i * 4];
                     data[i * 4] = data[i * 4 + 2];
                     data[i * 4 + 2] = r;
                 }
             }
-            
-            std::lock_guard<std::mutex> lock(mutex_);
+        }
+        
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (data) {
             textureQueue_.push({videoId, w, h, data});
         } else {
-            std::lock_guard<std::mutex> lock(mutex_);
             textureQueue_.push({videoId, 0, 0, nullptr});
         }
     }

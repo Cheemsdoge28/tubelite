@@ -53,6 +53,7 @@ private:
     void stopBrowsePreviewState();
     void leavePlayback();
     void showPlaybackToast(const std::string& text, bool withProgress = false);
+    bool isInputLocked() const;
     std::shared_ptr<ui::GridContainer> activeGrid() const;
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
     void renderBrowseHeader(int width, int height, const std::string& title, const std::string& subtitle, float scrollY, bool searchScreen);
