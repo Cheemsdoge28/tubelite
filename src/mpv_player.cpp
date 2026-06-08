@@ -1,6 +1,7 @@
 #include "mpv_player.hpp"
 #include <iostream>
 #include <cmath>
+#include <cstring>
 #include <SDL2/SDL.h>
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
