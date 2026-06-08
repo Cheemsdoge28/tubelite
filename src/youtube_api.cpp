@@ -48,12 +48,22 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
             int startIdx = (page - 1) * 15 + 1;
             int endIdx = page * 15;
             
-            std::string cmd =
-                "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 "
-                "--no-check-formats --extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
-                "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery +
-                "\" --playlist-start " + std::to_string(startIdx) +
-                " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
+            std::string cmd;
+            if (query.find("http") == 0) {
+                cmd =
+                    "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 "
+                    "--no-check-formats --extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                    "--flat-playlist --dump-json \"" + safeQuery +
+                    "\" --playlist-start " + std::to_string(startIdx) +
+                    " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
+            } else {
+                cmd =
+                    "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 "
+                    "--no-check-formats --extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                    "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery +
+                    "\" --playlist-start " + std::to_string(startIdx) +
+                    " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
+            }
             std::string output = executeCommand(cmd);
             
             std::vector<YouTubeVideo> results;

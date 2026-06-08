@@ -172,8 +172,8 @@ void App::showPlaybackToast(const std::string& text, bool withProgress) {
 
 void App::renderBrowseLoadingState(int width, int height, const std::string& text) {
     float time = SDL_GetTicks() / 1000.0f;
-    drawSpinner(renderer_, width / 2, height / 2, 20, time);
-    drawText(renderer_, width / 2 - 114, height / 2 + 30, text, 2, {150, 150, 150, 255});
+    drawSpinner(renderer_, width / 2, height / 2 - 15, 20, time);
+    drawTextCentered(renderer_, width / 2, height / 2 + 20, text, 2, {150, 150, 150, 255});
     uiDirty_ = true;
 }
 
@@ -880,10 +880,13 @@ void App::loadHomeFeeds() {
     stopBrowsePreviewState();
     home_page_ = 1;
     homeLoadFailed_ = false;
+    state_.isSearching = true;
+    uiDirty_ = true;
     
     using namespace std::chrono;
     auto now = steady_clock::now();
     if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 15) {
+        state_.isSearching = false;
         home_grid_->cards.clear();
         for (const auto& v : cached_trending_videos_) {
             auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
@@ -895,8 +898,9 @@ void App::loadHomeFeeds() {
         return;
     }
     
-    youtube_api_.search("trending", home_page_, [this, now](bool success, const std::vector<YouTubeVideo>& results) {
+    youtube_api_.search("https://www.youtube.com/feed/trending", home_page_, [this, now](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, now, success, results]() {
+            state_.isSearching = false;
             if (success && !results.empty()) {
                 cached_trending_videos_ = results;
                 trending_cache_time_ = now;
@@ -921,7 +925,7 @@ void App::loadMoreHomeFeeds() {
     uiDirty_ = true;
     home_page_++;
     
-    youtube_api_.search("trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
+    youtube_api_.search("https://www.youtube.com/feed/trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
             state_.isSearching = false;
             if (success && !results.empty()) {
@@ -930,6 +934,7 @@ void App::loadMoreHomeFeeds() {
                     card->onClick = [this, v]() { playVideo(v); };
                     home_grid_->addCard(card);
                 }
+                focus_manager_.pruneGridIfNeeded(40);
             }
             uiDirty_ = true;
         });
@@ -951,6 +956,7 @@ void App::loadMoreSearchResults() {
                     card->onClick = [this, v]() { playVideo(v); };
                     search_grid_->addCard(card);
                 }
+                focus_manager_.pruneGridIfNeeded(40);
             }
             uiDirty_ = true;
         });

@@ -42,11 +42,18 @@ public:
     ImageManager* im_;
     YouTubeVideo video;
     float focusedTime_ = 0.0f;
+
+    bool layout_cached_ = false;
+    int titleW_ = 0;
+    int metaW_ = 0;
+    std::string truncated_title_ = "";
+    std::string truncated_meta_ = "";
 };
 
 class GridContainer : public View {
 public:
     void addCard(std::shared_ptr<VideoCard> card);
+    void pruneOldCards(int maxCards, int& focusedCardIdx);
     void render(SDL_Renderer* renderer, float offsetX, float offsetY) override;
     void update(float dt) override;
     SDL_Rect viewportRect(float offsetX, float offsetY) const;
@@ -70,6 +77,7 @@ public:
     
     std::shared_ptr<VideoCard> getFocusedCard() const;
     void clickFocused();
+    void pruneGridIfNeeded(int maxCards);
 
 private:
     std::shared_ptr<GridContainer> grid_;

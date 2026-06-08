@@ -70,14 +70,67 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     int maxPixelW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
     int textX = cardRect.x + (horizontal ? thumbW + 12 : 10);
     int textY = cardRect.y + (horizontal ? 8 : thumbH + 8);
+    if (!layout_cached_) {
+        int tempMaxW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
+        
+        // 1. Title layout cache
+        getTextSize(video.title, 2, &titleW_, nullptr);
+        if (titleW_ > tempMaxW) {
+            std::string ell = "...";
+            int ellW = 0;
+            getTextSize(ell, 2, &ellW, nullptr);
+            int targetW = tempMaxW - ellW;
+            size_t len = utf8Length(video.title);
+            truncated_title_ = video.title;
+            while (len > 0) {
+                std::string temp = utf8Slice(video.title, 0, len);
+                int tempW = 0;
+                getTextSize(temp, 2, &tempW, nullptr);
+                if (tempW <= targetW) {
+                    truncated_title_ = temp + ell;
+                    break;
+                }
+                len--;
+            }
+        } else {
+            truncated_title_ = video.title;
+        }
+        
+        // 2. Meta layout cache
+        std::string meta = video.author;
+        if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
+        getTextSize(meta, 1, &metaW_, nullptr);
+        if (metaW_ > tempMaxW) {
+            std::string ell = "...";
+            int ellW = 0;
+            getTextSize(ell, 1, &ellW, nullptr);
+            int targetW = tempMaxW - ellW;
+            size_t len = utf8Length(meta);
+            truncated_meta_ = meta;
+            while (len > 0) {
+                std::string temp = utf8Slice(meta, 0, len);
+                int tempW = 0;
+                getTextSize(temp, 1, &tempW, nullptr);
+                if (tempW <= targetW) {
+                    truncated_meta_ = temp + ell;
+                    break;
+                }
+                len--;
+            }
+        } else {
+            truncated_meta_ = meta;
+        }
+        
+        layout_cached_ = true;
+    }
     
-    std::string title = video.title;
-    int textW = 0;
-    getTextSize(title, 2, &textW, nullptr);
+    int maxPixelW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
+    int textX = cardRect.x + (horizontal ? thumbW + 12 : 10);
+    int textY = cardRect.y + (horizontal ? 8 : thumbH + 8);
     
-    if (textW > maxPixelW) {
+    if (titleW_ > maxPixelW) {
         if (focused && focusedTime_ > 1.5f) {
-            int maxScroll = textW - maxPixelW + 20;
+            int maxScroll = titleW_ - maxPixelW + 20;
             int scrollOffset = static_cast<int>((focusedTime_ - 1.5f) * 35.0f);
             if (scrollOffset > maxScroll) {
                 if (scrollOffset > maxScroll + 35) {
@@ -106,56 +159,28 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
                 }
             }
             SDL_RenderSetClipRect(renderer, &activeClip);
-            drawText(renderer, textX - scrollOffset, textY, title, 2, {240, 240, 240, 255});
+            drawText(renderer, textX - scrollOffset, textY, video.title, 2, {240, 240, 240, 255});
             SDL_RenderSetClipRect(renderer, hasOldClip ? &oldClip : nullptr);
         } else {
-            std::string ell = "...";
-            int ellW = 0;
-            getTextSize(ell, 2, &ellW, nullptr);
-            int targetW = maxPixelW - ellW;
-            size_t len = utf8Length(title);
-            while (len > 0) {
-                std::string temp = utf8Slice(title, 0, len);
-                int tempW = 0;
-                getTextSize(temp, 2, &tempW, nullptr);
-                if (tempW <= targetW) {
-                    title = temp + ell;
-                    break;
-                }
-                len--;
-            }
-            drawText(renderer, textX, textY, title, 2, {240, 240, 240, 255});
+            drawText(renderer, textX, textY, truncated_title_, 2, {240, 240, 240, 255});
         }
     } else {
-        drawText(renderer, textX, textY, title, 2, {240, 240, 240, 255});
+        drawText(renderer, textX, textY, video.title, 2, {240, 240, 240, 255});
     }
     
-    std::string meta = video.author;
-    if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
-    
-    int metaW = 0;
-    getTextSize(meta, 1, &metaW, nullptr);
-    if (metaW > maxPixelW) {
-        std::string ell = "...";
-        int ellW = 0;
-        getTextSize(ell, 1, &ellW, nullptr);
-        int targetW = maxPixelW - ellW;
-        size_t len = utf8Length(meta);
-        while (len > 0) {
-            std::string temp = utf8Slice(meta, 0, len);
-            int tempW = 0;
-            getTextSize(temp, 1, &tempW, nullptr);
-            if (tempW <= targetW) {
-                meta = temp + ell;
-                break;
-            }
-            len--;
-        }
-    }
-    drawText(renderer, textX, textY + 25, meta, 1, {150, 150, 150, 255});
+    drawText(renderer, textX, textY + 25, truncated_meta_, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty()) {
-        drawTextShadow(renderer, cardRect.x + thumbW - 35, cardRect.y + thumbH - 15, video.duration_string, 1, {255, 255, 255, 255});
+        int durW = 0, durH = 0;
+        getTextSize(video.duration_string, 1, &durW, &durH);
+        int pillW = durW + 8;
+        int pillH = durH + 4;
+        int pillX = cardRect.x + thumbW - pillW - 6;
+        int pillY = cardRect.y + thumbH - pillH - 6;
+        
+        SDL_Rect pillRect{pillX, pillY, pillW, pillH};
+        fillRoundedRect(renderer, pillRect, 3, {0, 0, 0, 180});
+        drawText(renderer, pillX + 4, pillY + 2, video.duration_string, 1, {255, 255, 255, 255});
     }
 
     // Mask card corners to prevent thumbnail bleed
@@ -182,6 +207,36 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
     card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding);
+}
+
+void GridContainer::pruneOldCards(int maxCards, int& focusedCardIdx) {
+    if (static_cast<int>(cards.size()) <= maxCards) return;
+    
+    int pruneRows = (static_cast<int>(cards.size()) - maxCards + columns - 1) / columns;
+    int pruneCount = pruneRows * columns;
+    if (pruneCount >= static_cast<int>(cards.size())) return;
+    
+    float cardH = (columns == 1) ? 90.0f : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 54.0f);
+    float rowHeight = cardH + padding;
+    float removedHeight = pruneRows * rowHeight;
+    
+    cards.erase(cards.begin(), cards.begin() + pruneCount);
+    
+    scrollY = std::max(0.0f, scrollY - removedHeight);
+    targetScrollY = std::max(0.0f, targetScrollY - removedHeight);
+    
+    focusedCardIdx = std::max(0, focusedCardIdx - pruneCount);
+    
+    for (size_t idx = 0; idx < cards.size(); ++idx) {
+        auto& card = cards[idx];
+        int row = idx / columns;
+        int col = idx % columns;
+        
+        card->bounds.w = (bounds.w - padding * (columns + 1)) / static_cast<float>(columns);
+        card->bounds.h = cardH;
+        card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
+        card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding);
+    }
 }
 
 void GridContainer::update(float dt) {
@@ -315,6 +370,12 @@ std::shared_ptr<VideoCard> FocusManager::getFocusedCard() const {
 void FocusManager::clickFocused() {
     auto card = getFocusedCard();
     if (card && card->onClick) card->onClick();
+}
+
+void FocusManager::pruneGridIfNeeded(int maxCards) {
+    if (!grid_) return;
+    grid_->pruneOldCards(maxCards, focusedCardIdx_);
+    updateTargetFocus();
 }
 
 } // namespace ui
