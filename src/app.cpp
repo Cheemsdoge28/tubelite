@@ -177,13 +177,18 @@ void App::renderFrame() {
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
 
+    bool shouldPresent = (state_.currentScreen != TubeState::Screen::Playback) || uiDirty_;
+    if (!shouldPresent) return;
+
     if (state_.currentScreen == TubeState::Screen::Playback) {
         if (!state_.showUi && state_.inputMode == TubeState::InputMode::None) {
-            return; // Let MPV draw exclusively, skip SDL render loop to fix z-fighting
+            return;
         }
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
         SDL_RenderClear(renderer_);
     } else {
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 20, 22, 26, 255);
         SDL_RenderClear(renderer_);
     }
@@ -251,6 +256,7 @@ void App::renderFrame() {
     
     keyboard_.render(renderer_, state_, width, height, uiDirty_);
     SDL_RenderPresent(renderer_);
+    uiDirty_ = false;
 }
 
 void App::handleEvent(SDL_Event& event) {
