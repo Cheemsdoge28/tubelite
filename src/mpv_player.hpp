@@ -22,6 +22,9 @@ public:
     void setVolume(int volume);
     void seek(int seconds);
     void toggleSubtitles();
+    void setMute(bool mute);
+    void setGeometry(int x, int y, int w, int h);
+    void resetGeometry();
 
     void update(); // Pump events
     

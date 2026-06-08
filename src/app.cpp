@@ -22,13 +22,13 @@ bool App::initialize() {
     home_grid_ = std::make_shared<ui::GridContainer>();
     home_grid_->title = "Trending Now";
     home_grid_->columns = 2;
-    home_grid_->bounds = {0, 60, 640, 420};
+    home_grid_->bounds = {0, 50, 640, 382};
     home_grid_->onScrolledToBottom = [this]() { loadMoreHomeFeeds(); };
 
     search_grid_ = std::make_shared<ui::GridContainer>();
     search_grid_->title = "";
     search_grid_->columns = 1;
-    search_grid_->bounds = {0, 60, 640, 420};
+    search_grid_->bounds = {0, 50, 640, 382};
     search_grid_->onScrolledToBottom = [this]() { loadMoreSearchResults(); };
     
     if (!mpv_player_.initialize(window_, renderer_)) {
@@ -291,11 +291,11 @@ void App::renderFrame() {
         }
     } else if (state_.currentScreen == TubeState::Screen::Search) {
         SDL_SetRenderDrawColor(renderer_, 31, 31, 31, 255); // #1f1f1f header
-        SDL_Rect headerRect{0, 0, width, 60};
+        SDL_Rect headerRect{0, 0, width, 50};
         SDL_RenderFillRect(renderer_, &headerRect);
         
         std::string headerTitle = "Search: " + current_search_query_;
-        drawTextShadow(renderer_, 20, 20, headerTitle, 2, {255, 80, 80, 255});
+        drawTextShadow(renderer_, 20, 18, headerTitle, 2, {255, 80, 80, 255});
         
         if (state_.isSearching && search_grid_->cards.empty()) {
             float time = SDL_GetTicks() / 1000.0f;

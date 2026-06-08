@@ -90,6 +90,23 @@ void MpvPlayer::toggleSubtitles() {
     mpv_set_property_string(mpv_, "sub-visibility", next.c_str());
 }
 
+void MpvPlayer::setMute(bool mute) {
+    if (!mpv_) return;
+    int val = mute ? 1 : 0;
+    mpv_set_property(mpv_, "mute", MPV_FORMAT_FLAG, &val);
+}
+
+void MpvPlayer::setGeometry(int x, int y, int w, int h) {
+    if (!mpv_) return;
+    std::string geom = std::to_string(w) + "x" + std::to_string(h) + "+" + std::to_string(x) + "+" + std::to_string(y);
+    mpv_set_property_string(mpv_, "geometry", geom.c_str());
+}
+
+void MpvPlayer::resetGeometry() {
+    if (!mpv_) return;
+    mpv_set_property_string(mpv_, "geometry", "100%x100%+0+0");
+}
+
 void MpvPlayer::update() {
     if (!mpv_) return;
     while (mpv_event* event = mpv_wait_event(mpv_, 0)) {

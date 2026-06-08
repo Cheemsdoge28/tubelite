@@ -114,7 +114,8 @@ void GridContainer::render(SDL_Renderer* renderer, float offsetX, float offsetY)
     drawTextShadow(renderer, bounds.x + offsetX + 20, bounds.y + offsetY - scrollY + 5, title, 2, {255, 255, 255, 255});
     for (auto& c : cards) {
         float cy = c->bounds.y + offsetY - scrollY;
-        if (cy + c->bounds.h > 0 && cy < 480) { 
+        // Cull rendering to the grid scrollable viewport (50px to 432px)
+        if (cy + c->bounds.h > 50.0f && cy < 432.0f) { 
             c->render(renderer, offsetX, offsetY - scrollY);
         }
     }
@@ -137,17 +138,16 @@ void FocusManager::updateTargetFocus() {
     card->focused = true;
     
     targetFocusRing_ = card->bounds;
-    
-    float screenH = 480.0f;
-    float headerOffset = grid_->bounds.y + 40.0f; // Space for header
+    float screenH = 432.0f; // Viewport bottom before status bar
+    float headerOffset = 50.0f; // Viewport top after header
     float cy = card->bounds.y - grid_->scrollY;
     
     if (focusedCardIdx_ < grid_->columns) {
         grid_->targetScrollY = 0.0f;
     } else if (cy < headerOffset) {
         grid_->targetScrollY = card->bounds.y - headerOffset;
-    } else if (cy + card->bounds.h > screenH - 20.0f) {
-        grid_->targetScrollY = card->bounds.y + card->bounds.h - screenH + 20.0f;
+    } else if (cy + card->bounds.h > screenH) {
+        grid_->targetScrollY = card->bounds.y + card->bounds.h - screenH;
     }
     grid_->targetScrollY = std::max(0.0f, grid_->targetScrollY);
 }
