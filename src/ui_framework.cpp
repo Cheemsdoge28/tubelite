@@ -41,30 +41,35 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     int thumbW = horizontal ? 160 : static_cast<int>(bounds.w);
     int thumbH = horizontal ? 90 : static_cast<int>(bounds.w * (9.0f / 16.0f));
+    SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
     
-    if (thumb) {
-        SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
-        
-        int texW = 0, texH = 0;
-        SDL_QueryTexture(thumb, nullptr, nullptr, &texW, &texH);
-        
-        int srcW = texW;
-        int srcH = texW * 9 / 16;
-        int srcX = 0;
-        int srcY = (texH - srcH) / 2;
-        if (srcH > texH) {
-            srcH = texH;
-            srcW = texH * 16 / 9;
-            srcX = (texW - srcW) / 2;
-            srcY = 0;
-        }
-        SDL_Rect srcRect{srcX, srcY, srcW, srcH};
-        
-        SDL_RenderCopy(renderer, thumb, &srcRect, &thumbRect);
-    } else {
-        SDL_SetRenderDrawColor(renderer, 37, 37, 37, 255); // Fallback thumb background (#252525)
-        SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
+    if (is_previewing) {
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
         SDL_RenderFillRect(renderer, &thumbRect);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    } else {
+        if (thumb) {
+            int texW = 0, texH = 0;
+            SDL_QueryTexture(thumb, nullptr, nullptr, &texW, &texH);
+            
+            int srcW = texW;
+            int srcH = texW * 9 / 16;
+            int srcX = 0;
+            int srcY = (texH - srcH) / 2;
+            if (srcH > texH) {
+                srcH = texH;
+                srcW = texH * 16 / 9;
+                srcX = (texW - srcW) / 2;
+                srcY = 0;
+            }
+            SDL_Rect srcRect{srcX, srcY, srcW, srcH};
+            
+            SDL_RenderCopy(renderer, thumb, &srcRect, &thumbRect);
+        } else {
+            SDL_SetRenderDrawColor(renderer, 37, 37, 37, 255); // Fallback thumb background (#252525)
+            SDL_RenderFillRect(renderer, &thumbRect);
+        }
     }
     
     int maxPixelW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);

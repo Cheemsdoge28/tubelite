@@ -48,6 +48,7 @@ public:
     int metaW_ = 0;
     std::string truncated_title_ = "";
     std::string truncated_meta_ = "";
+    bool is_previewing = false;
 };
 
 class GridContainer : public View {
