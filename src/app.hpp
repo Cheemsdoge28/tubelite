@@ -11,6 +11,7 @@
 #include "image_manager.hpp"
 #include "ui_framework.hpp"
 #include <memory>
+#include <chrono>
 
 class App {
 public:
@@ -59,9 +60,8 @@ private:
 
     bool uiDirty_{true};
     bool lastKeyboardCursorVisible_{true};
+    bool homeLoadFailed_{false};
 
-    std::vector<YouTubeVideo> search_results_;
-    int selected_result_idx_{0};
     YouTubeVideo current_video_;
 
     std::unique_ptr<ImageManager> image_manager_;
@@ -72,6 +72,10 @@ private:
     std::string current_search_query_;
     int search_page_{1};
     int home_page_{1};
+
+    int lastStickDirX_{0};
+    int lastStickDirY_{0};
+    std::chrono::steady_clock::time_point nextStickNavAt_;
     
     void loadHomeFeeds();
     void loadMoreHomeFeeds();

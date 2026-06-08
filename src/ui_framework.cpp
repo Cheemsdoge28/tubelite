@@ -49,7 +49,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     }
     
     std::string title = video.title;
-    int maxChars = horizontal ? ((bounds.w - thumbW) / 12) : (bounds.w / 12);
+    int maxChars = horizontal ? ((bounds.w - thumbW - 20) / 12) : ((bounds.w - 10) / 12);
     if (title.length() > static_cast<size_t>(maxChars)) title = title.substr(0, maxChars - 3) + "...";
     
     int textX = cardRect.x + (horizontal ? thumbW + 10 : 5);
@@ -79,8 +79,9 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
         card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 40.0f;
     }
     
+    float titleOffset = title.empty() ? 0.0f : 30.0f;
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
-    card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding) + 30.0f; // 30px offset for title
+    card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding) + titleOffset;
 }
 
 void GridContainer::update(float dt) {
@@ -120,7 +121,9 @@ void FocusManager::updateTargetFocus() {
     float headerOffset = grid_->bounds.y + 40.0f; // Space for header
     float cy = card->bounds.y - grid_->scrollY;
     
-    if (cy < headerOffset) {
+    if (focusedCardIdx_ < grid_->columns) {
+        grid_->targetScrollY = 0.0f;
+    } else if (cy < headerOffset) {
         grid_->targetScrollY = card->bounds.y - headerOffset;
     } else if (cy + card->bounds.h > screenH - 20.0f) {
         grid_->targetScrollY = card->bounds.y + card->bounds.h - screenH + 20.0f;

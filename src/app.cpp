@@ -26,7 +26,7 @@ bool App::initialize() {
     home_grid_->onScrolledToBottom = [this]() { loadMoreHomeFeeds(); };
 
     search_grid_ = std::make_shared<ui::GridContainer>();
-    search_grid_->title = "Search Results";
+    search_grid_->title = "";
     search_grid_->columns = 1;
     search_grid_->bounds = {0, 60, 640, 420};
     search_grid_->onScrolledToBottom = [this]() { loadMoreSearchResults(); };
@@ -140,8 +140,6 @@ void App::activateSelectedKey() {
 
 void App::doSearch(const std::string& query) {
     state_.currentScreen = TubeState::Screen::Search;
-    search_results_.clear();
-    selected_result_idx_ = 0;
     state_.isSearching = true;
     uiDirty_ = true;
     current_search_query_ = query;
@@ -152,7 +150,6 @@ void App::doSearch(const std::string& query) {
     youtube_api_.search(query, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         state_.isSearching = false;
         if (success) {
-            search_results_ = results;
             search_grid_->cards.clear();
             for (const auto& v : results) {
                 auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
@@ -192,6 +189,30 @@ void App::updateSticks() {
         keyboard_.updateCursorFromTriggers(state_, uiDirty_, [this](int delta) {
             KeyboardOverlay::moveActiveCursor(state_, delta);
         });
+    } else if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+        const float threshold = 0.5f;
+        const float absX = std::abs(state_.leftStickX);
+        const float absY = std::abs(state_.leftStickY);
+        int dirX = 0, dirY = 0;
+        if (absX >= threshold || absY >= threshold) {
+            if (absX >= absY) dirX = (state_.leftStickX > 0.0f) ? 1 : -1;
+            else              dirY = (state_.leftStickY > 0.0f) ? 1 : -1;
+        }
+        
+        using namespace std::chrono;
+        const auto now = steady_clock::now();
+        if (dirX != 0 || dirY != 0) {
+            if (dirX != lastStickDirX_ || dirY != lastStickDirY_ || now >= nextStickNavAt_) {
+                lastStickDirX_ = dirX;
+                lastStickDirY_ = dirY;
+                nextStickNavAt_ = now + milliseconds(250);
+                focus_manager_.handleInput(dirX, dirY);
+                uiDirty_ = true;
+            }
+        } else {
+            lastStickDirX_ = 0;
+            lastStickDirY_ = 0;
+        }
     }
 }
 
@@ -236,10 +257,15 @@ void App::renderFrame() {
             drawTextShadow(renderer_, 20, 15, "tubelite", 3, {255, 60, 60, 255});
             
             if (home_grid_->cards.empty()) {
-                float time = SDL_GetTicks() / 1000.0f;
-                drawSpinner(renderer_, width / 2, height / 2, 20, time);
-                drawText(renderer_, width / 2 - 152, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
-                uiDirty_ = true;
+                if (homeLoadFailed_) {
+                    drawText(renderer_, width / 2 - 144, height / 2 - 10, "Failed to load trending.", 2, {255, 100, 100, 255});
+                    drawText(renderer_, width / 2 - 144, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
+                } else {
+                    float time = SDL_GetTicks() / 1000.0f;
+                    drawSpinner(renderer_, width / 2, height / 2, 20, time);
+                    drawText(renderer_, width / 2 - 152, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
+                    uiDirty_ = true;
+                }
             } else {
                 home_grid_->render(renderer_, 0.0f, 0.0f);
                 focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
@@ -263,9 +289,12 @@ void App::renderFrame() {
                 drawText(renderer_, width / 2 - 96, height / 2 + 30, "Searching...", 2, {150, 150, 150, 255});
                 uiDirty_ = true;
             } else if (search_grid_->cards.empty()) {
-                drawText(renderer_, 20, 80, "No results or search not started.", 2, {150, 150, 150, 255});
+                if (current_search_query_.empty()) {
+                    drawText(renderer_, width / 2 - 144, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
+                } else {
+                    drawText(renderer_, width / 2 - 96, height / 2, "No results found.", 2, {150, 150, 150, 255});
+                }
             } else {
-                search_grid_->title = ""; // Hide duplicate title
                 search_grid_->render(renderer_, 0.0f, 0.0f);
                 focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
                 if (state_.isSearching) {
@@ -341,13 +370,29 @@ void App::handleKey(SDL_Keycode key) {
     case SDLK_ESCAPE: state_.running = false; break;
     case SDLK_y: openKeyboard(); break;
     case SDLK_UP:
-        if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) { selected_result_idx_--; uiDirty_ = true; }
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(0, -1);
+        }
         break;
     case SDLK_DOWN:
-        if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) { selected_result_idx_++; uiDirty_ = true; }
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(0, 1);
+        }
+        break;
+    case SDLK_LEFT:
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(-1, 0);
+        }
+        break;
+    case SDLK_RIGHT:
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(1, 0);
+        }
         break;
     case SDLK_RETURN:
-        if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) playVideo(search_results_[selected_result_idx_]);
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.clickFocused();
+        }
         break;
     default: break;
     }
@@ -379,10 +424,8 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
     if (button == SDL_CONTROLLER_BUTTON_Y) {
         openKeyboard();
     } else if (button == SDL_CONTROLLER_BUTTON_A) {
-        if (state_.currentScreen == TubeState::Screen::Home) {
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
             focus_manager_.clickFocused();
-        } else if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
-            playVideo(search_results_[selected_result_idx_]);
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
             if (mpv_player_.isPlaying()) mpv_player_.pause();
             else mpv_player_.resume();
@@ -393,22 +436,19 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_.currentScreen = TubeState::Screen::Home;
         } else if (state_.currentScreen == TubeState::Screen::Search) {
             state_.currentScreen = TubeState::Screen::Home;
+            focus_manager_.setGrid(home_grid_);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-        if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0)
-            selected_result_idx_--;
-        else if (state_.currentScreen == TubeState::Screen::Home)
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search)
             focus_manager_.handleInput(0, -1);
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-        if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1)
-            selected_result_idx_++;
-        else if (state_.currentScreen == TubeState::Screen::Home)
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search)
             focus_manager_.handleInput(0, 1);
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-        if (state_.currentScreen == TubeState::Screen::Home)
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search)
             focus_manager_.handleInput(-1, 0);
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-        if (state_.currentScreen == TubeState::Screen::Home)
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search)
             focus_manager_.handleInput(1, 0);
     } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
         state_.showUi = !state_.showUi;
@@ -423,17 +463,31 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
 void App::handleJoyHat(Uint8 value) {
     if (value & SDL_HAT_UP) {
         if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, -1, w, h, uiDirty_); return; }
-        if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0) { selected_result_idx_--; uiDirty_ = true; }
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(0, -1);
+            uiDirty_ = true;
+        }
     }
     if (value & SDL_HAT_DOWN) {
         if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, 1, w, h, uiDirty_); return; }
-        if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1) { selected_result_idx_++; uiDirty_ = true; }
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(0, 1);
+            uiDirty_ = true;
+        }
     }
     if (value & SDL_HAT_LEFT) {
         if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, -1, 0, w, h, uiDirty_); return; }
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(-1, 0);
+            uiDirty_ = true;
+        }
     }
     if (value & SDL_HAT_RIGHT) {
         if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 1, 0, w, h, uiDirty_); return; }
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+            focus_manager_.handleInput(1, 0);
+            uiDirty_ = true;
+        }
     }
 }
 
@@ -487,6 +541,7 @@ void App::handleControllerAxis(const SDL_ControllerAxisEvent& caxis) {
 
 void App::loadHomeFeeds() {
     home_page_ = 1;
+    homeLoadFailed_ = false;
     youtube_api_.search("trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         if (success && !results.empty()) {
             home_grid_->cards.clear();
@@ -497,7 +552,7 @@ void App::loadHomeFeeds() {
             }
             focus_manager_.setGrid(home_grid_);
         } else {
-            home_grid_->title = "Failed to load trending. Press Y to search.";
+            homeLoadFailed_ = true;
         }
         uiDirty_ = true;
     });
@@ -532,7 +587,6 @@ void App::loadMoreSearchResults() {
         state_.isSearching = false;
         if (success && !results.empty()) {
             for (const auto& v : results) {
-                search_results_.push_back(v);
                 auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
                 card->onClick = [this, v]() { playVideo(v); };
                 search_grid_->addCard(card);
