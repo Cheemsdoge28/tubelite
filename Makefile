@@ -51,11 +51,11 @@ else
     # Linux native (builds directly on the R36S or any Linux host)
     CXX ?= g++
     PKG_CONFIG ?= pkg-config
-    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf 2>/dev/null)
+    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf libdrm 2>/dev/null)
     SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 SDL2_ttf 2>/dev/null)
 
     ifeq ($(strip $(SDL_CFLAGS)),)
-        SDL_CFLAGS := -I/usr/include/SDL2
+        SDL_CFLAGS := -I/usr/include/SDL2 -I/usr/include/libdrm
     endif
 
     ifeq ($(strip $(SDL_LIBS)),)

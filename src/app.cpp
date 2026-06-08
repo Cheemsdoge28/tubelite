@@ -10,8 +10,8 @@
 #undef SDL_VIDEO_DRIVER_WAYLAND
 #endif
 #include <SDL2/SDL_syswm.h>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
+#include <libdrm/xf86drm.h>
+#include <libdrm/xf86drmMode.h>
 
 static void setupDrmPlaneszpos(int drm_fd) {
     if (drm_fd < 0) return;
