@@ -40,16 +40,16 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     }
 
     // Initialize mpv render context for GLES2
-    mpv_opengl_init_params gl_init_params{
-        [](void*, const char* name) -> void* {
-            return (void*)SDL_GL_GetProcAddress(name);
-        },
-        nullptr
+    mpv_opengl_init_params gl_init_params;
+    gl_init_params.get_proc_address = [](void*, const char* name) -> void* {
+        return (void*)SDL_GL_GetProcAddress(name);
     };
+    gl_init_params.get_proc_address_ctx = nullptr;
+    gl_init_params.extra_exts = nullptr;
 
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE, (void*)MPV_RENDER_API_TYPE_OPENGL},
-        {MPV_RENDER_PARAM_API_INIT_PARAMS, &gl_init_params},
+        {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},
         {MPV_RENDER_PARAM_ADVANCED_CONTROL, (void*)(intptr_t)1},
         {MPV_RENDER_PARAM_INVALID, nullptr}
     };
@@ -258,12 +258,11 @@ void MpvPlayer::render(int winWidth, int winHeight) {
     glScissor(gl_x, gl_y, gl_w, gl_h);
     glEnable(GL_SCISSOR_TEST);
 
-    mpv_opengl_fbo fbo{
-        .fbo = 0,
-        .w = winWidth,
-        .h = winHeight,
-        .internal_format = 0
-    };
+    mpv_opengl_fbo fbo;
+    fbo.fbo = 0;
+    fbo.w = winWidth;
+    fbo.h = winHeight;
+    fbo.internal_format = 0;
 
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
