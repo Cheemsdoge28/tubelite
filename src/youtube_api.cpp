@@ -30,12 +30,18 @@ std::string YouTubeAPI::executeCommand(const std::string& cmd) {
     return result;
 }
 
-void YouTubeAPI::search(const std::string& query, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback) {
-    std::thread([this, query, callback]() {
+void YouTubeAPI::search(const std::string& query, int page, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback) {
+    std::thread([this, query, page, callback]() {
         try {
-            // Use yt-dlp to search. We ask for JSON output.
-            // "ytsearch10:query" limits to 10 results.
-            std::string cmd = "yt-dlp --flat-playlist --no-check-certificate --force-ipv4 --dump-json \"ytsearch15:" + query + "\" 2> yt-dlp-error.log";
+            std::string safeQuery = query;
+            for (char& c : safeQuery) {
+                if (c == '"' || c == '\\' || c == '$' || c == '`') c = ' ';
+            }
+            
+            int startIdx = (page - 1) * 15 + 1;
+            int endIdx = page * 15;
+            
+            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 --flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery + "\" --playlist-start " + std::to_string(startIdx) + " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
             std::string output = executeCommand(cmd);
             
             std::vector<YouTubeVideo> results;

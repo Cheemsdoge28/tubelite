@@ -66,7 +66,14 @@ private:
 
     std::unique_ptr<ImageManager> image_manager_;
     ui::FocusManager focus_manager_;
-    std::vector<std::shared_ptr<ui::HorizontalRail>> home_rails_;
+    std::shared_ptr<ui::GridContainer> home_grid_;
+    std::shared_ptr<ui::GridContainer> search_grid_;
+    
+    std::string current_search_query_;
+    int search_page_{1};
+    int home_page_{1};
     
     void loadHomeFeeds();
+    void loadMoreHomeFeeds();
+    void loadMoreSearchResults();
 };

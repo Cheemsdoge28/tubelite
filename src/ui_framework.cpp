@@ -6,20 +6,25 @@
 namespace ui {
 
 static float lerp(float a, float b, float dt, float speed = 10.0f) {
-    return a + (b - a) * (1.0f - std::exp(-speed * dt));
+    float delta = (b - a) * speed * dt;
+    // Cap delta to prevent overshoot
+    if (b > a) delta = std::min(delta, b - a);
+    else delta = std::max(delta, b - a);
+    return a + delta;
 }
 
 VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
     : im_(im), video(video) {
     focusable = true;
-    bounds.w = 160; 
-    bounds.h = 130; 
+    bounds.w = 300; 
+    bounds.h = 240; 
 }
 
 void VideoCard::update(float dt) {
-    if (focused) targetScale = 1.08f;
-    else targetScale = 1.0f;
-    scale = lerp(scale, targetScale, dt, 15.0f);
+    // Scaling removed to save CPU. 
+    // The focus border is sufficient for handheld feedback.
+    targetScale = 1.0f;
+    scale = 1.0f;
 }
 
 void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
@@ -37,7 +42,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     SDL_RenderFillRect(renderer, &cardRect);
     
     SDL_Texture* thumb = im_->getThumbnail(video.id);
-    int thumbH = static_cast<int>(90 * scale);
+    int thumbH = static_cast<int>(bounds.w * (9.0f / 16.0f));
     if (thumb) {
         SDL_Rect thumbRect{cardRect.x, cardRect.y, cardRect.w, thumbH};
         SDL_RenderCopy(renderer, thumb, nullptr, &thumbRect);
@@ -48,111 +53,125 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     }
     
     std::string title = video.title;
-    if (title.length() > 25) title = title.substr(0, 22) + "...";
+    // Dynamic substring based on width
+    int maxChars = bounds.w / 12; // approximate char width
+    if (title.length() > maxChars) title = title.substr(0, maxChars - 3) + "...";
     drawText(renderer, cardRect.x + 5, cardRect.y + thumbH + 5, title, 1, {240, 240, 240, 255});
     
     std::string meta = video.author;
     if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
-    if (meta.length() > 30) meta = meta.substr(0, 27) + "...";
-    drawText(renderer, cardRect.x + 5, cardRect.y + thumbH + 18, meta, 1, {150, 150, 150, 255});
+    if (meta.length() > maxChars + 5) meta = meta.substr(0, maxChars + 2) + "...";
+    drawText(renderer, cardRect.x + 5, cardRect.y + thumbH + 20, meta, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty()) {
         drawTextShadow(renderer, cardRect.x + cardRect.w - 35, cardRect.y + thumbH - 15, video.duration_string, 1, {255, 255, 255, 255});
     }
 }
 
-void HorizontalRail::addCard(std::shared_ptr<VideoCard> card) {
+void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     cards.push_back(card);
-    float x = 20.0f;
-    for (auto& c : cards) {
-        c->bounds.x = x;
-        c->bounds.y = bounds.y + 30.0f;
-        x += c->bounds.w + 15.0f;
-    }
+    int idx = cards.size() - 1;
+    int row = idx / columns;
+    int col = idx % columns;
+    
+    card->bounds.w = (640.0f - padding * (columns + 1)) / columns;
+    card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 40.0f;
+    
+    card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
+    card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding) + 30.0f; // 30px offset for title
 }
 
-void HorizontalRail::update(float dt) {
-    scrollX = lerp(scrollX, targetScrollX, dt, 10.0f);
+void GridContainer::update(float dt) {
+    scrollY = lerp(scrollY, targetScrollY, dt, 15.0f);
     for (auto& c : cards) c->update(dt);
 }
 
-void HorizontalRail::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
-    drawTextShadow(renderer, bounds.x + offsetX + 20, bounds.y + offsetY + 5, title, 2, {255, 255, 255, 255});
+void GridContainer::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
+    drawTextShadow(renderer, bounds.x + offsetX + 20, bounds.y + offsetY - scrollY + 5, title, 2, {255, 255, 255, 255});
     for (auto& c : cards) {
-        float cx = c->bounds.x + offsetX - scrollX;
-        if (cx + c->bounds.w > 0 && cx < 640) { 
-            c->render(renderer, offsetX - scrollX, offsetY);
+        float cy = c->bounds.y + offsetY - scrollY;
+        if (cy + c->bounds.h > 0 && cy < 480) { 
+            c->render(renderer, offsetX, offsetY - scrollY);
         }
     }
 }
 
-void FocusManager::setViews(const std::vector<std::shared_ptr<HorizontalRail>>& rails) {
-    rails_ = rails;
-    focusedRailIdx_ = 0;
+void FocusManager::setGrid(std::shared_ptr<GridContainer> grid) {
+    grid_ = grid;
     focusedCardIdx_ = 0;
     updateTargetFocus();
     currentFocusRing_ = targetFocusRing_;
 }
 
 void FocusManager::updateTargetFocus() {
-    if (rails_.empty()) return;
-    focusedRailIdx_ = std::clamp(focusedRailIdx_, 0, static_cast<int>(rails_.size()) - 1);
-    auto rail = rails_[focusedRailIdx_];
+    if (!grid_ || grid_->cards.empty()) return;
+    focusedCardIdx_ = std::clamp(focusedCardIdx_, 0, static_cast<int>(grid_->cards.size()) - 1);
     
-    if (rail->cards.empty()) return;
-    focusedCardIdx_ = std::clamp(focusedCardIdx_, 0, static_cast<int>(rail->cards.size()) - 1);
+    for (auto& c : grid_->cards) c->focused = false;
     
-    for (auto& r : rails_) {
-        for (auto& c : r->cards) c->focused = false;
-    }
-    
-    auto card = rail->cards[focusedCardIdx_];
+    auto card = grid_->cards[focusedCardIdx_];
     card->focused = true;
     
     targetFocusRing_ = card->bounds;
-    targetFocusRing_.y = rail->bounds.y + 30.0f;
     
-    float screenW = 640.0f;
-    float cx = card->bounds.x - rail->scrollX;
-    if (cx < 40.0f) rail->targetScrollX = card->bounds.x - 40.0f;
-    else if (cx + card->bounds.w > screenW - 40.0f) {
-        rail->targetScrollX = card->bounds.x + card->bounds.w - screenW + 40.0f;
+    float screenH = 480.0f;
+    float headerOffset = grid_->bounds.y + 40.0f; // Space for header
+    float cy = card->bounds.y - grid_->scrollY;
+    
+    if (cy < headerOffset) {
+        grid_->targetScrollY = card->bounds.y - headerOffset;
+    } else if (cy + card->bounds.h > screenH - 20.0f) {
+        grid_->targetScrollY = card->bounds.y + card->bounds.h - screenH + 20.0f;
     }
-    rail->targetScrollX = std::max(0.0f, rail->targetScrollX);
+    grid_->targetScrollY = std::max(0.0f, grid_->targetScrollY);
 }
 
 void FocusManager::handleInput(int dx, int dy) {
-    if (rails_.empty()) return;
-    if (dx != 0) {
-        focusedCardIdx_ += dx;
-        updateTargetFocus();
+    if (!grid_ || grid_->cards.empty()) return;
+    int maxCols = grid_->columns;
+    int row = focusedCardIdx_ / maxCols;
+    int col = focusedCardIdx_ % maxCols;
+    
+    col += dx;
+    if (col < 0) col = 0;
+    if (col >= maxCols) col = maxCols - 1;
+    
+    row += dy;
+    if (row < 0) row = 0;
+    
+    int newIdx = row * maxCols + col;
+    if (newIdx >= static_cast<int>(grid_->cards.size())) {
+        newIdx = grid_->cards.size() - 1;
     }
-    if (dy != 0) {
-        focusedRailIdx_ += dy;
+    
+    if (newIdx != focusedCardIdx_) {
+        focusedCardIdx_ = newIdx;
         updateTargetFocus();
+        
+        if (newIdx >= static_cast<int>(grid_->cards.size()) - (maxCols * 2)) {
+            if (grid_->onScrolledToBottom) grid_->onScrolledToBottom();
+        }
     }
 }
 
 void FocusManager::update(float dt) {
-    for (auto& r : rails_) r->update(dt);
+    if (grid_) grid_->update(dt);
     
-    if (!rails_.empty() && !rails_[focusedRailIdx_]->cards.empty()) {
-        auto rail = rails_[focusedRailIdx_];
-        float scroll = rail->scrollX;
-        currentFocusRing_.x = lerp(currentFocusRing_.x, targetFocusRing_.x - scroll, dt, 15.0f);
-        currentFocusRing_.y = lerp(currentFocusRing_.y, targetFocusRing_.y, dt, 15.0f);
+    if (grid_ && !grid_->cards.empty()) {
+        float scroll = grid_->scrollY;
+        currentFocusRing_.x = lerp(currentFocusRing_.x, targetFocusRing_.x, dt, 15.0f);
+        currentFocusRing_.y = lerp(currentFocusRing_.y, targetFocusRing_.y - scroll, dt, 15.0f);
         currentFocusRing_.w = lerp(currentFocusRing_.w, targetFocusRing_.w, dt, 15.0f);
         currentFocusRing_.h = lerp(currentFocusRing_.h, targetFocusRing_.h, dt, 15.0f);
     }
 }
 
 void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float offsetY) {
-    if (rails_.empty() || rails_[focusedRailIdx_]->cards.empty()) return;
+    if (!grid_ || grid_->cards.empty()) return;
     
-    auto card = rails_[focusedRailIdx_]->cards[focusedCardIdx_];
-    float scale = card->scale;
-    float w = currentFocusRing_.w * scale;
-    float h = currentFocusRing_.h * scale;
+    auto card = grid_->cards[focusedCardIdx_];
+    float w = currentFocusRing_.w;
+    float h = currentFocusRing_.h;
     float cx = currentFocusRing_.x + offsetX + currentFocusRing_.w / 2.0f;
     float cy = currentFocusRing_.y + offsetY + currentFocusRing_.h / 2.0f;
     
@@ -171,10 +190,8 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
 }
 
 std::shared_ptr<VideoCard> FocusManager::getFocusedCard() const {
-    if (rails_.empty()) return nullptr;
-    auto rail = rails_[focusedRailIdx_];
-    if (rail->cards.empty()) return nullptr;
-    return rail->cards[focusedCardIdx_];
+    if (!grid_ || grid_->cards.empty()) return nullptr;
+    return grid_->cards[focusedCardIdx_];
 }
 
 void FocusManager::clickFocused() {

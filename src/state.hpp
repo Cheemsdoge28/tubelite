@@ -13,6 +13,8 @@ struct TubeState {
     std::string textBuffer;
     int textCursor{0};
     bool running{true};
+    bool isLoadingVideo{false};
+    bool isSearching{false};
     int keyboardSelectedIndex{0};
     bool replaceBufferOnNextInput{false};
     bool showUi{true};

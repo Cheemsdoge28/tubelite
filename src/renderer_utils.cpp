@@ -97,9 +97,25 @@ void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int
 }
 
 void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {
-    const int off = std::max(1, scale / 2);
-    drawText(renderer, x + off, y + off, text, scale, {8, 10, 12, 200});
+    const int offset = std::max(1, scale / 2);
+    drawText(renderer, x - offset, y + offset, text, scale, {0, 0, 0, color.a});
     drawText(renderer, x, y, text, scale, color);
+}
+
+void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time) {
+    int numDots = 8;
+    for (int i = 0; i < numDots; ++i) {
+        float angle = i * (2.0f * 3.1415926535f / numDots);
+        float dotX = x + std::cos(angle) * radius;
+        float dotY = y + std::sin(angle) * radius;
+        
+        float offset = std::fmod(time * 8.0f + i, static_cast<float>(numDots));
+        int alpha = 255 - static_cast<int>((offset / static_cast<float>(numDots)) * 220);
+        
+        SDL_SetRenderDrawColor(renderer, 255, 60, 60, alpha);
+        SDL_Rect r{static_cast<int>(dotX) - 3, static_cast<int>(dotY) - 3, 6, 6};
+        SDL_RenderFillRect(renderer, &r);
+    }
 }
 
 SDL_Texture* createTargetTexture(SDL_Renderer* renderer, int width, int height) {

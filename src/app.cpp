@@ -18,6 +18,19 @@ bool App::initialize() {
     if (!createWindow()) return false;
     openController();
     image_manager_ = std::make_unique<ImageManager>(renderer_);
+    
+    home_grid_ = std::make_shared<ui::GridContainer>();
+    home_grid_->title = "Trending Now";
+    home_grid_->columns = 2;
+    home_grid_->bounds = {0, 60, 640, 420};
+    home_grid_->onScrolledToBottom = [this]() { loadMoreHomeFeeds(); };
+
+    search_grid_ = std::make_shared<ui::GridContainer>();
+    search_grid_->title = "Search Results";
+    search_grid_->columns = 1;
+    search_grid_->bounds = {0, 60, 640, 420};
+    search_grid_->onScrolledToBottom = [this]() { loadMoreSearchResults(); };
+    
     if (!mpv_player_.initialize(window_, renderer_)) {
         logError("MPV init failed");
         return false;
@@ -64,6 +77,7 @@ bool App::createWindow() {
     if (renderer_ == nullptr) renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_SOFTWARE);
     if (renderer_ == nullptr) return false;
 
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
     SDL_ShowCursor(SDL_DISABLE);
     return true;
 }
@@ -128,25 +142,44 @@ void App::doSearch(const std::string& query) {
     state_.currentScreen = TubeState::Screen::Search;
     search_results_.clear();
     selected_result_idx_ = 0;
+    state_.isSearching = true;
+    uiDirty_ = true;
+    current_search_query_ = query;
+    search_page_ = 1;
     
     if (image_manager_) image_manager_->clearCache();
 
-    youtube_api_.search(query, [this](bool success, const std::vector<YouTubeVideo>& results) {
+    youtube_api_.search(query, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
+        state_.isSearching = false;
         if (success) {
             search_results_ = results;
-            uiDirty_ = true;
+            search_grid_->cards.clear();
+            for (const auto& v : results) {
+                auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                card->onClick = [this, v]() { playVideo(v); };
+                search_grid_->addCard(card);
+            }
+            focus_manager_.setGrid(search_grid_);
         }
+        uiDirty_ = true;
     });
 }
 
 void App::playVideo(const YouTubeVideo& video) {
+    if (state_.isLoadingVideo || state_.currentScreen == TubeState::Screen::Playback) return;
+    
     current_video_ = video;
+    state_.isLoadingVideo = true;
+    uiDirty_ = true;
+    
     youtube_api_.getStreamUrl(video.id, [this](bool success, const std::string& url) {
+        state_.isLoadingVideo = false;
         if (success) {
             state_.currentScreen = TubeState::Screen::Playback;
             mpv_player_.play(url);
-            uiDirty_ = true;
+            state_.showUi = false;
         }
+        uiDirty_ = true;
     });
 }
 
@@ -202,12 +235,13 @@ void App::renderFrame() {
             SDL_RenderFillRect(renderer_, &headerRect);
             drawTextShadow(renderer_, 20, 15, "tubelite", 3, {255, 60, 60, 255});
             
-            if (home_rails_.empty() || home_rails_[0]->cards.empty()) {
-                drawText(renderer_, 40, 120, "Loading Trending...", 2, {150, 150, 150, 255});
+            if (home_grid_->cards.empty()) {
+                float time = SDL_GetTicks() / 1000.0f;
+                drawSpinner(renderer_, width / 2, height / 2, 20, time);
+                drawText(renderer_, width / 2 - 50, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
+                uiDirty_ = true;
             } else {
-                for (auto& rail : home_rails_) {
-                    rail->render(renderer_, 0.0f, 0.0f);
-                }
+                home_grid_->render(renderer_, 0.0f, 0.0f);
                 focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
             }
         } else if (state_.currentScreen == TubeState::Screen::Search) {
@@ -216,39 +250,16 @@ void App::renderFrame() {
             SDL_RenderFillRect(renderer_, &headerRect);
             drawTextShadow(renderer_, 20, 20, "Search Results", 3, {255, 80, 80, 255});
             
-            int y = 70;
-            int idx = 0;
-            for (const auto& video : search_results_) {
-                if (y > height - 100) break;
-                bool selected = (idx == selected_result_idx_);
-                if (selected) {
-                    SDL_SetRenderDrawColor(renderer_, 60, 68, 80, 255);
-                    SDL_Rect bgRect{10, y - 5, width - 20, 56};
-                    SDL_RenderFillRect(renderer_, &bgRect);
-                    SDL_SetRenderDrawColor(renderer_, 100, 150, 255, 255);
-                    SDL_RenderDrawRect(renderer_, &bgRect);
-                }
-                
-                int thumbWidth = 60;
-                int thumbHeight = 45;
-                SDL_Texture* thumb = image_manager_ ? image_manager_->getThumbnail(video.id) : nullptr;
-                if (thumb) {
-                    SDL_Rect thumbRect{20, y, thumbWidth, thumbHeight};
-                    SDL_RenderCopy(renderer_, thumb, nullptr, &thumbRect);
-                } else {
-                    SDL_SetRenderDrawColor(renderer_, 40, 44, 50, 255);
-                    SDL_Rect thumbRect{20, y, thumbWidth, thumbHeight};
-                    SDL_RenderFillRect(renderer_, &thumbRect);
-                }
-                
-                int textX = 20 + thumbWidth + 10;
-                SDL_Color titleColor = selected ? SDL_Color{255, 255, 255, 255} : SDL_Color{200, 200, 200, 255};
-                std::string title = video.title;
-                if (title.length() > 40) title = title.substr(0, 37) + "...";
-                drawText(renderer_, textX, y + 2, title, 2, titleColor);
-                drawText(renderer_, textX, y + 26, video.author + " | " + video.duration_string + " | " + video.view_count_string, 1, {120, 130, 140, 255});
-                y += 56;
-                idx++;
+            if (state_.isSearching) {
+                float time = SDL_GetTicks() / 1000.0f;
+                drawSpinner(renderer_, width / 2, height / 2, 20, time);
+                drawText(renderer_, width / 2 - 40, height / 2 + 30, "Searching...", 2, {150, 150, 150, 255});
+                uiDirty_ = true;
+            } else if (search_grid_->cards.empty()) {
+                drawText(renderer_, 20, 80, "No results or search not started.", 2, {150, 150, 150, 255});
+            } else {
+                search_grid_->render(renderer_, 0.0f, 0.0f);
+                focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
             }
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showUi) {
@@ -259,6 +270,19 @@ void App::renderFrame() {
             }
         }
         status_.render(renderer_, state_, width, height, uiDirty_);
+        
+        if (state_.isLoadingVideo) {
+            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
+            SDL_Rect bg{0, 0, width, height};
+            SDL_RenderFillRect(renderer_, &bg);
+            
+            float time = SDL_GetTicks() / 1000.0f;
+            drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
+            
+            std::string text = "Extracting Stream URL...";
+            drawTextShadow(renderer_, width / 2 - 80, height / 2 + 25, text, 2, {255, 255, 255, 255});
+            uiDirty_ = true;
+        }
     }
     
     keyboard_.render(renderer_, state_, width, height, uiDirty_);
@@ -375,6 +399,10 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             focus_manager_.handleInput(1, 0);
     } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
         state_.showUi = !state_.showUi;
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            if (state_.showUi) mpv_player_.pause();
+            else mpv_player_.resume();
+        }
         uiDirty_ = true;
     }
 }
@@ -445,25 +473,57 @@ void App::handleControllerAxis(const SDL_ControllerAxisEvent& caxis) {
 }
 
 void App::loadHomeFeeds() {
-    auto trendingRail = std::make_shared<ui::HorizontalRail>();
-    trendingRail->title = "Trending Now";
-    trendingRail->bounds = {0, 60, 640, 180};
+    home_page_ = 1;
+    youtube_api_.search("trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
+        if (success && !results.empty()) {
+            home_grid_->cards.clear();
+            for (const auto& v : results) {
+                auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                card->onClick = [this, v]() { playVideo(v); };
+                home_grid_->addCard(card);
+            }
+            focus_manager_.setGrid(home_grid_);
+        } else {
+            home_grid_->title = "Failed to load trending. Press Y to search.";
+        }
+        uiDirty_ = true;
+    });
+}
+
+void App::loadMoreHomeFeeds() {
+    if (state_.isLoadingVideo || state_.isSearching) return;
+    state_.isSearching = true;
+    uiDirty_ = true;
+    home_page_++;
     
-    youtube_api_.search("trending", [this, trendingRail](bool success, const std::vector<YouTubeVideo>& results) {
+    youtube_api_.search("trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
+        state_.isSearching = false;
         if (success && !results.empty()) {
             for (const auto& v : results) {
                 auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                card->onClick = [this, v]() {
-                    playVideo(v);
-                };
-                trendingRail->addCard(card);
+                card->onClick = [this, v]() { playVideo(v); };
+                home_grid_->addCard(card);
             }
-            home_rails_.push_back(trendingRail);
-            focus_manager_.setViews(home_rails_);
-        } else {
-            trendingRail->title = "Failed to load trending. Press Y to search.";
-            home_rails_.push_back(trendingRail);
-            focus_manager_.setViews(home_rails_);
+        }
+        uiDirty_ = true;
+    });
+}
+
+void App::loadMoreSearchResults() {
+    if (state_.isLoadingVideo || state_.isSearching || current_search_query_.empty()) return;
+    state_.isSearching = true;
+    uiDirty_ = true;
+    search_page_++;
+    
+    youtube_api_.search(current_search_query_, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
+        state_.isSearching = false;
+        if (success && !results.empty()) {
+            for (const auto& v : results) {
+                search_results_.push_back(v);
+                auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                card->onClick = [this, v]() { playVideo(v); };
+                search_grid_->addCard(card);
+            }
         }
         uiDirty_ = true;
     });

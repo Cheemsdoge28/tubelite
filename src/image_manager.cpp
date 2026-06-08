@@ -42,6 +42,17 @@ void ImageManager::update() {
             if (tex) {
                 SDL_UpdateTexture(tex, nullptr, pending.data, pending.width * 4);
                 cache_[pending.videoId] = tex;
+                cacheOrder_.push_back(pending.videoId);
+                
+                if (cacheOrder_.size() > 20) {
+                    std::string oldest = cacheOrder_.front();
+                    cacheOrder_.pop_front();
+                    if (cache_.find(oldest) != cache_.end()) {
+                        if (cache_[oldest]) SDL_DestroyTexture(cache_[oldest]);
+                        cache_.erase(oldest);
+                        loading_.erase(oldest);
+                    }
+                }
             } else {
                 cache_[pending.videoId] = nullptr;
             }
@@ -58,6 +69,7 @@ void ImageManager::clearCache() {
     }
     cache_.clear();
     loading_.clear();
+    cacheOrder_.clear();
     
     std::lock_guard<std::mutex> lock(mutex_);
     while (!downloadQueue_.empty()) downloadQueue_.pop();
@@ -93,6 +105,7 @@ void ImageManager::workerThread() {
             fclose(f);
             int w, h, channels;
             unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
+            std::remove(path.c_str()); // Free disk space immediately
             
             std::lock_guard<std::mutex> lock(mutex_);
             textureQueue_.push({videoId, w, h, data});

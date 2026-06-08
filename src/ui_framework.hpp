@@ -44,21 +44,25 @@ private:
     ImageManager* im_;
 };
 
-class HorizontalRail : public View {
+class GridContainer : public View {
 public:
     void addCard(std::shared_ptr<VideoCard> card);
     void render(SDL_Renderer* renderer, float offsetX, float offsetY) override;
     void update(float dt) override;
     
     std::vector<std::shared_ptr<VideoCard>> cards;
-    float scrollX = 0.0f;
-    float targetScrollX = 0.0f;
+    float scrollY = 0.0f;
+    float targetScrollY = 0.0f;
     std::string title;
+    
+    int columns = 2;
+    float padding = 15.0f;
+    std::function<void()> onScrolledToBottom;
 };
 
 class FocusManager {
 public:
-    void setViews(const std::vector<std::shared_ptr<HorizontalRail>>& rails);
+    void setGrid(std::shared_ptr<GridContainer> grid);
     void handleInput(int dx, int dy);
     void update(float dt);
     void renderFocusRing(SDL_Renderer* renderer, float offsetX, float offsetY);
@@ -67,8 +71,7 @@ public:
     void clickFocused();
 
 private:
-    std::vector<std::shared_ptr<HorizontalRail>> rails_;
-    int focusedRailIdx_ = 0;
+    std::shared_ptr<GridContainer> grid_;
     int focusedCardIdx_ = 0;
     Rect currentFocusRing_{0,0,0,0};
     Rect targetFocusRing_{0,0,0,0};

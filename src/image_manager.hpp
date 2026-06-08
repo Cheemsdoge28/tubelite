@@ -7,6 +7,7 @@
 #include <queue>
 #include <atomic>
 #include <condition_variable>
+#include <list>
 
 class ImageManager {
 public:
@@ -28,6 +29,7 @@ private:
     SDL_Renderer* renderer_;
     std::unordered_map<std::string, SDL_Texture*> cache_;
     std::unordered_map<std::string, bool> loading_;
+    std::list<std::string> cacheOrder_;
     
     struct PendingImage {
         std::string videoId;
