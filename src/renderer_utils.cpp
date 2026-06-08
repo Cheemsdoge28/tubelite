@@ -103,6 +103,61 @@ static TTF_Font* g_font_small = nullptr;
 static TTF_Font* g_font_medium = nullptr;
 static TTF_Font* g_font_large = nullptr;
 
+static bool isUtf8ContinuationByte(unsigned char ch) {
+    return (ch & 0xC0U) == 0x80U;
+}
+
+size_t utf8Length(const std::string& text) {
+    size_t count = 0;
+    for (unsigned char ch : text) {
+        if (!isUtf8ContinuationByte(ch)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::string utf8Slice(const std::string& text, size_t startCodepoint, size_t maxCodepoints) {
+    if (text.empty() || maxCodepoints == 0) return "";
+
+    size_t byteStart = std::string::npos;
+    size_t byteEnd = text.size();
+    size_t codepoint = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(text[i]);
+        if (isUtf8ContinuationByte(ch)) continue;
+
+        if (codepoint == startCodepoint) {
+            byteStart = i;
+        }
+        if (codepoint == startCodepoint + maxCodepoints) {
+            byteEnd = i;
+            break;
+        }
+        ++codepoint;
+    }
+
+    if (byteStart == std::string::npos) {
+        return "";
+    }
+    return text.substr(byteStart, byteEnd - byteStart);
+}
+
+std::string utf8Truncate(const std::string& text, size_t maxCodepoints, bool ellipsis) {
+    if (utf8Length(text) <= maxCodepoints) {
+        return text;
+    }
+    if (maxCodepoints == 0) {
+        return "";
+    }
+    const size_t sliceCount = ellipsis && maxCodepoints > 3 ? maxCodepoints - 3 : maxCodepoints;
+    std::string clipped = utf8Slice(text, 0, sliceCount);
+    if (ellipsis && maxCodepoints > 3) {
+        clipped += "...";
+    }
+    return clipped;
+}
+
 bool initFonts() {
     if (TTF_Init() != 0) {
         std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
@@ -147,7 +202,7 @@ bool initFonts() {
     
     // Loaded sizes optimized for 640x480 screen
     g_font_small = TTF_OpenFont(regPath.c_str(), 12);
-    g_font_medium = TTF_OpenFont(regPath.c_str(), 16);
+    g_font_medium = TTF_OpenFont(regPath.c_str(), 17);
     g_font_large = TTF_OpenFont(boldPath.c_str(), 24);
     
     if (!g_font_small || !g_font_medium || !g_font_large) {

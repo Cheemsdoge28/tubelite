@@ -92,6 +92,7 @@ private:
     std::chrono::steady_clock::time_point trending_cache_time_;
 
     std::shared_ptr<ui::VideoCard> preview_card_{nullptr};
+    bool is_playing_preview_{false};
     bool is_loading_preview_{false};
     std::unordered_map<std::string, std::string> stream_url_cache_;
     std::unordered_set<std::string> stream_prefetch_inflight_;

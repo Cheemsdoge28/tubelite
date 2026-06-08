@@ -133,7 +133,13 @@ std::string App::streamCacheKey(const std::string& videoId, int maxHeight) const
 }
 
 void App::stopBrowsePreviewState() {
+    if (is_playing_preview_) {
+        mpv_player_.stop();
+        mpv_player_.resetGeometry();
+        mpv_player_.setMute(state_.muted);
+    }
     preview_card_ = nullptr;
+    is_playing_preview_ = false;
     is_loading_preview_ = false;
 }
 
@@ -161,9 +167,11 @@ void App::renderBrowseLoadingState(int width, int height, const std::string& tex
 }
 
 void App::renderBrowseHeader(int width, int /*height*/, const std::string& title, const std::string& subtitle, float scrollY, bool searchScreen) {
-    const int expandedHeight = 88;
-    const int collapsedHeight = 54;
-    const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.18f));
+    const int expandedHeight = 84;
+    const int collapsedHeight = 58;
+    const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
+    const int titleY = 12;
+    const int subtitleY = 44;
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(renderer_, 12, 12, 14, 255);
@@ -174,13 +182,17 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
     SDL_Rect accent{0, headerHeight - 1, width, 1};
     SDL_RenderFillRect(renderer_, &accent);
 
-    drawTextShadow(renderer_, 18, 14, title, searchScreen ? 2 : 3, searchScreen ? SDL_Color{255, 96, 96, 255} : SDL_Color{255, 52, 52, 255});
-    drawText(renderer_, 20, headerHeight - 22, subtitle, 1, {170, 170, 176, 255});
+    drawTextShadow(renderer_, 18, titleY, title, searchScreen ? 2 : 3, searchScreen ? SDL_Color{255, 96, 96, 255} : SDL_Color{255, 52, 52, 255});
+    if (!subtitle.empty()) {
+        drawText(renderer_, 20, subtitleY, utf8Truncate(subtitle, 52, true), 1, {170, 170, 176, 255});
+    }
 
     if (headerHeight > 68) {
         drawText(renderer_, width - 168, 16, "Y Search", 1, {220, 220, 220, 255});
         drawText(renderer_, width - 168, 34, "X Quality", 1, {220, 220, 220, 255});
-        drawText(renderer_, width - 168, 52, "A Play", 1, {220, 220, 220, 255});
+        if (subtitle.empty()) {
+            drawText(renderer_, width - 168, 52, "A Play", 1, {220, 220, 220, 255});
+        }
     } else {
         drawText(renderer_, width - 162, 18, "Y Search  X " + std::to_string(state_.maxQualityHeight) + "P", 1, {220, 220, 220, 255});
     }
@@ -399,7 +411,7 @@ void App::renderFrame() {
             }
         }
         auto focusedCard = focus_manager_.getFocusedCard();
-        std::string subtitle = focusedCard ? focusedCard->video.title : "Trending feed optimized for handheld browsing";
+        std::string subtitle = focusedCard ? focusedCard->video.title : "";
         renderBrowseHeader(width, height, "TubeLite", subtitle, scrollY, false);
     } else if (state_.currentScreen == TubeState::Screen::Search) {
         if (state_.isSearching && search_grid_->cards.empty()) {
@@ -504,7 +516,10 @@ void App::handleKey(SDL_Keycode key) {
         }
         break;
     case SDLK_x:
-        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            mpv_player_.cycleStatsOverlay();
+            showPlaybackToast("Stats Overlay");
+        } else if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
             if (state_.maxQualityHeight == 240) state_.maxQualityHeight = 360;
             else if (state_.maxQualityHeight == 360) state_.maxQualityHeight = 480;
             else if (state_.maxQualityHeight == 480) state_.maxQualityHeight = 720;
@@ -627,7 +642,10 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             focus_manager_.setGrid(home_grid_);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            mpv_player_.cycleStatsOverlay();
+            showPlaybackToast("Stats Overlay");
+        } else if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
             if (state_.maxQualityHeight == 240) state_.maxQualityHeight = 360;
             else if (state_.maxQualityHeight == 360) state_.maxQualityHeight = 480;
             else if (state_.maxQualityHeight == 480) state_.maxQualityHeight = 720;
@@ -864,6 +882,12 @@ void App::updateHoverPreviews() {
     }
 
     if (preview_card_ != focusedCard) {
+        if (is_playing_preview_) {
+            mpv_player_.stop();
+            mpv_player_.resetGeometry();
+            mpv_player_.setMute(state_.muted);
+            is_playing_preview_ = false;
+        }
         preview_card_ = focusedCard;
         is_loading_preview_ = false;
         return;
@@ -876,6 +900,33 @@ void App::updateHoverPreviews() {
     const std::string cacheKey = streamCacheKey(focusedCard->video.id, state_.maxQualityHeight);
     if (stream_url_cache_.find(cacheKey) != stream_url_cache_.end() ||
         stream_prefetch_inflight_.find(cacheKey) != stream_prefetch_inflight_.end()) {
+        if (is_playing_preview_) {
+            return;
+        }
+        if (stream_url_cache_.find(cacheKey) != stream_url_cache_.end()) {
+            auto grid = activeGrid();
+            if (!grid) return;
+
+            const float screenY = focusedCard->bounds.y - grid->scrollY;
+            const bool horizontal = (focusedCard->bounds.w > 400);
+            const int thumbW = horizontal ? 160 : static_cast<int>(focusedCard->bounds.w);
+            const int thumbH = horizontal ? 90 : static_cast<int>(focusedCard->bounds.w * (9.0f / 16.0f));
+            const bool fullyVisible =
+                screenY >= grid->bounds.y &&
+                screenY + thumbH <= grid->bounds.y + grid->bounds.h &&
+                focusedCard->bounds.x >= grid->bounds.x &&
+                focusedCard->bounds.x + thumbW <= grid->bounds.x + grid->bounds.w;
+
+            if (!fullyVisible || screenY < 96.0f) {
+                return;
+            }
+
+            mpv_player_.setMute(true);
+            mpv_player_.setGeometry(static_cast<int>(focusedCard->bounds.x), static_cast<int>(screenY), thumbW, thumbH);
+            mpv_player_.play(stream_url_cache_[cacheKey]);
+            is_playing_preview_ = true;
+            uiDirty_ = true;
+        }
         return;
     }
 

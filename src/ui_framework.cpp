@@ -13,8 +13,9 @@ VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
 }
 
 void VideoCard::update(float dt) {
-    targetScale = focused ? 1.025f : 1.0f;
-    scale += (targetScale - scale) * std::min(1.0f, dt * 12.0f);
+    (void)dt;
+    targetScale = 1.0f;
+    scale = 1.0f;
     if (focused) {
         focusedTime_ += dt;
     } else {
@@ -74,10 +75,10 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     std::string title = video.title;
     int maxChars = horizontal ? ((bounds.w - thumbW - 20) / 12) : ((bounds.w - 10) / 12);
-    if (title.length() > static_cast<size_t>(maxChars)) {
+    if (static_cast<int>(utf8Length(title)) > maxChars) {
         if (focused && focusedTime_ > 1.5f) {
             int charOffset = static_cast<int>((focusedTime_ - 1.5f) * 3.0f);
-            int maxOffset = title.length() - maxChars + 3;
+            int maxOffset = static_cast<int>(utf8Length(title)) - maxChars + 3;
             if (charOffset > maxOffset) {
                 if (charOffset > maxOffset + 2) {
                     focusedTime_ = 1.5f;
@@ -86,9 +87,9 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
                     charOffset = maxOffset;
                 }
             }
-            title = title.substr(charOffset, maxChars);
+            title = utf8Slice(title, static_cast<size_t>(charOffset), static_cast<size_t>(maxChars));
         } else {
-            title = title.substr(0, maxChars - 3) + "...";
+            title = utf8Truncate(title, static_cast<size_t>(maxChars), true);
         }
     }
     
@@ -98,7 +99,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     std::string meta = video.author;
     if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
-    if (meta.length() > static_cast<size_t>(maxChars + 5)) meta = meta.substr(0, maxChars + 2) + "...";
+    if (static_cast<int>(utf8Length(meta)) > maxChars + 5) meta = utf8Truncate(meta, static_cast<size_t>(maxChars + 5), true);
     drawText(renderer, textX, textY + 25, meta, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty()) {
@@ -124,7 +125,8 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
 }
 
 void GridContainer::update(float dt) {
-    scrollY += (targetScrollY - scrollY) * std::min(1.0f, dt * 12.0f);
+    (void)dt;
+    scrollY = targetScrollY;
     for (auto& c : cards) c->update(dt);
 }
 
@@ -209,14 +211,15 @@ void FocusManager::handleInput(int dx, int dy) {
 }
 
 void FocusManager::update(float dt) {
+    (void)dt;
     if (grid_) grid_->update(dt);
     
     if (grid_ && !grid_->cards.empty()) {
         float scroll = grid_->scrollY;
-        currentFocusRing_.x += (targetFocusRing_.x - currentFocusRing_.x) * std::min(1.0f, dt * 14.0f);
-        currentFocusRing_.y += ((targetFocusRing_.y - scroll) - currentFocusRing_.y) * std::min(1.0f, dt * 14.0f);
-        currentFocusRing_.w += (targetFocusRing_.w - currentFocusRing_.w) * std::min(1.0f, dt * 14.0f);
-        currentFocusRing_.h += (targetFocusRing_.h - currentFocusRing_.h) * std::min(1.0f, dt * 14.0f);
+        currentFocusRing_.x = targetFocusRing_.x;
+        currentFocusRing_.y = targetFocusRing_.y - scroll;
+        currentFocusRing_.w = targetFocusRing_.w;
+        currentFocusRing_.h = targetFocusRing_.h;
     }
 }
 
@@ -238,14 +241,10 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
     };
     
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 255, 48, 48, 48);
-    SDL_Rect glow = ring;
-    glow.x -= 6; glow.y -= 6; glow.w += 12; glow.h += 12;
-    SDL_RenderFillRect(renderer, &glow);
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
     SDL_RenderDrawRect(renderer, &ring);
     ring.x -= 1; ring.y -= 1; ring.w += 2; ring.h += 2;
-    SDL_SetRenderDrawColor(renderer, 255, 48, 48, 255);
+    SDL_SetRenderDrawColor(renderer, 88, 140, 255, 255);
     SDL_RenderDrawRect(renderer, &ring);
     SDL_RenderSetClipRect(renderer, nullptr);
 }

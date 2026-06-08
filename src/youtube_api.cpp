@@ -49,7 +49,7 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
             int endIdx = page * 15;
             
             std::string cmd =
-                "yt-dlp --quiet --no-warnings --no-check-certificate --force-ipv4 "
+                "yt-dlp --quiet --no-warnings --encoding utf-8 --no-check-certificate --force-ipv4 "
                 "--extractor-args \"youtube:player_client=tv,web\" "
                 "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery +
                 "\" --playlist-start " + std::to_string(startIdx) +
@@ -126,7 +126,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::
         try {
             const std::string safeId = sanitizeShellText(video_id);
             std::string cmd =
-                "yt-dlp --quiet --no-warnings --no-check-certificate --force-ipv4 --no-playlist "
+                "yt-dlp --quiet --no-warnings --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
                 "--extractor-args \"youtube:player_client=tv,web\" "
                 "--format-sort \"codec:h264,res,fps,br\" "
                 "-f \"best[height<=" + std::to_string(max_height) + "][vcodec*=avc1]/best[height<=" +

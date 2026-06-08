@@ -104,7 +104,7 @@ KeyboardOverlayLayout KeyboardOverlay::buildLayout(const TubeState& state, int w
     KeyboardOverlayLayout layoutInfo;
     const int outerMargin = 14;
     const int panelPadding = (width < 480) ? 8 : 10;
-    const int rowHeight = (height < 360) ? 26 : 30;
+    const int rowHeight = (height < 360) ? 28 : 32;
     const int rowGap = (height < 360) ? 6 : 7;
     const int topContent = panelPadding + 18 + 4 + 16 + 8;
     
@@ -347,7 +347,7 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
             SDL_RenderFillRect(renderer, &keyRect);
             SDL_SetRenderDrawColor(renderer, selected ? 178 : 46, selected ? 216 : 52, selected ? 240 : 58, 255);
             SDL_RenderDrawRect(renderer, &keyRect);
-            drawTextShadow(renderer, keyRect.x + 8, keyRect.y + 8, key.label, 2, selected ? SDL_Color{12, 16, 22, 255} : textColor);
+            drawTextShadow(renderer, keyRect.x + 8, keyRect.y + 6, key.label, 3, selected ? SDL_Color{12, 16, 22, 255} : textColor);
         }
 
         SDL_SetRenderTarget(renderer, previousTarget);

@@ -167,13 +167,30 @@ void MpvPlayer::update() {
             break;
         }
         if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-            mpv_event_property* prop = (mpv_event_property*)event->data;
-            if (std::string(prop->name) == "time-pos" && prop->format == MPV_FORMAT_DOUBLE) {
-                playback_time_ = *(double*)prop->data;
-            } else if (std::string(prop->name) == "duration" && prop->format == MPV_FORMAT_DOUBLE) {
-                duration_ = *(double*)prop->data;
-            } else if (std::string(prop->name) == "pause" && prop->format == MPV_FORMAT_FLAG) {
-                is_playing_ = !(*(int*)prop->data);
+            auto* prop = static_cast<mpv_event_property*>(event->data);
+            if (!prop || !prop->name) {
+                continue;
+            }
+
+            const std::string name = prop->name;
+            if (name == "time-pos") {
+                if (prop->format == MPV_FORMAT_DOUBLE && prop->data) {
+                    playback_time_ = *static_cast<double*>(prop->data);
+                } else {
+                    playback_time_ = 0.0;
+                }
+            } else if (name == "duration") {
+                if (prop->format == MPV_FORMAT_DOUBLE && prop->data) {
+                    duration_ = *static_cast<double*>(prop->data);
+                } else {
+                    duration_ = 0.0;
+                }
+            } else if (name == "pause") {
+                if (prop->format == MPV_FORMAT_FLAG && prop->data) {
+                    is_playing_ = !(*static_cast<int*>(prop->data));
+                } else {
+                    is_playing_ = false;
+                }
             }
         }
     }

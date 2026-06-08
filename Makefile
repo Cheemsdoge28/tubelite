@@ -5,6 +5,7 @@ TARGET ?= tubelite
 SRC := $(wildcard src/*.cpp)
 BUILD_DIR ?= build
 OBJ := $(SRC:src/%.cpp=$(BUILD_DIR)/%.o)
+DEP := $(OBJ:.o=.d)
 INSTALL_DIR ?= /usr/local/bin
 
 # Detect platform
@@ -96,7 +97,7 @@ $(BUILD_DIR):
 # Compile object files
 $(BUILD_DIR)/%.o: src/%.cpp | $(BUILD_DIR) check_compiler
 	@echo "  CXX $<"
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Link target
 $(BUILD_TARGET): $(OBJ) | $(BUILD_DIR) check_compiler
@@ -154,3 +155,5 @@ config:
 	@echo ""
 
 .PHONY: all strip install clean arm64 windows native config
+
+-include $(DEP)
