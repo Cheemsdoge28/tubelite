@@ -19,7 +19,7 @@ ifeq ($(UNAME_S),MINGW64_NT-10.0)
 endif
 
 # Default flags
-CXXFLAGS ?= -std=c++17 -O3 -flto -ffast-math -Wall -Wextra -Wpedantic -pthread
+CXXFLAGS ?= -std=c++17 -O3 -flto -ffast-math -Wall -Wextra -Wpedantic -pthread -Isrc
 LDFLAGS ?= -flto -lmpv -pthread
 SDL_CFLAGS ?=
 SDL_LIBS ?=
