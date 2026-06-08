@@ -120,23 +120,35 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::
     std::thread([this, video_id, max_height, callback]() {
         try {
             const std::string safeId = sanitizeShellText(video_id);
-            std::string cmd =
+            const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
+
+            const std::vector<std::string> commands = {
                 "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
-                "--no-check-formats --extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
-                "--format-sort \"codec:h264,res,fps,br\" "
-                "-f \"best[height<=" + std::to_string(max_height) + "][acodec!=none][vcodec!=none]/best[height<=" +
-                std::to_string(max_height) + "]/best\" --get-url "
-                "\"https://www.youtube.com/watch?v=" + safeId + "\" 2>> yt-dlp-error.log";
-            std::string url = executeCommand(cmd);
-            
-            // Trim whitespace
-            if (!url.empty() && url.back() == '\n') {
-                url.pop_back();
+                "--extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                "-f \"bestvideo[height<=" + std::to_string(max_height) + "][vcodec^=avc1]+bestaudio/best[height<=" +
+                std::to_string(max_height) + "]/best\" --get-url \"" + watchUrl + "\" 2>&1",
+                "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
+                "--extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                "-f \"best[height<=" + std::to_string(max_height) + "]/best\" --get-url \"" + watchUrl + "\" 2>&1",
+                "yt-dlp --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 --no-playlist "
+                "--extractor-args \"youtube:player_client=tv,web;skip=dash,hls\" "
+                "--get-url \"" + watchUrl + "\" 2>&1"
+            };
+
+            std::string url;
+            for (const auto& cmd : commands) {
+                const std::string output = executeCommand(cmd);
+                size_t lineEnd = output.find_last_not_of("\r\n \t");
+                if (lineEnd == std::string::npos) continue;
+                size_t lineStart = output.find_last_of("\r\n", lineEnd);
+                lineStart = (lineStart == std::string::npos) ? 0 : lineStart + 1;
+                std::string candidate = output.substr(lineStart, lineEnd - lineStart + 1);
+                if (candidate.rfind("http://", 0) == 0 || candidate.rfind("https://", 0) == 0) {
+                    url = candidate;
+                    break;
+                }
             }
-            if (!url.empty() && url.back() == '\r') {
-                url.pop_back();
-            }
-            
+
             if (url.empty()) {
                 callback(false, "");
             } else {

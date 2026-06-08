@@ -271,12 +271,10 @@ void App::doSearch(const std::string& query) {
 
     youtube_api_.search(query, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
+            state_.isSearching = false;
             if (success) {
                 schedulePresentation(search_grid_, results, true, [this]() {
-                    state_.isSearching = false;
                 });
-            } else {
-                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -905,8 +903,8 @@ void App::loadHomeFeeds() {
     using namespace std::chrono;
     auto now = steady_clock::now();
     if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 15) {
+        state_.isSearching = false;
         schedulePresentation(home_grid_, cached_trending_videos_, true, [this]() {
-            state_.isSearching = false;
         });
         uiDirty_ = true;
         return;
@@ -917,15 +915,14 @@ void App::loadHomeFeeds() {
     
     youtube_api_.search("trending", home_page_, [this, now](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, now, success, results]() {
+            state_.isSearching = false;
             if (success && !results.empty()) {
                 cached_trending_videos_ = results;
                 trending_cache_time_ = now;
                 schedulePresentation(home_grid_, results, true, [this]() {
-                    state_.isSearching = false;
                 });
             } else {
                 homeLoadFailed_ = true;
-                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -940,13 +937,11 @@ void App::loadMoreHomeFeeds() {
     
     youtube_api_.search("trending", home_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
+            state_.isSearching = false;
             if (success && !results.empty()) {
                 schedulePresentation(home_grid_, results, false, [this]() {
-                    state_.isSearching = false;
                     focus_manager_.pruneGridIfNeeded(40);
                 });
-            } else {
-                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -961,13 +956,11 @@ void App::loadMoreSearchResults() {
     
     youtube_api_.search(current_search_query_, search_page_, [this](bool success, const std::vector<YouTubeVideo>& results) {
         queueOnMainThread([this, success, results]() {
+            state_.isSearching = false;
             if (success && !results.empty()) {
                 schedulePresentation(search_grid_, results, false, [this]() {
-                    state_.isSearching = false;
                     focus_manager_.pruneGridIfNeeded(40);
                 });
-            } else {
-                state_.isSearching = false;
             }
             uiDirty_ = true;
         });
@@ -1028,7 +1021,7 @@ void App::processPresentationQueue() {
 }
 
 void App::updateHoverPreviews() {
-    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo || state_.isSearching) {
+    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo) {
         stopBrowsePreviewState();
         return;
     }
