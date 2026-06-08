@@ -19,6 +19,9 @@ struct TubeState {
     bool replaceBufferOnNextInput{false};
     bool showUi{true};
     int maxQualityHeight{360};
+    int volume{100};
+    bool muted{false};
+    double speed{1.0};
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};

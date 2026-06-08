@@ -39,7 +39,7 @@ void ImageManager::update() {
         textureQueue_.pop();
         
         if (pending.data) {
-            SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, pending.width, pending.height);
+            SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, pending.width, pending.height);
             if (tex) {
                 SDL_UpdateTexture(tex, nullptr, pending.data, pending.width * 4);
                 cache_[pending.videoId] = tex;
@@ -108,6 +108,15 @@ void ImageManager::workerThread() {
             int w, h, channels;
             unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
             std::remove(path.c_str()); // Free disk space immediately
+            
+            // Swap Red and Blue channels (RGBA -> BGRA) to match SDL_PIXELFORMAT_ARGB8888 byte order
+            if (data) {
+                for (int i = 0; i < w * h; ++i) {
+                    unsigned char r = data[i * 4];
+                    data[i * 4] = data[i * 4 + 2];
+                    data[i * 4 + 2] = r;
+                }
+            }
             
             std::lock_guard<std::mutex> lock(mutex_);
             textureQueue_.push({videoId, w, h, data});

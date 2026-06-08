@@ -20,20 +20,33 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);
             SDL_SetRenderTarget(renderer, texture_);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer, 11, 11, 11, 255); // Modern YouTube dark mode black (#0b0b0b)
+            
+            // Match fire4arkos status bar background: 16, 18, 22
+            SDL_SetRenderDrawColor(renderer, 16, 18, 22, 255);
             SDL_RenderClear(renderer);
             
-            SDL_Color textColor{140, 140, 140, 255}; // Modern slate grey text
+            // Match fire4arkos top border line: 30, 34, 40 at y = 0
+            SDL_SetRenderDrawColor(renderer, 30, 34, 40, 255);
+            SDL_RenderDrawLine(renderer, 0, 0, width, 0);
             
-            std::string shortcuts = "A:Play B:Back Y:Search X:" + std::to_string(state.maxQualityHeight) + "p R3:Reload R1:UI";
+            // Match fire4arkos text color: 214, 220, 230
+            SDL_Color textColor{214, 220, 230, 255};
+            
+            std::string line1, line2;
             if (state.inputMode == TubeState::InputMode::SearchText) {
-                shortcuts = "A:Type B:Close L1:Caps/Sym START:Go";
+                line1 = "A TYPE  B CLOSE  L1 CAPS/SYM";
+                line2 = "START GO  L2/R2 CUR  LT/RT SCROLL";
             } else if (state.currentScreen == TubeState::Screen::Playback) {
-                shortcuts = "A:Pause B:Stop Y:Subs L/R:Seek R1:UI";
+                line1 = "A PAUSE  B STOP  Y SUBS  BACK STATS";
+                line2 = "D-PAD L/R SEEK  U/D VOL  L1/R1 SPEED";
+            } else {
+                line1 = "A PLAY  B BACK  Y SEARCH";
+                line2 = "X " + std::to_string(state.maxQualityHeight) + "P  R3 RELOAD  R1 UI";
             }
             
-            // Centered vertically (statusBarHeight 48 - scale 2 font height 14) / 2 = 17
-            drawTextShadow(renderer, 20, 17, shortcuts, 2, textColor);
+            // Match fire4arkos two-line layout: x=12, line 1 at y=8, line 2 at y=32
+            drawTextShadow(renderer, 12, 8, line1, 2, textColor);
+            drawTextShadow(renderer, 12, 32, line2, 2, textColor);
             
             SDL_SetRenderTarget(renderer, prev);
         }

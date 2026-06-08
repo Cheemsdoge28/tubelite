@@ -49,6 +49,7 @@ public:
     void addCard(std::shared_ptr<VideoCard> card);
     void render(SDL_Renderer* renderer, float offsetX, float offsetY) override;
     void update(float dt) override;
+    SDL_Rect viewportRect(float offsetX, float offsetY) const;
     
     std::vector<std::shared_ptr<VideoCard>> cards;
     float scrollY = 0.0f;

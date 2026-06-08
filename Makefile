@@ -50,15 +50,15 @@ else
     # Linux native (builds directly on the R36S or any Linux host)
     CXX ?= g++
     PKG_CONFIG ?= pkg-config
-    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 2>/dev/null)
-    SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 2>/dev/null)
+    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf 2>/dev/null)
+    SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 SDL2_ttf 2>/dev/null)
 
     ifeq ($(strip $(SDL_CFLAGS)),)
         SDL_CFLAGS := -I/usr/include/SDL2
     endif
 
     ifeq ($(strip $(SDL_LIBS)),)
-        SDL_LIBS := -lSDL2
+        SDL_LIBS := -lSDL2 -lSDL2_ttf
     endif
 
     # Add -lrt for POSIX shared memory (shm_open/mmap)

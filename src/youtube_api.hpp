@@ -31,4 +31,5 @@ public:
 
 private:
     std::string executeCommand(const std::string& cmd);
+    static std::string sanitizeShellText(const std::string& value);
 };

@@ -1,5 +1,13 @@
 #include "renderer_utils.hpp"
 #include <cctype>
+#include <iostream>
+#include <vector>
+
+#ifdef _WIN32
+#include <SDL_ttf.h>
+#else
+#include <SDL2/SDL_ttf.h>
+#endif
 
 std::array<uint8_t, 7> glyphFor(char ch) {
         switch (static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(ch)))) {
@@ -91,9 +99,100 @@ void drawGlyph(SDL_Renderer* renderer, int x, int y, char ch, int scale, SDL_Col
     }
 }
 
+static TTF_Font* g_font_small = nullptr;
+static TTF_Font* g_font_medium = nullptr;
+static TTF_Font* g_font_large = nullptr;
+
+bool initFonts() {
+    if (TTF_Init() != 0) {
+        std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
+        return false;
+    }
+    
+    std::vector<std::string> regPaths = {
+        "res/fonts/AtkinsonHyperlegible-Regular.ttf",
+        "../res/fonts/AtkinsonHyperlegible-Regular.ttf",
+        "/roms/tools/tubelite/res/fonts/AtkinsonHyperlegible-Regular.ttf",
+        "AtkinsonHyperlegible-Regular.ttf"
+    };
+    std::vector<std::string> boldPaths = {
+        "res/fonts/AtkinsonHyperlegible-Bold.ttf",
+        "../res/fonts/AtkinsonHyperlegible-Bold.ttf",
+        "/roms/tools/tubelite/res/fonts/AtkinsonHyperlegible-Bold.ttf",
+        "AtkinsonHyperlegible-Bold.ttf"
+    };
+    
+    std::string regPath = "";
+    for (const auto& p : regPaths) {
+        if (FILE* f = fopen(p.c_str(), "rb")) {
+            fclose(f);
+            regPath = p;
+            break;
+        }
+    }
+    
+    std::string boldPath = "";
+    for (const auto& p : boldPaths) {
+        if (FILE* f = fopen(p.c_str(), "rb")) {
+            fclose(f);
+            boldPath = p;
+            break;
+        }
+    }
+    
+    if (regPath.empty() || boldPath.empty()) {
+        std::cerr << "Could not find Atkinson Hyperlegible font files, falling back to pixel font." << std::endl;
+        return false;
+    }
+    
+    // Loaded sizes optimized for 640x480 screen
+    g_font_small = TTF_OpenFont(regPath.c_str(), 12);
+    g_font_medium = TTF_OpenFont(regPath.c_str(), 16);
+    g_font_large = TTF_OpenFont(boldPath.c_str(), 24);
+    
+    if (!g_font_small || !g_font_medium || !g_font_large) {
+        std::cerr << "TTF_OpenFont failed: " << TTF_GetError() << std::endl;
+        return false;
+    }
+    
+    return true;
+}
+
+void cleanupFonts() {
+    if (g_font_small)  { TTF_CloseFont(g_font_small);  g_font_small = nullptr; }
+    if (g_font_medium) { TTF_CloseFont(g_font_medium); g_font_medium = nullptr; }
+    if (g_font_large)  { TTF_CloseFont(g_font_large);  g_font_large = nullptr; }
+    TTF_Quit();
+}
+
 void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {
+    if (text.empty()) return;
+    
+    TTF_Font* font = nullptr;
+    if (scale <= 1)      font = g_font_small;
+    else if (scale == 2) font = g_font_medium;
+    else                 font = g_font_large;
+    
+    if (font) {
+        SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
+        if (surface) {
+            SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+            if (texture) {
+                SDL_Rect dst{x, y, surface->w, surface->h};
+                SDL_RenderCopy(renderer, texture, nullptr, &dst);
+                SDL_DestroyTexture(texture);
+            }
+            SDL_FreeSurface(surface);
+            return;
+        }
+    }
+    
+    // Fallback to custom pixel font if TTF is not available
     int cursor = x;
-    for (char ch : text) { drawGlyph(renderer, cursor, y, ch, scale, color); cursor += scale * 6; }
+    for (char ch : text) {
+        drawGlyph(renderer, cursor, y, ch, scale, color);
+        cursor += scale * 6;
+    }
 }
 
 void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {

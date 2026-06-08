@@ -13,10 +13,8 @@ VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
 }
 
 void VideoCard::update(float dt) {
-    // Scaling removed to save CPU. 
-    // The focus border is sufficient for handheld feedback.
-    targetScale = 1.0f;
-    scale = 1.0f;
+    targetScale = focused ? 1.025f : 1.0f;
+    scale += (targetScale - scale) * std::min(1.0f, dt * 12.0f);
     if (focused) {
         focusedTime_ += dt;
     } else {
@@ -35,8 +33,12 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     SDL_Rect cardRect{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
     
-    SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255); // Modern card dark grey (#1a1a1a)
+    SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
     SDL_RenderFillRect(renderer, &cardRect);
+    if (focused) {
+        SDL_SetRenderDrawColor(renderer, 48, 48, 52, 255);
+        SDL_RenderDrawRect(renderer, &cardRect);
+    }
     
     SDL_Texture* thumb = im_->getThumbnail(video.id);
     bool horizontal = (bounds.w > 400);
@@ -46,7 +48,24 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     if (thumb) {
         SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
-        SDL_RenderCopy(renderer, thumb, nullptr, &thumbRect);
+        
+        // Query texture size and crop a 16:9 region from the 4:3 source
+        int texW = 0, texH = 0;
+        SDL_QueryTexture(thumb, nullptr, nullptr, &texW, &texH);
+        
+        int srcW = texW;
+        int srcH = texW * 9 / 16;
+        int srcX = 0;
+        int srcY = (texH - srcH) / 2;
+        if (srcH > texH) {
+            srcH = texH;
+            srcW = texH * 16 / 9;
+            srcX = (texW - srcW) / 2;
+            srcY = 0;
+        }
+        SDL_Rect srcRect{srcX, srcY, srcW, srcH};
+        
+        SDL_RenderCopy(renderer, thumb, &srcRect, &thumbRect);
     } else {
         SDL_SetRenderDrawColor(renderer, 37, 37, 37, 255); // Fallback thumb background (#252525)
         SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
@@ -93,32 +112,41 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     int row = idx / columns;
     int col = idx % columns;
     
-    card->bounds.w = (640.0f - padding * (columns + 1)) / columns;
+    card->bounds.w = (bounds.w - padding * (columns + 1)) / static_cast<float>(columns);
     if (columns == 1) {
         card->bounds.h = 90.0f;
     } else {
         card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 40.0f;
     }
     
-    float titleOffset = title.empty() ? 0.0f : 30.0f;
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
-    card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding) + titleOffset;
+    card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding);
 }
 
 void GridContainer::update(float dt) {
-    scrollY = targetScrollY;
+    scrollY += (targetScrollY - scrollY) * std::min(1.0f, dt * 12.0f);
     for (auto& c : cards) c->update(dt);
 }
 
+SDL_Rect GridContainer::viewportRect(float offsetX, float offsetY) const {
+    return {
+        static_cast<int>(bounds.x + offsetX),
+        static_cast<int>(bounds.y + offsetY),
+        static_cast<int>(bounds.w),
+        static_cast<int>(bounds.h)
+    };
+}
+
 void GridContainer::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
-    drawTextShadow(renderer, bounds.x + offsetX + 20, bounds.y + offsetY - scrollY + 5, title, 2, {255, 255, 255, 255});
+    const SDL_Rect clip = viewportRect(offsetX, offsetY);
+    SDL_RenderSetClipRect(renderer, &clip);
     for (auto& c : cards) {
         float cy = c->bounds.y + offsetY - scrollY;
-        // Cull rendering to the grid scrollable viewport (50px to 432px)
-        if (cy + c->bounds.h > 50.0f && cy < 432.0f) { 
+        if (cy + c->bounds.h > bounds.y && cy < bounds.y + bounds.h) {
             c->render(renderer, offsetX, offsetY - scrollY);
         }
     }
+    SDL_RenderSetClipRect(renderer, nullptr);
 }
 
 void FocusManager::setGrid(std::shared_ptr<GridContainer> grid) {
@@ -138,8 +166,8 @@ void FocusManager::updateTargetFocus() {
     card->focused = true;
     
     targetFocusRing_ = card->bounds;
-    float screenH = 432.0f; // Viewport bottom before status bar
-    float headerOffset = 50.0f; // Viewport top after header
+    float headerOffset = grid_->bounds.y;
+    float screenH = grid_->bounds.y + grid_->bounds.h;
     float cy = card->bounds.y - grid_->scrollY;
     
     if (focusedCardIdx_ < grid_->columns) {
@@ -185,17 +213,18 @@ void FocusManager::update(float dt) {
     
     if (grid_ && !grid_->cards.empty()) {
         float scroll = grid_->scrollY;
-        currentFocusRing_.x = targetFocusRing_.x;
-        currentFocusRing_.y = targetFocusRing_.y - scroll;
-        currentFocusRing_.w = targetFocusRing_.w;
-        currentFocusRing_.h = targetFocusRing_.h;
+        currentFocusRing_.x += (targetFocusRing_.x - currentFocusRing_.x) * std::min(1.0f, dt * 14.0f);
+        currentFocusRing_.y += ((targetFocusRing_.y - scroll) - currentFocusRing_.y) * std::min(1.0f, dt * 14.0f);
+        currentFocusRing_.w += (targetFocusRing_.w - currentFocusRing_.w) * std::min(1.0f, dt * 14.0f);
+        currentFocusRing_.h += (targetFocusRing_.h - currentFocusRing_.h) * std::min(1.0f, dt * 14.0f);
     }
 }
 
 void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float offsetY) {
     if (!grid_ || grid_->cards.empty()) return;
+    const SDL_Rect clip = grid_->viewportRect(offsetX, offsetY);
+    SDL_RenderSetClipRect(renderer, &clip);
     
-    auto card = grid_->cards[focusedCardIdx_];
     float w = currentFocusRing_.w;
     float h = currentFocusRing_.h;
     float cx = currentFocusRing_.x + offsetX + currentFocusRing_.w / 2.0f;
@@ -208,11 +237,17 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
         static_cast<int>(h) + 8
     };
     
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 255, 48, 48, 48);
+    SDL_Rect glow = ring;
+    glow.x -= 6; glow.y -= 6; glow.w += 12; glow.h += 12;
+    SDL_RenderFillRect(renderer, &glow);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
     SDL_RenderDrawRect(renderer, &ring);
     ring.x -= 1; ring.y -= 1; ring.w += 2; ring.h += 2;
-    SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Brand YouTube red focus ring outer border
+    SDL_SetRenderDrawColor(renderer, 255, 48, 48, 255);
     SDL_RenderDrawRect(renderer, &ring);
+    SDL_RenderSetClipRect(renderer, nullptr);
 }
 
 std::shared_ptr<VideoCard> FocusManager::getFocusedCard() const {

@@ -2,7 +2,8 @@
 #include <SDL2/SDL.h>
 #include <vector>
 #include <string>
-#include <unordered_map>
+#include <mutex>
+#include <functional>
 #include "state.hpp"
 #include "mpv_player.hpp"
 #include "youtube_api.hpp"
@@ -12,6 +13,8 @@
 #include "ui_framework.hpp"
 #include <memory>
 #include <chrono>
+#include <unordered_map>
+#include <unordered_set>
 
 class App {
 public:
@@ -46,6 +49,13 @@ private:
 
     void doSearch(const std::string& query);
     void playVideo(const YouTubeVideo& video);
+    void stopBrowsePreviewState();
+    void leavePlayback();
+    void showPlaybackToast(const std::string& text, bool withProgress = false);
+    std::shared_ptr<ui::GridContainer> activeGrid() const;
+    std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
+    void renderBrowseHeader(int width, int height, const std::string& title, const std::string& subtitle, float scrollY, bool searchScreen);
+    void renderBrowseLoadingState(int width, int height, const std::string& text);
 
     SDL_Window* window_{nullptr};
     SDL_Renderer* renderer_{nullptr};
@@ -70,6 +80,7 @@ private:
     std::shared_ptr<ui::GridContainer> search_grid_;
     
     std::string current_search_query_;
+    std::string loading_status_text_{"Resolving Stream..."};
     int search_page_{1};
     int home_page_{1};
 
@@ -81,9 +92,16 @@ private:
     std::chrono::steady_clock::time_point trending_cache_time_;
 
     std::shared_ptr<ui::VideoCard> preview_card_{nullptr};
-    bool is_playing_preview_{false};
     bool is_loading_preview_{false};
+    std::unordered_map<std::string, std::string> stream_url_cache_;
+    std::unordered_set<std::string> stream_prefetch_inflight_;
     
+    int last_playback_seconds_{-1};
+    std::mutex queue_mutex_;
+    std::vector<std::function<void()>> main_thread_queue_;
+    void queueOnMainThread(std::function<void()> cb);
+    void processMainThreadQueue();
+
     void loadHomeFeeds();
     void loadMoreHomeFeeds();
     void loadMoreSearchResults();

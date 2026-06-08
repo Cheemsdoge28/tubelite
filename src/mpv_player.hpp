@@ -22,9 +22,16 @@ public:
     void setVolume(int volume);
     void seek(int seconds);
     void toggleSubtitles();
+    void cycleSubtitleTrack();
     void setMute(bool mute);
     void setGeometry(int x, int y, int w, int h);
     void resetGeometry();
+    void setSpeed(double speed);
+    void adjustSpeed(double delta);
+    double getSpeed() const;
+    void showText(const std::string& text, int duration_ms = 1400);
+    void showProgress();
+    void cycleStatsOverlay();
 
     void update(); // Pump events
     

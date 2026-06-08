@@ -22,7 +22,15 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     // Optimize for weak hardware
     mpv_set_option_string(mpv_, "hwdec", "auto");
     mpv_set_option_string(mpv_, "profile", "fast");
-    mpv_set_option_string(mpv_, "vo", "gpu,sdl,x11,drm");
+    mpv_set_option_string(mpv_, "vo", "drm,gpu,sdl,x11");
+    mpv_set_option_string(mpv_, "keepaspect", "yes");
+    mpv_set_option_string(mpv_, "osc", "no");
+    mpv_set_option_string(mpv_, "input-default-bindings", "no");
+    mpv_set_option_string(mpv_, "input-vo-keyboard", "no");
+    mpv_set_option_string(mpv_, "osd-level", "1");
+    mpv_set_option_string(mpv_, "sub-auto", "fuzzy");
+    mpv_set_option_string(mpv_, "cache", "yes");
+    mpv_set_option_string(mpv_, "demuxer-max-bytes", "16MiB");
 
     if (mpv_initialize(mpv_) < 0) {
         std::cerr << "Failed to initialize mpv" << std::endl;
@@ -90,6 +98,12 @@ void MpvPlayer::toggleSubtitles() {
     mpv_set_property_string(mpv_, "sub-visibility", next.c_str());
 }
 
+void MpvPlayer::cycleSubtitleTrack() {
+    if (!mpv_) return;
+    const char* cmd[] = {"cycle", "sub", NULL};
+    mpv_command(mpv_, cmd);
+}
+
 void MpvPlayer::setMute(bool mute) {
     if (!mpv_) return;
     int val = mute ? 1 : 0;
@@ -105,6 +119,45 @@ void MpvPlayer::setGeometry(int x, int y, int w, int h) {
 void MpvPlayer::resetGeometry() {
     if (!mpv_) return;
     mpv_set_property_string(mpv_, "geometry", "100%x100%+0+0");
+}
+
+void MpvPlayer::setSpeed(double speed) {
+    if (!mpv_) return;
+    mpv_set_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &speed);
+}
+
+void MpvPlayer::adjustSpeed(double delta) {
+    if (!mpv_) return;
+    double speed = getSpeed() + delta;
+    if (speed < 0.25) speed = 0.25;
+    if (speed > 2.0) speed = 2.0;
+    setSpeed(speed);
+}
+
+double MpvPlayer::getSpeed() const {
+    if (!mpv_) return 1.0;
+    double speed = 1.0;
+    mpv_get_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &speed);
+    return speed;
+}
+
+void MpvPlayer::showText(const std::string& text, int duration_ms) {
+    if (!mpv_) return;
+    std::string duration = std::to_string(duration_ms);
+    const char* cmd[] = {"show-text", text.c_str(), duration.c_str(), NULL};
+    mpv_command(mpv_, cmd);
+}
+
+void MpvPlayer::showProgress() {
+    if (!mpv_) return;
+    const char* cmd[] = {"show-progress", NULL};
+    mpv_command(mpv_, cmd);
+}
+
+void MpvPlayer::cycleStatsOverlay() {
+    if (!mpv_) return;
+    const char* cmd[] = {"cycle", "stats-display", NULL};
+    mpv_command(mpv_, cmd);
 }
 
 void MpvPlayer::update() {

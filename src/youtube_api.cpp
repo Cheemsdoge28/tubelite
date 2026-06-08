@@ -13,6 +13,16 @@ YouTubeAPI::YouTubeAPI() {
 YouTubeAPI::~YouTubeAPI() {
 }
 
+std::string YouTubeAPI::sanitizeShellText(const std::string& value) {
+    std::string safe = value;
+    for (char& c : safe) {
+        if (c == '"' || c == '\\' || c == '$' || c == '`' || c == '\n' || c == '\r') {
+            c = ' ';
+        }
+    }
+    return safe;
+}
+
 std::string YouTubeAPI::executeCommand(const std::string& cmd) {
     std::array<char, 128> buffer;
     std::string result;
@@ -33,15 +43,17 @@ std::string YouTubeAPI::executeCommand(const std::string& cmd) {
 void YouTubeAPI::search(const std::string& query, int page, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback) {
     std::thread([this, query, page, callback]() {
         try {
-            std::string safeQuery = query;
-            for (char& c : safeQuery) {
-                if (c == '"' || c == '\\' || c == '$' || c == '`') c = ' ';
-            }
+            std::string safeQuery = sanitizeShellText(query);
             
             int startIdx = (page - 1) * 15 + 1;
             int endIdx = page * 15;
             
-            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 --flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery + "\" --playlist-start " + std::to_string(startIdx) + " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
+            std::string cmd =
+                "yt-dlp --quiet --no-warnings --no-check-certificate --force-ipv4 "
+                "--extractor-args \"youtube:player_client=tv,web\" "
+                "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + safeQuery +
+                "\" --playlist-start " + std::to_string(startIdx) +
+                " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
             std::string output = executeCommand(cmd);
             
             std::vector<YouTubeVideo> results;
@@ -112,8 +124,14 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::function<void(bool success, const std::string& url)> callback) {
     std::thread([this, video_id, max_height, callback]() {
         try {
-            // Get best format that is <= max_height, or worst if not available
-            std::string cmd = "yt-dlp --no-check-certificate --force-ipv4 -f \"best[height<=" + std::to_string(max_height) + "]/worst\" --get-url \"https://www.youtube.com/watch?v=" + video_id + "\" 2>> yt-dlp-error.log";
+            const std::string safeId = sanitizeShellText(video_id);
+            std::string cmd =
+                "yt-dlp --quiet --no-warnings --no-check-certificate --force-ipv4 --no-playlist "
+                "--extractor-args \"youtube:player_client=tv,web\" "
+                "--format-sort \"codec:h264,res,fps,br\" "
+                "-f \"best[height<=" + std::to_string(max_height) + "][vcodec*=avc1]/best[height<=" +
+                std::to_string(max_height) + "]/best\" --get-url "
+                "\"https://www.youtube.com/watch?v=" + safeId + "\" 2>> yt-dlp-error.log";
             std::string url = executeCommand(cmd);
             
             // Trim whitespace
