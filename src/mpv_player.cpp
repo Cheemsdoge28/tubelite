@@ -23,6 +23,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "hwdec", "auto");
     mpv_set_option_string(mpv_, "profile", "fast");
     mpv_set_option_string(mpv_, "vo", "drm,gpu,sdl,x11");
+    mpv_set_option_string(mpv_, "ao", "alsa");
     mpv_set_option_string(mpv_, "keepaspect", "yes");
     mpv_set_option_string(mpv_, "osc", "no");
     mpv_set_option_string(mpv_, "input-default-bindings", "no");

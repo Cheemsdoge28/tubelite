@@ -396,8 +396,8 @@ void App::renderFrame() {
     if (state_.currentScreen == TubeState::Screen::Home) {
         if (home_grid_->cards.empty()) {
             if (homeLoadFailed_) {
-                drawText(renderer_, width / 2 - 150, height / 2 - 10, "Failed to load trending.", 2, {255, 100, 100, 255});
-                drawText(renderer_, width / 2 - 144, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
+                drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load trending.", 2, {255, 100, 100, 255});
+                drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
             } else {
                 renderBrowseLoadingState(width, height, "Loading Trending...");
             }
@@ -418,9 +418,9 @@ void App::renderFrame() {
             renderBrowseLoadingState(width, height, "Searching...");
         } else if (search_grid_->cards.empty()) {
             if (current_search_query_.empty()) {
-                drawText(renderer_, width / 2 - 144, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
+                drawTextCentered(renderer_, width / 2, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
             } else {
-                drawText(renderer_, width / 2 - 102, height / 2, "No results found.", 2, {150, 150, 150, 255});
+                drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, {150, 150, 150, 255});
             }
         } else {
             search_grid_->render(renderer_, 0.0f, 0.0f);
@@ -449,10 +449,69 @@ void App::renderFrame() {
         float time = SDL_GetTicks() / 1000.0f;
         drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
         
-        drawTextShadow(renderer_, width / 2 - 144, height / 2 + 25, loading_status_text_, 2, {255, 255, 255, 255});
+        drawTextCentered(renderer_, width / 2, height / 2 + 25, loading_status_text_, 2, {255, 255, 255, 255}, true);
         uiDirty_ = true;
     }
     
+    // Draw custom volume/speed overlays if not in playback
+    if (state_.currentScreen != TubeState::Screen::Playback) {
+        auto now = std::chrono::steady_clock::now();
+        bool volumeActive = (now < volume_overlay_timeout_);
+        bool speedActive = (now < speed_overlay_timeout_);
+        
+        static bool lastVolumeActive = false;
+        static bool lastSpeedActive = false;
+        if (volumeActive || speedActive || lastVolumeActive || lastSpeedActive) {
+            uiDirty_ = true;
+        }
+        lastVolumeActive = volumeActive;
+        lastSpeedActive = speedActive;
+
+        if (volumeActive) {
+            int boxW = 200;
+            int boxH = 36;
+            int boxX = (width - boxW) / 2;
+            int boxY = 64;
+            
+            SDL_Rect r{boxX, boxY, boxW, boxH};
+            fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
+            drawRoundedRect(renderer_, r, 6, {255, 48, 48, 255});
+            
+            std::string volText = "Volume: " + std::to_string(state_.volume) + "%";
+            if (state_.muted) volText = "Mute: ON";
+            
+            int barW = 160;
+            int barH = 6;
+            int barX = boxX + 20;
+            int barY = boxY + 24;
+            SDL_Rect barBg{barX, barY, barW, barH};
+            SDL_SetRenderDrawColor(renderer_, 60, 60, 60, 255);
+            SDL_RenderFillRect(renderer_, &barBg);
+            
+            if (!state_.muted) {
+                int fillW = static_cast<int>(barW * (state_.volume / 100.0f));
+                SDL_Rect barFill{barX, barY, fillW, barH};
+                SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+                SDL_RenderFillRect(renderer_, &barFill);
+            }
+            
+            drawTextCentered(renderer_, boxX + boxW / 2, boxY + 4, volText, 1, {255, 255, 255, 255}, true);
+        } else if (speedActive) {
+            int boxW = 160;
+            int boxH = 32;
+            int boxX = (width - boxW) / 2;
+            int boxY = 64;
+            
+            SDL_Rect r{boxX, boxY, boxW, boxH};
+            fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
+            drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
+            
+            char speedBuf[32];
+            snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", state_.speed);
+            drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, speedBuf, 1, {255, 255, 255, 255}, true);
+        }
+    }
+
     keyboard_.render(renderer_, state_, width, height, uiDirty_);
     SDL_RenderPresent(renderer_);
     uiDirty_ = false;

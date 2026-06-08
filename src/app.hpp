@@ -12,6 +12,7 @@
 #include "image_manager.hpp"
 #include "ui_framework.hpp"
 #include <memory>
+#include <thread>
 #include <chrono>
 #include <unordered_map>
 #include <unordered_set>
@@ -102,6 +103,15 @@ private:
     std::vector<std::function<void()>> main_thread_queue_;
     void queueOnMainThread(std::function<void()> cb);
     void processMainThreadQueue();
+
+    std::vector<int> event_fds_;
+    std::thread input_thread_;
+    bool input_thread_running_{false};
+    void startInputThread();
+    void stopInputThread();
+    
+    std::chrono::steady_clock::time_point volume_overlay_timeout_;
+    std::chrono::steady_clock::time_point speed_overlay_timeout_;
 
     void loadHomeFeeds();
     void loadMoreHomeFeeds();

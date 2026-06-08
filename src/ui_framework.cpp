@@ -34,11 +34,9 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     SDL_Rect cardRect{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
     
-    SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
-    SDL_RenderFillRect(renderer, &cardRect);
+    fillRoundedRect(renderer, cardRect, 8, {26, 26, 26, 255});
     if (focused) {
-        SDL_SetRenderDrawColor(renderer, 48, 48, 52, 255);
-        SDL_RenderDrawRect(renderer, &cardRect);
+        drawRoundedRect(renderer, cardRect, 8, {48, 48, 52, 255});
     }
     
     SDL_Texture* thumb = im_->getThumbnail(video.id);
@@ -50,7 +48,6 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     if (thumb) {
         SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
         
-        // Query texture size and crop a 16:9 region from the 4:3 source
         int texW = 0, texH = 0;
         SDL_QueryTexture(thumb, nullptr, nullptr, &texW, &texH);
         
@@ -73,33 +70,90 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         SDL_RenderFillRect(renderer, &thumbRect);
     }
     
+    int maxPixelW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
+    int textX = cardRect.x + (horizontal ? thumbW + 12 : 10);
+    int textY = cardRect.y + (horizontal ? 8 : thumbH + 8);
+    
     std::string title = video.title;
-    int maxChars = horizontal ? ((bounds.w - thumbW - 20) / 12) : ((bounds.w - 10) / 12);
-    if (static_cast<int>(utf8Length(title)) > maxChars) {
+    int textW = 0;
+    getTextSize(title, 2, &textW, nullptr);
+    
+    if (textW > maxPixelW) {
         if (focused && focusedTime_ > 1.5f) {
-            int charOffset = static_cast<int>((focusedTime_ - 1.5f) * 3.0f);
-            int maxOffset = static_cast<int>(utf8Length(title)) - maxChars + 3;
-            if (charOffset > maxOffset) {
-                if (charOffset > maxOffset + 2) {
+            int maxScroll = textW - maxPixelW + 20;
+            int scrollOffset = static_cast<int>((focusedTime_ - 1.5f) * 35.0f);
+            if (scrollOffset > maxScroll) {
+                if (scrollOffset > maxScroll + 35) {
                     focusedTime_ = 1.5f;
-                    charOffset = 0;
+                    scrollOffset = 0;
                 } else {
-                    charOffset = maxOffset;
+                    scrollOffset = maxScroll;
                 }
             }
-            title = utf8Slice(title, static_cast<size_t>(charOffset), static_cast<size_t>(maxChars));
+            
+            SDL_Rect textClip{textX, textY, maxPixelW, 30};
+            SDL_Rect oldClip;
+            SDL_bool hasOldClip = SDL_RenderGetClipRect(renderer, &oldClip);
+            
+            SDL_Rect activeClip = textClip;
+            if (hasOldClip) {
+                int cx1 = std::max(activeClip.x, oldClip.x);
+                int cy1 = std::max(activeClip.y, oldClip.y);
+                int cx2 = std::min(activeClip.x + activeClip.w, oldClip.x + oldClip.w);
+                int cy2 = std::min(activeClip.y + activeClip.h, oldClip.y + oldClip.h);
+                if (cx2 > cx1 && cy2 > cy1) {
+                    activeClip = {cx1, cy1, cx2 - cx1, cy2 - cy1};
+                } else {
+                    activeClip = {0, 0, 0, 0};
+                }
+            }
+            SDL_RenderSetClipRect(renderer, &activeClip);
+            drawText(renderer, textX - scrollOffset, textY, title, 2, {240, 240, 240, 255});
+            SDL_RenderSetClipRect(renderer, hasOldClip ? &oldClip : nullptr);
         } else {
-            title = utf8Truncate(title, static_cast<size_t>(maxChars), true);
+            std::string ell = "...";
+            int ellW = 0;
+            getTextSize(ell, 2, &ellW, nullptr);
+            int targetW = maxPixelW - ellW;
+            size_t len = utf8Length(title);
+            while (len > 0) {
+                std::string temp = utf8Slice(title, 0, len);
+                int tempW = 0;
+                getTextSize(temp, 2, &tempW, nullptr);
+                if (tempW <= targetW) {
+                    title = temp + ell;
+                    break;
+                }
+                len--;
+            }
+            drawText(renderer, textX, textY, title, 2, {240, 240, 240, 255});
         }
+    } else {
+        drawText(renderer, textX, textY, title, 2, {240, 240, 240, 255});
     }
-    
-    int textX = cardRect.x + (horizontal ? thumbW + 10 : 5);
-    int textY = cardRect.y + (horizontal ? 5 : thumbH + 5);
-    drawText(renderer, textX, textY, title, 2, {240, 240, 240, 255});
     
     std::string meta = video.author;
     if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
-    if (static_cast<int>(utf8Length(meta)) > maxChars + 5) meta = utf8Truncate(meta, static_cast<size_t>(maxChars + 5), true);
+    
+    int metaW = 0;
+    getTextSize(meta, 1, &metaW, nullptr);
+    if (metaW > maxPixelW) {
+        std::string ell = "...";
+        int ellW = 0;
+        getTextSize(ell, 1, &ellW, nullptr);
+        int targetW = maxPixelW - ellW;
+        size_t len = utf8Length(meta);
+        while (len > 0) {
+            std::string temp = utf8Slice(meta, 0, len);
+            int tempW = 0;
+            getTextSize(temp, 1, &tempW, nullptr);
+            if (tempW <= targetW) {
+                meta = temp + ell;
+                break;
+            }
+            len--;
+        }
+    }
     drawText(renderer, textX, textY + 25, meta, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty()) {
@@ -117,7 +171,7 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     if (columns == 1) {
         card->bounds.h = 90.0f;
     } else {
-        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 40.0f;
+        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 54.0f;
     }
     
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
@@ -241,11 +295,9 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
     };
     
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
-    SDL_RenderDrawRect(renderer, &ring);
+    drawRoundedRect(renderer, ring, 10, {255, 255, 255, 220});
     ring.x -= 1; ring.y -= 1; ring.w += 2; ring.h += 2;
-    SDL_SetRenderDrawColor(renderer, 88, 140, 255, 255);
-    SDL_RenderDrawRect(renderer, &ring);
+    drawRoundedRect(renderer, ring, 11, {255, 48, 48, 255});
     SDL_RenderSetClipRect(renderer, nullptr);
 }
 

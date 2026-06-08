@@ -2,6 +2,7 @@
 #include <cctype>
 #include <iostream>
 #include <vector>
+#include <cmath>
 
 #ifdef _WIN32
 #include <SDL_ttf.h>
@@ -201,8 +202,8 @@ bool initFonts() {
     }
     
     // Loaded sizes optimized for 640x480 screen
-    g_font_small = TTF_OpenFont(regPath.c_str(), 12);
-    g_font_medium = TTF_OpenFont(regPath.c_str(), 17);
+    g_font_small = TTF_OpenFont(regPath.c_str(), 14);
+    g_font_medium = TTF_OpenFont(regPath.c_str(), 18);
     g_font_large = TTF_OpenFont(boldPath.c_str(), 24);
     
     if (!g_font_small || !g_font_medium || !g_font_large) {
@@ -285,4 +286,117 @@ SDL_Texture* createTargetTexture(SDL_Renderer* renderer, int width, int height) 
         texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, width, height);
     if (texture != nullptr) SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
     return texture;
+}
+
+void getTextSize(const std::string& text, int scale, int* w, int* h) {
+    if (w) *w = 0;
+    if (h) *h = 0;
+    if (text.empty()) return;
+    
+    TTF_Font* font = nullptr;
+    if (scale <= 1)      font = g_font_small;
+    else if (scale == 2) font = g_font_medium;
+    else                 font = g_font_large;
+    
+    if (font) {
+        TTF_SizeUTF8(font, text.c_str(), w, h);
+        return;
+    }
+    
+    if (w) *w = static_cast<int>(text.length()) * 6 * scale;
+    if (h) *h = 7 * scale;
+}
+
+void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
+    if (radius <= 0) {
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        SDL_RenderFillRect(renderer, &rect);
+        return;
+    }
+    
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    
+    int right = rect.x + rect.w - 1;
+    int bottom = rect.y + rect.h - 1;
+    
+    SDL_Rect middleRect{rect.x + radius, rect.y, rect.w - 2 * radius, rect.h};
+    SDL_Rect leftRect{rect.x, rect.y + radius, radius, rect.h - 2 * radius};
+    SDL_Rect rightRect{right - radius + 1, rect.y + radius, radius, rect.h - 2 * radius};
+    
+    SDL_RenderFillRect(renderer, &middleRect);
+    SDL_RenderFillRect(renderer, &leftRect);
+    SDL_RenderFillRect(renderer, &rightRect);
+    
+    auto drawCornerHelper = [&](int cx, int cy, int corner) {
+        for (int w = 0; w < radius; w++) {
+            int h = static_cast<int>(std::sqrt(radius * radius - w * w));
+            if (corner == 0) {
+                SDL_RenderDrawLine(renderer, cx - w, cy - h, cx - w, cy);
+            } else if (corner == 1) {
+                SDL_RenderDrawLine(renderer, cx + w, cy - h, cx + w, cy);
+            } else if (corner == 2) {
+                SDL_RenderDrawLine(renderer, cx - w, cy, cx - w, cy + h);
+            } else if (corner == 3) {
+                SDL_RenderDrawLine(renderer, cx + w, cy, cx + w, cy + h);
+            }
+        }
+    };
+    
+    drawCornerHelper(rect.x + radius, rect.y + radius, 0);
+    drawCornerHelper(right - radius, rect.y + radius, 1);
+    drawCornerHelper(rect.x + radius, bottom - radius, 2);
+    drawCornerHelper(right - radius, bottom - radius, 3);
+}
+
+void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
+    if (radius <= 0) {
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        SDL_RenderDrawRect(renderer, &rect);
+        return;
+    }
+    
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    
+    int right = rect.x + rect.w - 1;
+    int bottom = rect.y + rect.h - 1;
+    
+    SDL_RenderDrawLine(renderer, rect.x + radius, rect.y, right - radius, rect.y);
+    SDL_RenderDrawLine(renderer, rect.x + radius, bottom, right - radius, bottom);
+    SDL_RenderDrawLine(renderer, rect.x, rect.y + radius, rect.x, bottom - radius);
+    SDL_RenderDrawLine(renderer, right, rect.y + radius, right, bottom - radius);
+    
+    int x = 0;
+    int y = radius;
+    int d = 3 - 2 * radius;
+    
+    auto drawPoints = [&](int cx, int cy, int corner) {
+        if (corner == 0) {
+            SDL_RenderDrawPoint(renderer, cx - x, cy - y);
+            SDL_RenderDrawPoint(renderer, cx - y, cy - x);
+        } else if (corner == 1) {
+            SDL_RenderDrawPoint(renderer, cx + x, cy - y);
+            SDL_RenderDrawPoint(renderer, cx + y, cy - x);
+        } else if (corner == 2) {
+            SDL_RenderDrawPoint(renderer, cx - x, cy + y);
+            SDL_RenderDrawPoint(renderer, cx - y, cy + x);
+        } else if (corner == 3) {
+            SDL_RenderDrawPoint(renderer, cx + x, cy + y);
+            SDL_RenderDrawPoint(renderer, cx + y, cy + x);
+        }
+    };
+    
+    while (y >= x) {
+        drawPoints(rect.x + radius, rect.y + radius, 0);
+        drawPoints(right - radius, rect.y + radius, 1);
+        drawPoints(rect.x + radius, bottom - radius, 2);
+        drawPoints(right - radius, bottom - radius, 3);
+        
+        x++;
+        if (d > 0) {
+            y--;
+            d = d + 4 * (x - y) + 10;
+        } else {
+            d = d + 4 * x + 6;
+        }
+    }
 }
