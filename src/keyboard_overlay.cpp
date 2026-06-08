@@ -225,7 +225,7 @@ void KeyboardOverlay::moveSelection(TubeState& state, int directionX, int direct
 
         const float primary = (directionX != 0) ? std::abs(dx) : std::abs(dy);
         const float secondary = (directionX != 0) ? std::abs(dy) : std::abs(dx);
-        const float score = primary + secondary * 2.6f;
+        const float score = primary + secondary * 8.0f;
         
         if (score < bestScore) {
             bestScore = score;

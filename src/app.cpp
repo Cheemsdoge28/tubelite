@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "renderer_utils.hpp"
+#include "stb_image.h"
 #include <iostream>
 #include <algorithm>
 
@@ -124,6 +125,12 @@ void App::doSearch(const std::string& query) {
     state_.currentScreen = TubeState::Screen::Search;
     search_results_.clear();
     selected_result_idx_ = 0;
+    
+    for (auto& pair : thumbnail_cache_) {
+        if (pair.second) SDL_DestroyTexture(pair.second);
+    }
+    thumbnail_cache_.clear();
+
     youtube_api_.search(query, [this](bool success, const std::vector<YouTubeVideo>& results) {
         if (success) {
             search_results_ = results;
@@ -167,10 +174,19 @@ void App::updateKeyboardCursorBlinkState() {
 }
 
 void App::renderFrame() {
-    SDL_SetRenderDrawColor(renderer_, 20, 22, 26, 255);
-    SDL_RenderClear(renderer_);
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
+
+    if (state_.currentScreen == TubeState::Screen::Playback) {
+        if (!state_.showUi && state_.inputMode == TubeState::InputMode::None) {
+            return; // Let MPV draw exclusively, skip SDL render loop to fix z-fighting
+        }
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
+        SDL_RenderClear(renderer_);
+    } else {
+        SDL_SetRenderDrawColor(renderer_, 20, 22, 26, 255);
+        SDL_RenderClear(renderer_);
+    }
 
     if (state_.showUi || state_.inputMode != TubeState::InputMode::None) {
         if (state_.currentScreen == TubeState::Screen::Home) {
@@ -195,17 +211,31 @@ void App::renderFrame() {
                 bool selected = (idx == selected_result_idx_);
                 if (selected) {
                     SDL_SetRenderDrawColor(renderer_, 60, 68, 80, 255);
-                    SDL_Rect bgRect{10, y - 5, width - 20, 48};
+                    SDL_Rect bgRect{10, y - 5, width - 20, 56};
                     SDL_RenderFillRect(renderer_, &bgRect);
                     SDL_SetRenderDrawColor(renderer_, 100, 150, 255, 255);
                     SDL_RenderDrawRect(renderer_, &bgRect);
                 }
+                
+                int thumbWidth = 60;
+                int thumbHeight = 45;
+                SDL_Texture* thumb = getThumbnail(video.id);
+                if (thumb) {
+                    SDL_Rect thumbRect{20, y, thumbWidth, thumbHeight};
+                    SDL_RenderCopy(renderer_, thumb, nullptr, &thumbRect);
+                } else {
+                    SDL_SetRenderDrawColor(renderer_, 40, 44, 50, 255);
+                    SDL_Rect thumbRect{20, y, thumbWidth, thumbHeight};
+                    SDL_RenderFillRect(renderer_, &thumbRect);
+                }
+                
+                int textX = 20 + thumbWidth + 10;
                 SDL_Color titleColor = selected ? SDL_Color{255, 255, 255, 255} : SDL_Color{200, 200, 200, 255};
                 std::string title = video.title;
-                if (title.length() > 50) title = title.substr(0, 47) + "...";
-                drawText(renderer_, 20, y, title, 2, titleColor);
-                drawText(renderer_, 20, y + 20, video.author + " | " + video.duration_string, 1, {120, 130, 140, 255});
-                y += 50;
+                if (title.length() > 40) title = title.substr(0, 37) + "...";
+                drawText(renderer_, textX, y + 2, title, 2, titleColor);
+                drawText(renderer_, textX, y + 26, video.author + " | " + video.duration_string + " | " + video.view_count_string, 1, {120, 130, 140, 255});
+                y += 56;
                 idx++;
             }
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -387,4 +417,29 @@ void App::handleControllerAxis(const SDL_ControllerAxisEvent& caxis) {
     case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: state_.rightTrigger = normalized; break;
     default: break;
     }
+}
+
+SDL_Texture* App::getThumbnail(const std::string& video_id) {
+    if (thumbnail_cache_.find(video_id) != thumbnail_cache_.end()) {
+        return thumbnail_cache_[video_id];
+    }
+    std::string path = "/tmp/tubelite_thumbs/" + video_id + ".jpg";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return nullptr;
+    fclose(f);
+
+    int w, h, channels;
+    unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    if (!data) {
+        thumbnail_cache_[video_id] = nullptr; // prevent reloading bad image
+        return nullptr;
+    }
+
+    SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
+    if (tex) {
+        SDL_UpdateTexture(tex, nullptr, data, w * 4);
+        thumbnail_cache_[video_id] = tex;
+    }
+    stbi_image_free(data);
+    return tex;
 }

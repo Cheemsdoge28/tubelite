@@ -83,6 +83,16 @@ void YouTubeAPI::search(const std::string& query, std::function<void(bool succes
                 }
             }
             
+            // Kick off asynchronous downloads of thumbnails using curl
+            std::string mkdirCmd = "mkdir -p /tmp/tubelite_thumbs";
+            system(mkdirCmd.c_str());
+            for (const auto& v : results) {
+                if (!v.thumbnail_url.empty()) {
+                    std::string dl = "curl -s -o /tmp/tubelite_thumbs/" + v.id + ".jpg \"" + v.thumbnail_url + "\" &";
+                    system(dl.c_str());
+                }
+            }
+            
             callback(true, results);
         } catch (...) {
             callback(false, {});

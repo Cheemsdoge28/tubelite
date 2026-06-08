@@ -2,6 +2,7 @@
 #include <SDL2/SDL.h>
 #include <vector>
 #include <string>
+#include <unordered_map>
 #include "state.hpp"
 #include "mpv_player.hpp"
 #include "youtube_api.hpp"
@@ -59,4 +60,7 @@ private:
     std::vector<YouTubeVideo> search_results_;
     int selected_result_idx_{0};
     YouTubeVideo current_video_;
+
+    std::unordered_map<std::string, SDL_Texture*> thumbnail_cache_;
+    SDL_Texture* getThumbnail(const std::string& video_id);
 };
