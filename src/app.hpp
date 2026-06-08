@@ -8,6 +8,9 @@
 #include "youtube_api.hpp"
 #include "keyboard_overlay.hpp"
 #include "status_overlay.hpp"
+#include "image_manager.hpp"
+#include "ui_framework.hpp"
+#include <memory>
 
 class App {
 public:
@@ -61,6 +64,9 @@ private:
     int selected_result_idx_{0};
     YouTubeVideo current_video_;
 
-    std::unordered_map<std::string, SDL_Texture*> thumbnail_cache_;
-    SDL_Texture* getThumbnail(const std::string& video_id);
+    std::unique_ptr<ImageManager> image_manager_;
+    ui::FocusManager focus_manager_;
+    std::vector<std::shared_ptr<ui::HorizontalRail>> home_rails_;
+    
+    void loadHomeFeeds();
 };

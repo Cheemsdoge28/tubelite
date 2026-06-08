@@ -17,10 +17,12 @@ bool App::initialize() {
     SDL_GameControllerEventState(SDL_ENABLE);
     if (!createWindow()) return false;
     openController();
+    image_manager_ = std::make_unique<ImageManager>(renderer_);
     if (!mpv_player_.initialize(window_, renderer_)) {
         logError("MPV init failed");
         return false;
     }
+    loadHomeFeeds();
     SDL_StartTextInput();
     return true;
 }
@@ -32,6 +34,7 @@ void App::run() {
         updateSticks();
         updateKeyboardCursorBlinkState();
         mpv_player_.update();
+        focus_manager_.update(16.0f / 1000.0f); // dt for 60fps
         renderFrame();
         SDL_Delay(16);
     }
@@ -126,10 +129,7 @@ void App::doSearch(const std::string& query) {
     search_results_.clear();
     selected_result_idx_ = 0;
     
-    for (auto& pair : thumbnail_cache_) {
-        if (pair.second) SDL_DestroyTexture(pair.second);
-    }
-    thumbnail_cache_.clear();
+    if (image_manager_) image_manager_->clearCache();
 
     youtube_api_.search(query, [this](bool success, const std::vector<YouTubeVideo>& results) {
         if (success) {
@@ -174,6 +174,8 @@ void App::updateKeyboardCursorBlinkState() {
 }
 
 void App::renderFrame() {
+    if (image_manager_) image_manager_->update();
+    
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
 
@@ -196,13 +198,18 @@ void App::renderFrame() {
     if (state_.showUi || state_.inputMode != TubeState::InputMode::None) {
         if (state_.currentScreen == TubeState::Screen::Home) {
             SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 255);
-            SDL_Rect headerRect{0, 0, width, 60};
+            SDL_Rect headerRect{0, 0, width, 50};
             SDL_RenderFillRect(renderer_, &headerRect);
-            drawTextShadow(renderer_, 20, 20, "tubelite - YouTube Client", 3, {255, 80, 80, 255});
+            drawTextShadow(renderer_, 20, 15, "tubelite", 3, {255, 60, 60, 255});
             
-            drawText(renderer_, 40, 120, "Welcome to Tubelite!", 2, {220, 220, 220, 255});
-            drawText(renderer_, 40, 160, "Press Y to search for a video.", 2, {150, 150, 150, 255});
-            drawText(renderer_, 40, 200, "Press START + SELECT to exit.", 2, {150, 150, 150, 255});
+            if (home_rails_.empty() || home_rails_[0]->cards.empty()) {
+                drawText(renderer_, 40, 120, "Loading Trending...", 2, {150, 150, 150, 255});
+            } else {
+                for (auto& rail : home_rails_) {
+                    rail->render(renderer_, 0.0f, 0.0f);
+                }
+                focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
+            }
         } else if (state_.currentScreen == TubeState::Screen::Search) {
             SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 255);
             SDL_Rect headerRect{0, 0, width, 60};
@@ -224,7 +231,7 @@ void App::renderFrame() {
                 
                 int thumbWidth = 60;
                 int thumbHeight = 45;
-                SDL_Texture* thumb = getThumbnail(video.id);
+                SDL_Texture* thumb = image_manager_ ? image_manager_->getThumbnail(video.id) : nullptr;
                 if (thumb) {
                     SDL_Rect thumbRect{20, y, thumbWidth, thumbHeight};
                     SDL_RenderCopy(renderer_, thumb, nullptr, &thumbRect);
@@ -335,7 +342,9 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
     if (button == SDL_CONTROLLER_BUTTON_Y) {
         openKeyboard();
     } else if (button == SDL_CONTROLLER_BUTTON_A) {
-        if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
+        if (state_.currentScreen == TubeState::Screen::Home) {
+            focus_manager_.clickFocused();
+        } else if (state_.currentScreen == TubeState::Screen::Search && !search_results_.empty()) {
             playVideo(search_results_[selected_result_idx_]);
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
             if (mpv_player_.isPlaying()) mpv_player_.pause();
@@ -351,9 +360,19 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
         if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ > 0)
             selected_result_idx_--;
+        else if (state_.currentScreen == TubeState::Screen::Home)
+            focus_manager_.handleInput(0, -1);
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
         if (state_.currentScreen == TubeState::Screen::Search && selected_result_idx_ < (int)search_results_.size() - 1)
             selected_result_idx_++;
+        else if (state_.currentScreen == TubeState::Screen::Home)
+            focus_manager_.handleInput(0, 1);
+    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+        if (state_.currentScreen == TubeState::Screen::Home)
+            focus_manager_.handleInput(-1, 0);
+    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+        if (state_.currentScreen == TubeState::Screen::Home)
+            focus_manager_.handleInput(1, 0);
     } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
         state_.showUi = !state_.showUi;
         uiDirty_ = true;
@@ -425,27 +444,23 @@ void App::handleControllerAxis(const SDL_ControllerAxisEvent& caxis) {
     }
 }
 
-SDL_Texture* App::getThumbnail(const std::string& video_id) {
-    if (thumbnail_cache_.find(video_id) != thumbnail_cache_.end()) {
-        return thumbnail_cache_[video_id];
-    }
-    std::string path = "/tmp/tubelite_thumbs/" + video_id + ".jpg";
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return nullptr;
-    fclose(f);
-
-    int w, h, channels;
-    unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
-    if (!data) {
-        thumbnail_cache_[video_id] = nullptr; // prevent reloading bad image
-        return nullptr;
-    }
-
-    SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
-    if (tex) {
-        SDL_UpdateTexture(tex, nullptr, data, w * 4);
-        thumbnail_cache_[video_id] = tex;
-    }
-    stbi_image_free(data);
-    return tex;
+void App::loadHomeFeeds() {
+    auto trendingRail = std::make_shared<ui::HorizontalRail>();
+    trendingRail->title = "Trending Now";
+    trendingRail->bounds = {0, 60, 640, 180};
+    
+    youtube_api_.getTrending([this, trendingRail](bool success, const std::vector<YouTubeVideo>& results) {
+        if (success) {
+            for (const auto& v : results) {
+                auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                card->onClick = [this, v]() {
+                    playVideo(v);
+                };
+                trendingRail->addCard(card);
+            }
+            home_rails_.push_back(trendingRail);
+            focus_manager_.setViews(home_rails_);
+            uiDirty_ = true;
+        }
+    });
 }
