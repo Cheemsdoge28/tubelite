@@ -61,9 +61,9 @@ else
         SDL_LIBS := -lSDL2 -lSDL2_ttf
     endif
 
-    # GLESv2 needed for glViewport/glScissor called directly in mpv_player.cpp.
+    # GLESv2 for glViewport/glScissor; dl for dlopen/dlsym in the GL proc-address resolver.
     SDL_CFLAGS += -Isrc
-    SDL_LIBS   += -lGLESv2 -lrt
+    SDL_LIBS   += -lGLESv2 -ldl -lrt
 
     # When building natively on ARM, tune for the actual host CPU.
     UNAME_M_NATIVE := $(shell uname -m)
@@ -134,10 +134,18 @@ windows: PLATFORM=windows
 windows: $(BUILD_TARGET)
 	@echo "Windows build complete: $<"
 
-# Native build
+# Native build (release: LTO + O3)
 native: PLATFORM=native
 native: $(BUILD_TARGET)
 	@echo "Native build complete: $<"
+
+# Native dev build — fast iteration: no LTO, O1, parallel-safe
+# Usage: make native-dev [-j4]
+native-dev: PLATFORM=native
+native-dev: CXXFLAGS=-std=c++17 -O1 -Wall -Wextra -pthread -Isrc -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35
+native-dev: LDFLAGS=-lmpv -pthread
+native-dev: $(BUILD_TARGET)
+	@echo "Native dev build complete: $<"
 
 
 # Show current configuration
