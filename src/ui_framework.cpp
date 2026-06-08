@@ -5,10 +5,6 @@
 
 namespace ui {
 
-static float lerp(float a, float b, float dt, float speed = 10.0f) {
-    return b; // Removed lerp entirely per user request for performance
-}
-
 VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
     : im_(im), video(video) {
     focusable = true;

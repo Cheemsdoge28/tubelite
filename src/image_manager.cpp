@@ -4,7 +4,7 @@
 #include <cstdlib>
 
 ImageManager::ImageManager(SDL_Renderer* renderer) : renderer_(renderer) {
-    std::string mkdirCmd = "mkdir -p " + std::string(TMP_DIR);
+    std::string mkdirCmd = "mkdir -p /tmp/tubelite_thumbs";
     int ret = system(mkdirCmd.c_str());
     (void)ret;
     worker_ = std::thread(&ImageManager::workerThread, this);
