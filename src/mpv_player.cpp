@@ -2,32 +2,70 @@
 #include <iostream>
 #include <cmath>
 #include <cstring>
+#include <dlfcn.h>
 #include <SDL2/SDL.h>
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+// Resolve GL/EGL function pointers via eglGetProcAddress (dlopen, no headers needed).
+// Fallback to dlsym on libGLESv2 for core functions not exported by eglGetProcAddress.
+// This is thread-safe and independent of SDL's context management.
+static void* gl_get_proc_addr(void* /*ctx*/, const char* name) {
+    // ── eglGetProcAddress ────────────────────────────────────────────────────
+    using PFN_eglGPA = void*(*)(const char*);
+    static PFN_eglGPA egl_gpa = []() -> PFN_eglGPA {
+        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        return lib ? reinterpret_cast<PFN_eglGPA>(dlsym(lib, "eglGetProcAddress")) : nullptr;
+    }();
+
+    if (egl_gpa) {
+        if (void* fn = reinterpret_cast<void*>(egl_gpa(name))) return fn;
+    }
+
+    // ── dlsym fallback (core GLES2 functions) ────────────────────────────────
+    static void* gles_lib = []() -> void* {
+        void* lib = dlopen("libGLESv2.so.2", RTLD_LAZY | RTLD_GLOBAL);
+        if (!lib) lib = dlopen("libGLESv2.so", RTLD_LAZY | RTLD_GLOBAL);
+        return lib;
+    }();
+
+    void* fn = gles_lib ? dlsym(gles_lib, name) : nullptr;
+    if (!fn) std::cerr << "[mpv] unresolved GL symbol: " << name << "\n";
+    return fn;
+}
 
 bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     window_   = window;
     renderer_ = renderer;
 
-    // ── Prime the EGL context ────────────────────────────────────────────────
-    std::cerr << "[mpv] priming SDL GL context...\n";
+    // ── Ensure the EGL context is truly current on this thread ────────────────
+    // SDL's opengles2 renderer on KMSDRM may release the EGL context after
+    // SDL_RenderFlush (eglMakeCurrent(dpy, NO_SURFACE, NO_SURFACE, NO_CONTEXT)).
+    // We must explicitly re-bind it before mpv probes GL functions.
+    std::cerr << "[mpv] priming EGL context...\n";
     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
     SDL_RenderClear(renderer_);
     SDL_RenderFlush(renderer_);
-    std::cerr << "[mpv] SDL_GL_GetCurrentContext = "
-              << reinterpret_cast<void*>(SDL_GL_GetCurrentContext()) << "\n";
+
+    SDL_GLContext gl_ctx = SDL_GL_GetCurrentContext();
+    std::cerr << "[mpv] SDL_GL_GetCurrentContext = " << reinterpret_cast<void*>(gl_ctx) << "\n";
+    if (gl_ctx) {
+        // Re-bind explicitly: forces eglMakeCurrent with the real surface + context.
+        if (SDL_GL_MakeCurrent(window_, gl_ctx) < 0)
+            std::cerr << "[mpv] SDL_GL_MakeCurrent warning: " << SDL_GetError() << "\n";
+        else
+            std::cerr << "[mpv] EGL context re-bound OK\n";
+    } else {
+        std::cerr << "[mpv] WARNING: no GL context current after SDL_RenderFlush!\n";
+    }
 
     // ── Create mpv ───────────────────────────────────────────────────────────
     std::cerr << "[mpv] mpv_create...\n";
     mpv_ = mpv_create();
-    if (!mpv_) {
-        std::cerr << "[mpv] mpv_create failed\n";
-        return false;
-    }
+    if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
-    std::cerr << "[mpv] setting options...\n";
-    mpv_set_option_string(mpv_, "hwdec",                  "no");   // "auto" probes RKVDEC and can crash
+    mpv_set_option_string(mpv_, "hwdec",                  "no");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     mpv_set_option_string(mpv_, "keepaspect",             "yes");
@@ -40,43 +78,32 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "demuxer-max-bytes",      "16MiB");
 
     std::cerr << "[mpv] mpv_initialize...\n";
-    if (mpv_initialize(mpv_) < 0) {
-        std::cerr << "[mpv] mpv_initialize failed\n";
-        return false;
-    }
+    if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
 
     // ── Create GLES render context ────────────────────────────────────────────
-    std::cerr << "[mpv] building gl_params...\n";
+    // Use eglGetProcAddress via dlopen — NOT SDL_GL_GetProcAddress.
+    // SDL's wrapper can return bad pointers when called outside its render loop.
+    std::cerr << "[mpv] mpv_render_context_create...\n";
     mpv_opengl_init_params gl_params;
-    gl_params.get_proc_address = [](void*, const char* name) -> void* {
-        void* fn = reinterpret_cast<void*>(SDL_GL_GetProcAddress(name));
-        if (!fn)
-            std::cerr << "[mpv] WARNING: SDL_GL_GetProcAddress(\"" << name << "\") = null\n";
-        return fn;
-    };
+    gl_params.get_proc_address     = gl_get_proc_addr;
     gl_params.get_proc_address_ctx = nullptr;
     gl_params.extra_exts           = nullptr;
 
-    std::cerr << "[mpv] calling mpv_render_context_create...\n";
-    int adv_ctrl = 1;
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE,           const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL)},
         {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_params},
-        {MPV_RENDER_PARAM_ADVANCED_CONTROL,   reinterpret_cast<void*>(static_cast<intptr_t>(adv_ctrl))},
         {MPV_RENDER_PARAM_INVALID,            nullptr}
     };
 
     int err = mpv_render_context_create(&mpv_gl_, mpv_, params);
     if (err < 0) {
         std::cerr << "[mpv] mpv_render_context_create failed: "
-                  << mpv_error_string(err) << "\n"
-                  << "     Video will not render (audio only).\n";
+                  << mpv_error_string(err) << " (audio only)\n";
         mpv_gl_ = nullptr;
     } else {
         std::cerr << "[mpv] GLES render context OK\n";
     }
 
-    std::cerr << "[mpv] observing properties...\n";
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "pause",     MPV_FORMAT_FLAG);
@@ -84,6 +111,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     std::cerr << "[mpv] initialize complete\n";
     return true;
 }
+
 
 
 void MpvPlayer::shutdown() {
