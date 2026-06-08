@@ -90,17 +90,15 @@ check_compiler:
 		exit 1; \
 	fi
 
-# Create build directory
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
-
 # Compile object files
-$(BUILD_DIR)/%.o: src/%.cpp | $(BUILD_DIR) check_compiler
+$(BUILD_DIR)/%.o: src/%.cpp check_compiler
+	@mkdir -p $(BUILD_DIR)
 	@echo "  CXX $<"
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Link target
-$(BUILD_TARGET): $(OBJ) | $(BUILD_DIR) check_compiler
+$(BUILD_TARGET): $(OBJ) check_compiler
+	@mkdir -p $(BUILD_DIR)
 	@echo "[$(PLATFORM)] Linking $(BUILD_TARGET)"
 	@echo "  CXX: $(CXX)"
 	@echo "  LDFLAGS: $(LDFLAGS)"
@@ -143,13 +141,6 @@ native: PLATFORM=native
 native: $(BUILD_TARGET)
 	@echo "Native build complete: $<"
 
-# Faster dev build for iteration (disables LTO, uses -O2, keeps debug symbols)
-.PHONY: dev
-dev: CXXFLAGS := $(filter-out -flto,$(CXXFLAGS)) -O2 -g
-dev: LDFLAGS := $(filter-out -flto,$(LDFLAGS))
-dev: PLATFORM=native
-dev: $(BUILD_TARGET)
-    @echo "Dev build complete: $<"
 
 # Show current configuration
 config:
