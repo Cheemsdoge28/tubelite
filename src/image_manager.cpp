@@ -4,8 +4,9 @@
 #include <cstdlib>
 
 ImageManager::ImageManager(SDL_Renderer* renderer) : renderer_(renderer) {
-    std::string mkdirCmd = "mkdir -p /tmp/tubelite_thumbs";
-    system(mkdirCmd.c_str());
+    std::string mkdirCmd = "mkdir -p " + std::string(TMP_DIR);
+    int ret = system(mkdirCmd.c_str());
+    (void)ret;
     worker_ = std::thread(&ImageManager::workerThread, this);
 }
 
@@ -97,7 +98,8 @@ void ImageManager::workerThread() {
         if (!f) {
             std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
             std::string dl = "curl -s -o " + path + " \"" + url + "\"";
-            system(dl.c_str());
+            int ret = system(dl.c_str());
+            (void)ret;
             f = fopen(path.c_str(), "rb");
         }
         

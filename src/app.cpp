@@ -4,7 +4,7 @@
 #include <iostream>
 #include <algorithm>
 
-static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
+// static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
 static void logError(const std::string& msg) { std::cerr << "[ERROR] " << msg << std::endl; }
 
 App::~App() { shutdown(); }

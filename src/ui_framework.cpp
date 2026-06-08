@@ -16,7 +16,7 @@ VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
     bounds.h = 240; 
 }
 
-void VideoCard::update(float dt) {
+void VideoCard::update(float /*dt*/) {
     // Scaling removed to save CPU. 
     // The focus border is sufficient for handheld feedback.
     targetScale = 1.0f;
@@ -54,7 +54,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     std::string title = video.title;
     int maxChars = horizontal ? ((bounds.w - thumbW) / 12) : (bounds.w / 12);
-    if (title.length() > maxChars) title = title.substr(0, maxChars - 3) + "...";
+    if (title.length() > static_cast<size_t>(maxChars)) title = title.substr(0, maxChars - 3) + "...";
     
     int textX = cardRect.x + (horizontal ? thumbW + 10 : 5);
     int textY = cardRect.y + (horizontal ? 5 : thumbH + 5);
@@ -62,7 +62,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     std::string meta = video.author;
     if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
-    if (meta.length() > maxChars + 5) meta = meta.substr(0, maxChars + 2) + "...";
+    if (meta.length() > static_cast<size_t>(maxChars + 5)) meta = meta.substr(0, maxChars + 2) + "...";
     drawText(renderer, textX, textY + 25, meta, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty()) {

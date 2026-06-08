@@ -90,14 +90,16 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
             }
             
             // Kick off asynchronous downloads of thumbnails using curl
-            std::string mkdirCmd = "mkdir -p /tmp/tubelite_thumbs";
-            system(mkdirCmd.c_str());
+            std::string mkdirCmd = "mkdir -p " + std::string(TMP_DIR);
+            int ret = system(mkdirCmd.c_str());
+            (void)ret;
             for (auto& v : results) {
                 // yt-dlp sometimes gives WebP, which stb_image doesn't support.
                 // We construct the guaranteed JPEG thumbnail URL manually.
                 v.thumbnail_url = "https://i.ytimg.com/vi/" + v.id + "/hqdefault.jpg";
-                std::string dl = "curl -s -o /tmp/tubelite_thumbs/" + v.id + ".jpg \"" + v.thumbnail_url + "\" &";
-                system(dl.c_str());
+                std::string dl = "curl -s -o " + std::string(TMP_DIR) + "/" + v.id + ".jpg \"" + v.thumbnail_url + "\" &";
+                int ret = system(dl.c_str());
+                (void)ret;
             }
             
             callback(true, results);

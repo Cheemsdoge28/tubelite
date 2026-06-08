@@ -20,7 +20,7 @@ class View {
 public:
     virtual ~View() = default;
     virtual void render(SDL_Renderer* renderer, float offsetX, float offsetY) = 0;
-    virtual void update(float dt) {}
+    virtual void update(float /*dt*/) {}
     
     Rect bounds{0, 0, 0, 0};
     bool focusable = false;
@@ -39,9 +39,8 @@ public:
     void render(SDL_Renderer* renderer, float offsetX, float offsetY) override;
     void update(float dt) override;
     
-    YouTubeVideo video;
-private:
     ImageManager* im_;
+    YouTubeVideo video;
 };
 
 class GridContainer : public View {
