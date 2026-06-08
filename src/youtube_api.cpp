@@ -51,7 +51,7 @@ static void appendLog(const std::string& title, const std::string& body) {
     ofs << body << "\n\n";
 }
 
-void YouTubeAPI::search(const std::string& query, int page, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback) {
+void YouTubeAPI::search(const std::string& query, int page, std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback) {
     std::thread([this, query, page, callback]() {
         try {
             std::string safeQuery = sanitizeShellText(query);
@@ -75,25 +75,59 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
                     "\" --playlist-start " + std::to_string(startIdx) +
                     " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
             }
-            std::string output = executeCommand(cmd);
             
-            std::vector<YouTubeVideo> results;
-            
-            // yt-dlp outputs one JSON object per line when dumping JSON for multiple results
-            size_t start_pos = 0;
-            while (start_pos < output.length()) {
-                size_t end_pos = output.find('\n', start_pos);
-                if (end_pos == std::string::npos) {
-                    end_pos = output.length();
+#ifdef _WIN32
+            FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+            FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+            if (!pipe) {
+                callback({}, true);
+                return;
+            }
+
+            char buffer[4096];
+            std::string current_line;
+            while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                current_line += buffer;
+                size_t pos;
+                while ((pos = current_line.find('\n')) != std::string::npos) {
+                    std::string line = current_line.substr(0, pos);
+                    current_line.erase(0, pos + 1);
+                    
+                    if (line.empty()) continue;
+                    
+                    try {
+                        auto j = json::parse(line);
+                        YouTubeVideo video;
+                        video.id = j.value("id", "");
+                        video.title = j.value("title", "");
+                        video.author = j.value("uploader", "");
+                        video.duration_seconds = j.value("duration", 0);
+                        
+                        int m = video.duration_seconds / 60;
+                        int s = video.duration_seconds % 60;
+                        video.duration_string = std::to_string(m) + ":" + (s < 10 ? "0" : "") + std::to_string(s);
+                        
+                        int views = j.value("view_count", 0);
+                        if (views > 1000000) {
+                            video.view_count_string = std::to_string(views / 1000000) + "M views";
+                        } else if (views > 1000) {
+                            video.view_count_string = std::to_string(views / 1000) + "K views";
+                        } else {
+                            video.view_count_string = std::to_string(views) + " views";
+                        }
+                        
+                        callback({video}, false);
+                    } catch (const std::exception& e) {
+                        std::cerr << "JSON parse error on line: " << e.what() << std::endl;
+                    }
                 }
-                
-                std::string line = output.substr(start_pos, end_pos - start_pos);
-                start_pos = end_pos + 1;
-                
-                if (line.empty()) continue;
-                
+            }
+
+            if (!current_line.empty()) {
                 try {
-                    auto j = json::parse(line);
+                    auto j = json::parse(current_line);
                     YouTubeVideo video;
                     video.id = j.value("id", "");
                     video.title = j.value("title", "");
@@ -112,17 +146,18 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(b
                     } else {
                         video.view_count_string = std::to_string(views) + " views";
                     }
-                    
-                    results.push_back(video);
-                } catch (const std::exception& e) {
-                    // Ignore parse errors for single lines
-                    std::cerr << "JSON parse error on line: " << e.what() << std::endl;
-                }
+                    callback({video}, false);
+                } catch (...) {}
             }
-            
-            callback(true, results);
+
+#ifdef _WIN32
+            _pclose(pipe);
+#else
+            pclose(pipe);
+#endif
+            callback({}, true);
         } catch (...) {
-            callback(false, {});
+            callback({}, true);
         }
     }).detach();
 }

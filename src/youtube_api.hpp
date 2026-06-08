@@ -23,7 +23,7 @@ public:
     ~YouTubeAPI();
 
     // Async search with pagination. page is 1-indexed.
-    void search(const std::string& query, int page, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback);
+    void search(const std::string& query, int page, std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback);
 
     // Get direct playback URL for libmpv.
     void getStreamUrl(const std::string& video_id, int max_height, std::function<void(bool success, const std::string& url)> callback);

@@ -3,6 +3,67 @@
 #include "stb_image.h"
 #include <iostream>
 #include <algorithm>
+#include <SDL2/SDL_syswm.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+
+static void setupDrmPlaneszpos(int drm_fd) {
+    if (drm_fd < 0) return;
+    
+    drmModePlaneRes* plane_res = drmModeGetPlaneResources(drm_fd);
+    if (!plane_res) {
+        std::cerr << "[DRM] Failed to get plane resources" << std::endl;
+        return;
+    }
+    
+    for (uint32_t i = 0; i < plane_res->count_planes; ++i) {
+        uint32_t plane_id = plane_res->planes[i];
+        drmModePlane* plane = drmModeGetPlane(drm_fd, plane_id);
+        if (!plane) continue;
+        
+        drmModeObjectProperties* props = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+        if (props) {
+            uint32_t zpos_prop_id = 0;
+            uint32_t type_prop_id = 0;
+            uint64_t type_val = 0;
+            
+            for (uint32_t j = 0; j < props->count_props; ++j) {
+                drmModePropertyRes* prop = drmModeGetProperty(drm_fd, props->props[j]);
+                if (prop) {
+                    std::string name = prop->name;
+                    if (name == "zpos") {
+                        zpos_prop_id = prop->prop_id;
+                    } else if (name == "type") {
+                        type_prop_id = prop->prop_id;
+                        type_val = props->prop_values[j];
+                    }
+                    drmModeFreeProperty(prop);
+                }
+            }
+            
+            if (zpos_prop_id != 0) {
+                uint64_t target_zpos = 0;
+                if (type_val == 1) { // Primary (SDL)
+                    target_zpos = 2; 
+                } else if (type_val == 0) { // Overlay (MPV)
+                    target_zpos = 1;
+                }
+                
+                if (type_val == 1 || type_val == 0) {
+                    int ret = drmModeObjectSetParameter(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE, zpos_prop_id, target_zpos);
+                    if (ret == 0) {
+                        std::cout << "[DRM] Set plane " << plane_id << " (type " << type_val << ") zpos to " << target_zpos << std::endl;
+                    } else {
+                        std::cerr << "[DRM] Failed to set plane " << plane_id << " zpos: " << ret << std::endl;
+                    }
+                }
+            }
+            drmModeFreeObjectProperties(props);
+        }
+        drmModeFreePlane(plane);
+    }
+    drmModeFreePlaneResources(plane_res);
+}
 
 // static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
 static void logError(const std::string& msg) { std::cerr << "[ERROR] " << msg << std::endl; }
@@ -27,6 +88,15 @@ bool App::initialize() {
     }
     SDL_GameControllerEventState(SDL_ENABLE);
     if (!createWindow()) return false;
+    
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(window_, &info)) {
+        if (info.subsystem == SDL_SYSWM_KMSDRM) {
+            int drm_fd = info.info.kmsdrm.drm_fd;
+            setupDrmPlaneszpos(drm_fd);
+        }
+    }
     
     if (!initFonts()) {
         logError("Failed to initialize TTF fonts, falling back to pixel font");
@@ -59,7 +129,6 @@ bool App::initialize() {
 void App::run() {
     while (state_.running) {
         processMainThreadQueue();
-        processPresentationQueue();
         SDL_Event event;
         while (SDL_PollEvent(&event)) { handleEvent(event); }
         updateSticks();
@@ -273,7 +342,6 @@ void App::doSearch(const std::string& query) {
     uiDirty_ = true;
     current_search_query_ = query;
     search_page_ = 1;
-    presentation_jobs_.clear();
     
     search_grid_->cards.clear();
     focus_manager_.setGrid(search_grid_);
@@ -282,15 +350,28 @@ void App::doSearch(const std::string& query) {
 
     int reqPage = search_page_;
     std::string reqQuery = query;
-    youtube_api_.search(query, reqPage, [this, reqQuery, reqPage](bool success, const std::vector<YouTubeVideo>& results) {
-        queueOnMainThread([this, reqQuery, reqPage, success, results]() {
+    youtube_api_.search(query, reqPage, [this, reqQuery, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqQuery, reqPage, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Search || current_search_query_ != reqQuery || search_page_ != reqPage) return;
-            state_.isSearching = false;
-            if (success) {
-                schedulePresentation(search_grid_, results, true, [this]() {
-                });
+            
+            if (finished) {
+                state_.isSearching = false;
+                uiDirty_ = true;
+                return;
             }
-            uiDirty_ = true;
+            
+            if (!results.empty()) {
+                bool isFirstCard = search_grid_->cards.empty();
+                for (const auto& v : results) {
+                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                    card->onClick = [this, v]() { playVideo(v); };
+                    search_grid_->addCard(card);
+                }
+                if (isFirstCard && !search_grid_->cards.empty()) {
+                    focus_manager_.setGrid(search_grid_);
+                }
+                uiDirty_ = true;
+            }
         });
     });
 }
@@ -352,13 +433,20 @@ void App::updateSticks() {
             KeyboardOverlay::moveActiveCursor(state_, delta);
         });
     } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-        const float threshold = 0.5f;
-        const float absX = std::abs(state_.leftStickX);
-        const float absY = std::abs(state_.leftStickY);
         int dirX = 0, dirY = 0;
-        if (absX >= threshold || absY >= threshold) {
-            if (absX >= absY) dirX = (state_.leftStickX > 0.0f) ? 1 : -1;
-            else              dirY = (state_.leftStickY > 0.0f) ? 1 : -1;
+        if (state_.dpadLeftPressed)       dirX = -1;
+        else if (state_.dpadRightPressed) dirX = 1;
+        else if (state_.dpadUpPressed)    dirY = -1;
+        else if (state_.dpadDownPressed)  dirY = 1;
+        
+        if (dirX == 0 && dirY == 0) {
+            const float threshold = 0.5f;
+            const float absX = std::abs(state_.leftStickX);
+            const float absY = std::abs(state_.leftStickY);
+            if (absX >= threshold || absY >= threshold) {
+                if (absX >= absY) dirX = (state_.leftStickX > 0.0f) ? 1 : -1;
+                else              dirY = (state_.leftStickY > 0.0f) ? 1 : -1;
+            }
         }
         
         using namespace std::chrono;
@@ -770,30 +858,22 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_.volume = std::min(100, state_.volume + 5);
             mpv_player_.setVolume(state_.volume);
             showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
-        } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(0, -1);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             state_.volume = std::max(0, state_.volume - 5);
             mpv_player_.setVolume(state_.volume);
             showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
-        } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(0, 1);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             mpv_player_.seek(-10);
             showPlaybackToast("Seek -10s", true);
-        } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(-1, 0);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             mpv_player_.seek(10);
             showPlaybackToast("Seek +10s", true);
-        } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(1, 0);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -819,33 +899,16 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
 }
 
 void App::handleJoyHat(Uint8 value) {
-    if (value & SDL_HAT_UP) {
-        if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, -1, w, h, uiDirty_); return; }
-        if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(0, -1);
-            uiDirty_ = true;
-        }
-    }
-    if (value & SDL_HAT_DOWN) {
-        if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, 1, w, h, uiDirty_); return; }
-        if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(0, 1);
-            uiDirty_ = true;
-        }
-    }
-    if (value & SDL_HAT_LEFT) {
-        if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, -1, 0, w, h, uiDirty_); return; }
-        if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(-1, 0);
-            uiDirty_ = true;
-        }
-    }
-    if (value & SDL_HAT_RIGHT) {
-        if (state_.inputMode == TubeState::InputMode::SearchText) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 1, 0, w, h, uiDirty_); return; }
-        if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
-            focus_manager_.handleInput(1, 0);
-            uiDirty_ = true;
-        }
+    state_.dpadUpPressed    = (value & SDL_HAT_UP) != 0;
+    state_.dpadDownPressed  = (value & SDL_HAT_DOWN) != 0;
+    state_.dpadLeftPressed  = (value & SDL_HAT_LEFT) != 0;
+    state_.dpadRightPressed = (value & SDL_HAT_RIGHT) != 0;
+
+    if (state_.inputMode == TubeState::InputMode::SearchText) {
+        if (value & SDL_HAT_UP)    { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, -1, w, h, uiDirty_); }
+        if (value & SDL_HAT_DOWN)  { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, 1, w, h, uiDirty_); }
+        if (value & SDL_HAT_LEFT)  { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, -1, 0, w, h, uiDirty_); }
+        if (value & SDL_HAT_RIGHT) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 1, 0, w, h, uiDirty_); }
     }
 }
 
@@ -912,35 +975,51 @@ void App::loadHomeFeeds() {
     state_.isSearching = true;
     state_.isLoadingVideo = false;
     uiDirty_ = true;
-    presentation_jobs_.clear();
     
     using namespace std::chrono;
     auto now = steady_clock::now();
     if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 15) {
         state_.isSearching = false;
-        schedulePresentation(home_grid_, cached_trending_videos_, true, [this]() {
-        });
+        home_grid_->cards.clear();
+        for (const auto& v : cached_trending_videos_) {
+            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+            card->onClick = [this, v]() { playVideo(v); };
+            home_grid_->addCard(card);
+        }
+        focus_manager_.setGrid(home_grid_);
         uiDirty_ = true;
         return;
     }
     
     home_grid_->cards.clear();
     focus_manager_.setGrid(home_grid_);
+    cached_trending_videos_.clear();
     
     int reqPage = home_page_;
-    youtube_api_.search("trending", reqPage, [this, reqPage, now](bool success, const std::vector<YouTubeVideo>& results) {
-        queueOnMainThread([this, reqPage, now, success, results]() {
+    youtube_api_.search("trending", reqPage, [this, reqPage, now](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqPage, now, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
-            state_.isSearching = false;
-            if (success && !results.empty()) {
-                cached_trending_videos_ = results;
-                trending_cache_time_ = now;
-                schedulePresentation(home_grid_, results, true, [this]() {
-                });
-            } else {
-                homeLoadFailed_ = true;
+            
+            if (finished) {
+                state_.isSearching = false;
+                uiDirty_ = true;
+                return;
             }
-            uiDirty_ = true;
+            
+            if (!results.empty()) {
+                bool isFirstCard = home_grid_->cards.empty();
+                for (const auto& v : results) {
+                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                    card->onClick = [this, v]() { playVideo(v); };
+                    home_grid_->addCard(card);
+                    cached_trending_videos_.push_back(v);
+                }
+                if (isFirstCard && !home_grid_->cards.empty()) {
+                    focus_manager_.setGrid(home_grid_);
+                }
+                trending_cache_time_ = std::chrono::steady_clock::now();
+                uiDirty_ = true;
+            }
         });
     });
 }
@@ -952,16 +1031,26 @@ void App::loadMoreHomeFeeds() {
     home_page_++;
     
     int reqPage = home_page_;
-    youtube_api_.search("trending", reqPage, [this, reqPage](bool success, const std::vector<YouTubeVideo>& results) {
-        queueOnMainThread([this, reqPage, success, results]() {
+    youtube_api_.search("trending", reqPage, [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqPage, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
-            state_.isSearching = false;
-            if (success && !results.empty()) {
-                schedulePresentation(home_grid_, results, false, [this]() {
-                    focus_manager_.pruneGridIfNeeded(40);
-                });
+            
+            if (finished) {
+                state_.isSearching = false;
+                focus_manager_.pruneGridIfNeeded(100);
+                uiDirty_ = true;
+                return;
             }
-            uiDirty_ = true;
+            
+            if (!results.empty()) {
+                for (const auto& v : results) {
+                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                    card->onClick = [this, v]() { playVideo(v); };
+                    home_grid_->addCard(card);
+                    cached_trending_videos_.push_back(v);
+                }
+                uiDirty_ = true;
+            }
         });
     });
 }
@@ -974,76 +1063,30 @@ void App::loadMoreSearchResults() {
     
     int reqPage = search_page_;
     std::string reqQuery = current_search_query_;
-    youtube_api_.search(current_search_query_, reqPage, [this, reqQuery, reqPage](bool success, const std::vector<YouTubeVideo>& results) {
-        queueOnMainThread([this, reqQuery, reqPage, success, results]() {
+    youtube_api_.search(current_search_query_, reqPage, [this, reqQuery, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqQuery, reqPage, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Search || current_search_query_ != reqQuery || search_page_ != reqPage) return;
-            state_.isSearching = false;
-            if (success && !results.empty()) {
-                schedulePresentation(search_grid_, results, false, [this]() {
-                    focus_manager_.pruneGridIfNeeded(40);
-                });
+            
+            if (finished) {
+                state_.isSearching = false;
+                focus_manager_.pruneGridIfNeeded(100);
+                uiDirty_ = true;
+                return;
             }
-            uiDirty_ = true;
+            
+            if (!results.empty()) {
+                for (const auto& v : results) {
+                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                    card->onClick = [this, v]() { playVideo(v); };
+                    search_grid_->addCard(card);
+                }
+                uiDirty_ = true;
+            }
         });
     });
 }
 
-void App::schedulePresentation(std::shared_ptr<ui::GridContainer> grid, std::vector<YouTubeVideo> results, bool clearGrid, std::function<void()> onComplete) {
-    if (!grid) return;
-
-    PresentationJob job;
-    job.grid = std::move(grid);
-    job.results = std::move(results);
-    job.onComplete = std::move(onComplete);
-    job.clearGrid = clearGrid;
-    presentation_jobs_.push_back(std::move(job));
-}
-
-void App::processPresentationQueue() {
-    if (presentation_jobs_.empty()) return;
-
-    const size_t maxCardsPerFrame = 4;
-    size_t cardsRemaining = maxCardsPerFrame;
-    bool changed = false;
-
-    while (!presentation_jobs_.empty() && cardsRemaining > 0) {
-        auto& job = presentation_jobs_.front();
-
-        if (job.clearGrid && job.nextIndex == 0) {
-            job.grid->cards.clear();
-            focus_manager_.setGrid(job.grid);
-            job.clearGrid = false;
-            changed = true;
-        }
-
-        if (job.nextIndex >= job.results.size()) {
-            auto onComplete = std::move(job.onComplete);
-            presentation_jobs_.erase(presentation_jobs_.begin());
-            if (onComplete) onComplete();
-            changed = true;
-            continue;
-        }
-
-        bool isFirstCard = job.grid->cards.empty();
-        const size_t batch = std::min(cardsRemaining, job.results.size() - job.nextIndex);
-        for (size_t i = 0; i < batch; ++i) {
-            const auto& v = job.results[job.nextIndex++];
-            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-            card->onClick = [this, v]() { playVideo(v); };
-            job.grid->addCard(card);
-        }
-        if (isFirstCard && !job.grid->cards.empty() && job.grid == activeGrid()) {
-            focus_manager_.setGrid(job.grid);
-        }
-
-        cardsRemaining -= batch;
-        changed = true;
-
-        if (job.nextIndex < job.results.size()) break;
-    }
-
-    if (changed) uiDirty_ = true;
-}
+// Legacy presentation queue methods removed.
 
 void App::updateHoverPreviews() {
     if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo) {

@@ -58,8 +58,7 @@ private:
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
     void renderBrowseHeader(int width, int height, const std::string& title, const std::string& subtitle, float scrollY, bool searchScreen);
     void renderBrowseLoadingState(int width, int height, const std::string& text);
-    void schedulePresentation(std::shared_ptr<ui::GridContainer> grid, std::vector<YouTubeVideo> results, bool clearGrid, std::function<void()> onComplete = nullptr);
-    void processPresentationQueue();
+
 
     SDL_Window* window_{nullptr};
     SDL_Renderer* renderer_{nullptr};
@@ -104,14 +103,6 @@ private:
     int last_playback_seconds_{-1};
     std::mutex queue_mutex_;
     std::vector<std::function<void()>> main_thread_queue_;
-    struct PresentationJob {
-        std::shared_ptr<ui::GridContainer> grid;
-        std::vector<YouTubeVideo> results;
-        std::function<void()> onComplete;
-        size_t nextIndex{0};
-        bool clearGrid{false};
-    };
-    std::vector<PresentationJob> presentation_jobs_;
     void queueOnMainThread(std::function<void()> cb);
     void processMainThreadQueue();
 

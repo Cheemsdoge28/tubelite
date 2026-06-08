@@ -221,6 +221,10 @@ void GridContainer::pruneOldCards(int maxCards, int& focusedCardIdx) {
     float rowHeight = cardH + padding;
     float removedHeight = pruneRows * rowHeight;
     
+    if (scrollY < removedHeight) {
+        return;
+    }
+    
     cards.erase(cards.begin(), cards.begin() + pruneCount);
     
     scrollY = std::max(0.0f, scrollY - removedHeight);
