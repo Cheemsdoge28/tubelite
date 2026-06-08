@@ -449,8 +449,8 @@ void App::loadHomeFeeds() {
     trendingRail->title = "Trending Now";
     trendingRail->bounds = {0, 60, 640, 180};
     
-    youtube_api_.getTrending([this, trendingRail](bool success, const std::vector<YouTubeVideo>& results) {
-        if (success) {
+    youtube_api_.search("trending", [this, trendingRail](bool success, const std::vector<YouTubeVideo>& results) {
+        if (success && !results.empty()) {
             for (const auto& v : results) {
                 auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
                 card->onClick = [this, v]() {
@@ -460,7 +460,11 @@ void App::loadHomeFeeds() {
             }
             home_rails_.push_back(trendingRail);
             focus_manager_.setViews(home_rails_);
-            uiDirty_ = true;
+        } else {
+            trendingRail->title = "Failed to load trending. Press Y to search.";
+            home_rails_.push_back(trendingRail);
+            focus_manager_.setViews(home_rails_);
         }
+        uiDirty_ = true;
     });
 }

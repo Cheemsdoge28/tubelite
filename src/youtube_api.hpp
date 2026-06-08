@@ -25,7 +25,6 @@ public:
 
     // Async search. Callback is invoked on a background thread.
     void search(const std::string& query, std::function<void(bool success, const std::vector<YouTubeVideo>& results)> callback);
-    void getTrending(std::function<void(bool, const std::vector<YouTubeVideo>&)> callback);
 
     // Get direct playback URL for libmpv.
     void getStreamUrl(const std::string& video_id, std::function<void(bool success, const std::string& url)> callback);

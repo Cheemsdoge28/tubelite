@@ -101,53 +101,6 @@ void YouTubeAPI::search(const std::string& query, std::function<void(bool succes
     }).detach();
 }
 
-void YouTubeAPI::getTrending(std::function<void(bool, const std::vector<YouTubeVideo>&)> callback) {
-    std::thread([this, callback]() {
-        try {
-            std::string cmd = "yt-dlp --flat-playlist -J \"https://www.youtube.com/feed/trending\"";
-            std::string output = executeCommand(cmd);
-            
-            if (output.empty()) {
-                callback(false, {});
-                return;
-            }
-            
-            std::vector<YouTubeVideo> results;
-            nlohmann::json root = nlohmann::json::parse(output);
-            
-            if (root.contains("entries") && root["entries"].is_array()) {
-                for (const auto& j : root["entries"]) {
-                    YouTubeVideo video;
-                    video.id = j.value("id", "");
-                    video.title = j.value("title", "");
-                    video.author = j.value("channel", "");
-                    
-                    int duration = j.value("duration", 0);
-                    int m = duration / 60;
-                    int s = duration % 60;
-                    char buf[16];
-                    snprintf(buf, sizeof(buf), "%d:%02d", m, s);
-                    video.duration_string = buf;
-                    
-                    if (j.contains("view_count") && !j["view_count"].is_null()) {
-                        long long vc = j["view_count"];
-                        if (vc > 1000000) snprintf(buf, sizeof(buf), "%.1fM views", vc / 1000000.0);
-                        else if (vc > 1000) snprintf(buf, sizeof(buf), "%.1fK views", vc / 1000.0);
-                        else snprintf(buf, sizeof(buf), "%lld views", vc);
-                        video.view_count_string = buf;
-                    }
-                    
-                    video.thumbnail_url = "https://i.ytimg.com/vi/" + video.id + "/hqdefault.jpg";
-                    results.push_back(video);
-                }
-            }
-            callback(true, results);
-        } catch (...) {
-            callback(false, {});
-        }
-    }).detach();
-}
-
 void YouTubeAPI::getStreamUrl(const std::string& video_id, std::function<void(bool success, const std::string& url)> callback) {
     std::thread([this, video_id, callback]() {
         try {
