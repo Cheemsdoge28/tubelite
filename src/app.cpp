@@ -238,28 +238,41 @@ void App::renderFrame() {
             if (home_grid_->cards.empty()) {
                 float time = SDL_GetTicks() / 1000.0f;
                 drawSpinner(renderer_, width / 2, height / 2, 20, time);
-                drawText(renderer_, width / 2 - 50, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
+                drawText(renderer_, width / 2 - 152, height / 2 + 30, "Loading Trending...", 2, {150, 150, 150, 255});
                 uiDirty_ = true;
             } else {
                 home_grid_->render(renderer_, 0.0f, 0.0f);
                 focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
+                if (state_.isSearching) {
+                    float time = SDL_GetTicks() / 1000.0f;
+                    drawSpinner(renderer_, width - 30, 30, 15, time);
+                    uiDirty_ = true;
+                }
             }
         } else if (state_.currentScreen == TubeState::Screen::Search) {
             SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 255);
             SDL_Rect headerRect{0, 0, width, 60};
             SDL_RenderFillRect(renderer_, &headerRect);
-            drawTextShadow(renderer_, 20, 20, "Search Results", 3, {255, 80, 80, 255});
             
-            if (state_.isSearching) {
+            std::string headerTitle = "Search: " + current_search_query_;
+            drawTextShadow(renderer_, 20, 20, headerTitle, 2, {255, 80, 80, 255});
+            
+            if (state_.isSearching && search_grid_->cards.empty()) {
                 float time = SDL_GetTicks() / 1000.0f;
                 drawSpinner(renderer_, width / 2, height / 2, 20, time);
-                drawText(renderer_, width / 2 - 40, height / 2 + 30, "Searching...", 2, {150, 150, 150, 255});
+                drawText(renderer_, width / 2 - 96, height / 2 + 30, "Searching...", 2, {150, 150, 150, 255});
                 uiDirty_ = true;
             } else if (search_grid_->cards.empty()) {
                 drawText(renderer_, 20, 80, "No results or search not started.", 2, {150, 150, 150, 255});
             } else {
+                search_grid_->title = ""; // Hide duplicate title
                 search_grid_->render(renderer_, 0.0f, 0.0f);
                 focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
+                if (state_.isSearching) {
+                    float time = SDL_GetTicks() / 1000.0f;
+                    drawSpinner(renderer_, width - 30, 30, 15, time);
+                    uiDirty_ = true;
+                }
             }
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showUi) {
@@ -280,7 +293,7 @@ void App::renderFrame() {
             drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
             
             std::string text = "Extracting Stream URL...";
-            drawTextShadow(renderer_, width / 2 - 80, height / 2 + 25, text, 2, {255, 255, 255, 255});
+            drawTextShadow(renderer_, width / 2 - 192, height / 2 + 25, text, 2, {255, 255, 255, 255});
             uiDirty_ = true;
         }
     }

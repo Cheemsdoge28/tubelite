@@ -6,11 +6,7 @@
 namespace ui {
 
 static float lerp(float a, float b, float dt, float speed = 10.0f) {
-    float delta = (b - a) * speed * dt;
-    // Cap delta to prevent overshoot
-    if (b > a) delta = std::min(delta, b - a);
-    else delta = std::max(delta, b - a);
-    return a + delta;
+    return b; // Removed lerp entirely per user request for performance
 }
 
 VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
@@ -42,29 +38,35 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     SDL_RenderFillRect(renderer, &cardRect);
     
     SDL_Texture* thumb = im_->getThumbnail(video.id);
-    int thumbH = static_cast<int>(bounds.w * (9.0f / 16.0f));
+    bool horizontal = (bounds.w > 400);
+    
+    int thumbW = horizontal ? 160 : static_cast<int>(bounds.w);
+    int thumbH = horizontal ? 90 : static_cast<int>(bounds.w * (9.0f / 16.0f));
+    
     if (thumb) {
-        SDL_Rect thumbRect{cardRect.x, cardRect.y, cardRect.w, thumbH};
+        SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
         SDL_RenderCopy(renderer, thumb, nullptr, &thumbRect);
     } else {
         SDL_SetRenderDrawColor(renderer, 30, 32, 38, 255);
-        SDL_Rect thumbRect{cardRect.x, cardRect.y, cardRect.w, thumbH};
+        SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
         SDL_RenderFillRect(renderer, &thumbRect);
     }
     
     std::string title = video.title;
-    // Dynamic substring based on width
-    int maxChars = bounds.w / 12; // approximate char width
+    int maxChars = horizontal ? ((bounds.w - thumbW) / 12) : (bounds.w / 12);
     if (title.length() > maxChars) title = title.substr(0, maxChars - 3) + "...";
-    drawText(renderer, cardRect.x + 5, cardRect.y + thumbH + 5, title, 1, {240, 240, 240, 255});
+    
+    int textX = cardRect.x + (horizontal ? thumbW + 10 : 5);
+    int textY = cardRect.y + (horizontal ? 5 : thumbH + 5);
+    drawText(renderer, textX, textY, title, 2, {240, 240, 240, 255});
     
     std::string meta = video.author;
     if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
     if (meta.length() > maxChars + 5) meta = meta.substr(0, maxChars + 2) + "...";
-    drawText(renderer, cardRect.x + 5, cardRect.y + thumbH + 20, meta, 1, {150, 150, 150, 255});
+    drawText(renderer, textX, textY + 25, meta, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty()) {
-        drawTextShadow(renderer, cardRect.x + cardRect.w - 35, cardRect.y + thumbH - 15, video.duration_string, 1, {255, 255, 255, 255});
+        drawTextShadow(renderer, cardRect.x + thumbW - 35, cardRect.y + thumbH - 15, video.duration_string, 1, {255, 255, 255, 255});
     }
 }
 
@@ -75,14 +77,18 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     int col = idx % columns;
     
     card->bounds.w = (640.0f - padding * (columns + 1)) / columns;
-    card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 40.0f;
+    if (columns == 1) {
+        card->bounds.h = 90.0f;
+    } else {
+        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 40.0f;
+    }
     
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
     card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding) + 30.0f; // 30px offset for title
 }
 
 void GridContainer::update(float dt) {
-    scrollY = lerp(scrollY, targetScrollY, dt, 15.0f);
+    scrollY = targetScrollY;
     for (auto& c : cards) c->update(dt);
 }
 
@@ -159,10 +165,10 @@ void FocusManager::update(float dt) {
     
     if (grid_ && !grid_->cards.empty()) {
         float scroll = grid_->scrollY;
-        currentFocusRing_.x = lerp(currentFocusRing_.x, targetFocusRing_.x, dt, 15.0f);
-        currentFocusRing_.y = lerp(currentFocusRing_.y, targetFocusRing_.y - scroll, dt, 15.0f);
-        currentFocusRing_.w = lerp(currentFocusRing_.w, targetFocusRing_.w, dt, 15.0f);
-        currentFocusRing_.h = lerp(currentFocusRing_.h, targetFocusRing_.h, dt, 15.0f);
+        currentFocusRing_.x = targetFocusRing_.x;
+        currentFocusRing_.y = targetFocusRing_.y - scroll;
+        currentFocusRing_.w = targetFocusRing_.w;
+        currentFocusRing_.h = targetFocusRing_.h;
     }
 }
 
