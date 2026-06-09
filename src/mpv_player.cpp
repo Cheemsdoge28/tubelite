@@ -238,6 +238,18 @@ void MpvPlayer::seek(int seconds) {
     const char* cmd[] = {"seek", s.c_str(), "relative", nullptr};
     mpv_command(mpv_, cmd);
 }
+void MpvPlayer::seekAbsoluteKeyframes(double seconds) {
+    if (!mpv_) return;
+    std::string s = std::to_string(seconds);
+    const char* cmd[] = {"seek", s.c_str(), "absolute", "keyframes", nullptr};
+    mpv_command(mpv_, cmd);
+}
+void MpvPlayer::seekAbsoluteExact(double seconds) {
+    if (!mpv_) return;
+    std::string s = std::to_string(seconds);
+    const char* cmd[] = {"seek", s.c_str(), "absolute", "exact", nullptr};
+    mpv_command(mpv_, cmd);
+}
 void MpvPlayer::toggleSubtitles() {
     if (!mpv_) return;
     char* sv = mpv_get_property_string(mpv_, "sub-visibility");
@@ -274,6 +286,12 @@ double MpvPlayer::getSpeed() const {
     if (!mpv_) return 1.0;
     double s = 1.0; mpv_get_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &s);
     return s;
+}
+int64_t MpvPlayer::getPropertyInt(const std::string& name) const {
+    if (!mpv_) return 0;
+    int64_t val = 0;
+    mpv_get_property(mpv_, name.c_str(), MPV_FORMAT_INT64, &val);
+    return val;
 }
 void MpvPlayer::showText(const std::string& text, int duration_ms) {
     if (!mpv_) return;

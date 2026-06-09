@@ -304,11 +304,14 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
     }
 
     const auto layoutInfo = buildLayout(state, width, height);
-    if (texture_ == nullptr || width_ != layoutInfo.panel.w || height_ != layoutInfo.panel.h || uiDirty) {
-        destroyTexture();
-        width_ = layoutInfo.panel.w;
-        height_ = layoutInfo.panel.h;
-        texture_ = createTargetTexture(renderer, width_, height_);
+    bool needsRecreate = (texture_ == nullptr || width_ != layoutInfo.panel.w || height_ != layoutInfo.panel.h);
+    if (needsRecreate || uiDirty) {
+        if (needsRecreate) {
+            destroyTexture();
+            width_ = layoutInfo.panel.w;
+            height_ = layoutInfo.panel.h;
+            texture_ = createTargetTexture(renderer, width_, height_);
+        }
         if (texture_ == nullptr) return;
 
         SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer);

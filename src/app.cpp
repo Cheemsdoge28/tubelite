@@ -61,11 +61,25 @@ bool App::initialize() {
 void App::run() {
     using namespace std::chrono;
     const milliseconds frameTarget(16); // ~60fps
+    last_fps_update_ = steady_clock::now();
     while (state_.running) {
         auto start = steady_clock::now();
         processMainThreadQueue();
+        
+        bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing;
+        if (!active) {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            if (!main_thread_queue_.empty()) active = true;
+        }
+        
         SDL_Event event;
+        if (!active) {
+            if (SDL_WaitEventTimeout(&event, 10)) {
+                handleEvent(event);
+            }
+        }
         while (SDL_PollEvent(&event)) { handleEvent(event); }
+        
         updateSticks();
         updateKeyboardCursorBlinkState();
         updateHoverPreviews();
@@ -74,6 +88,17 @@ void App::run() {
         }
         focus_manager_.update(16.0f / 1000.0f); // dt for 60fps
         renderFrame();
+        
+        // Calculate FPS
+        frame_count_++;
+        auto now = steady_clock::now();
+        auto fps_elapsed = duration_cast<milliseconds>(now - last_fps_update_);
+        if (fps_elapsed >= seconds(1)) {
+            current_fps_ = frame_count_ / (fps_elapsed.count() / 1000.0f);
+            frame_count_ = 0;
+            last_fps_update_ = now;
+        }
+        
         auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start);
         if (elapsed < frameTarget) {
             SDL_Delay(static_cast<Uint32>((frameTarget - elapsed).count()));
@@ -580,6 +605,7 @@ void App::updateKeyboardCursorBlinkState() {
 }
 
 void App::renderFrame() {
+    auto render_start = std::chrono::steady_clock::now();
     if (image_manager_) image_manager_->update();
     
     int width = 0, height = 0;
@@ -736,8 +762,49 @@ void App::renderFrame() {
     }
 
     keyboard_.render(renderer_, state_, width, height, uiDirty_);
+
+    // Draw telemetry overlay if enabled
+    if (state_.showDebugOverlay) {
+        int panelW = 240;
+        int panelH = 75;
+        int panelX = width - panelW - 10;
+        int panelY = 60; // below top bar/header
+
+        SDL_Rect rect{panelX, panelY, panelW, panelH};
+        fillRoundedRect(renderer_, rect, 6, {0, 0, 0, 200});
+        drawRoundedRect(renderer_, rect, 6, {150, 150, 150, 255});
+
+        char buf[256];
+        int textY = panelY + 8;
+
+        std::snprintf(buf, sizeof(buf), "FPS: %.1f", current_fps_);
+        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        textY += 16;
+
+        std::snprintf(buf, sizeof(buf), "Render Latency: %.2f ms", render_latency_ms_);
+        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        textY += 16;
+
+        int64_t vo_drops = mpv_player_.getPropertyInt("vo-drop-frame-count");
+        int64_t dec_drops = mpv_player_.getPropertyInt("decoder-frame-drop-count");
+        std::snprintf(buf, sizeof(buf), "Drops: VO %lld / Dec %lld", (long long)vo_drops, (long long)dec_drops);
+        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        textY += 16;
+
+        size_t q_size = 0;
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            q_size = main_thread_queue_.size();
+        }
+        std::snprintf(buf, sizeof(buf), "Queue Size: %zu", q_size);
+        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+    }
+
     SDL_RenderPresent(renderer_);
     uiDirty_ = false;
+
+    auto render_end = std::chrono::steady_clock::now();
+    render_latency_ms_ = std::chrono::duration<float, std::milli>(render_end - render_start).count();
 }
 
 void App::handleEvent(SDL_Event& event) {
@@ -884,6 +951,10 @@ void App::handleKey(SDL_Keycode key) {
             showPlaybackToast("Speed " + std::to_string(state_.speed).substr(0, 4) + "x");
         }
         break;
+    case SDLK_F12:
+        state_.showDebugOverlay = !state_.showDebugOverlay;
+        uiDirty_ = true;
+        break;
     default: break;
     }
 }
@@ -962,6 +1033,9 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 uiDirty_ = true;
             }
         }
+    } else if (button == SDL_CONTROLLER_BUTTON_LEFTSTICK) {
+        state_.showDebugOverlay = !state_.showDebugOverlay;
+        uiDirty_ = true;
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             state_.volume = std::min(100, state_.volume + 5);
@@ -1245,14 +1319,14 @@ void App::updateHoverPreviews() {
         return;
     }
 
-    const std::string cacheKey = streamCacheKey(focusedCard->video.id, state_.maxQualityHeight);
+    const std::string cacheKey = streamCacheKey(focusedCard->video.id, 144);
     
     // 1. Kick off prefetch if focused for >= 0.25s
     if (focusedCard->focusedTime_ >= 0.25f) {
         if (stream_url_cache_.find(cacheKey) == stream_url_cache_.end() &&
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
-            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, focusedCard, cacheKey](bool success, const std::string& url) {
+            youtube_api_.getStreamUrl(focusedCard->video.id, 144, [this, focusedCard, cacheKey](bool success, const std::string& url) {
                 queueOnMainThread([this, focusedCard, cacheKey, success, url]() {
                     stream_prefetch_inflight_.erase(cacheKey);
                     if (success && !url.empty()) {

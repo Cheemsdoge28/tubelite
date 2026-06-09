@@ -12,11 +12,14 @@ void StatusOverlay::destroyTexture() {
 
 void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int width, int height, bool& uiDirty) {
     int statusBarHeight = 48;
-    if (texture_ == nullptr || width_ != width || height_ != statusBarHeight || uiDirty) {
-        destroyTexture();
-        width_ = width;
-        height_ = statusBarHeight;
-        texture_ = createTargetTexture(renderer, width, statusBarHeight);
+    bool needsRecreate = (texture_ == nullptr || width_ != width || height_ != statusBarHeight);
+    if (needsRecreate || uiDirty) {
+        if (needsRecreate) {
+            destroyTexture();
+            width_ = width;
+            height_ = statusBarHeight;
+            texture_ = createTargetTexture(renderer, width, statusBarHeight);
+        }
         
         if (texture_) {
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);

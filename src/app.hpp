@@ -9,6 +9,7 @@
 #include "youtube_api.hpp"
 #include "keyboard_overlay.hpp"
 #include "status_overlay.hpp"
+#include "storyboard.hpp"
 #include "image_manager.hpp"
 #include "ui_framework.hpp"
 #include <memory>
@@ -71,6 +72,7 @@ private:
     YouTubeAPI youtube_api_;
     KeyboardOverlay keyboard_;
     StatusOverlay status_;
+    StoryboardManager storyboard_;
 
     bool uiDirty_{true};
     bool lastKeyboardCursorVisible_{true};
@@ -115,6 +117,10 @@ private:
     
     std::chrono::steady_clock::time_point volume_overlay_timeout_;
     std::chrono::steady_clock::time_point speed_overlay_timeout_;
+    std::chrono::steady_clock::time_point last_fps_update_;
+    int frame_count_{0};
+    float current_fps_{0.0f};
+    float render_latency_ms_{0.0f};
 
     void loadHomeFeeds();
     void loadMoreHomeFeeds();

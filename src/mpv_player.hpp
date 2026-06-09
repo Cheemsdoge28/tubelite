@@ -56,6 +56,7 @@ public:
     bool   isPlaying()       const { return is_playing_; }
     double getPlaybackTime() const { return playback_time_; }
     double getDuration()     const { return duration_; }
+    int64_t getPropertyInt(const std::string& name) const;
 
 private:
     mpv_handle*         mpv_       = nullptr;
