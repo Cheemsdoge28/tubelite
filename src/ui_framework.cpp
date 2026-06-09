@@ -33,14 +33,24 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     float y = cy - h / 2.0f;
     
     SDL_Rect cardRect{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
-    
-    fillRoundedRect(renderer, cardRect, 8, {26, 26, 26, 255});
-    
+
     SDL_Texture* thumb = im_->getThumbnail(video.id);
     bool horizontal = (bounds.w > 400);
-    
     int thumbW = horizontal ? 160 : static_cast<int>(bounds.w);
     int thumbH = horizontal ? 90 : static_cast<int>(bounds.w * (9.0f / 16.0f));
+
+    // Card background — when previewing in portrait layout, skip thumbnail area
+    // so the mpv GLES video (rendered in the first pass) shows through.
+    if (is_previewing && !horizontal) {
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
+        SDL_Rect textSection{cardRect.x, cardRect.y + thumbH, cardRect.w, cardRect.h - thumbH};
+        SDL_RenderFillRect(renderer, &textSection);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    } else {
+        fillRoundedRect(renderer, cardRect, 8, {26, 26, 26, 255});
+    }
+
     SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
     
     if (is_previewing) {
@@ -181,8 +191,11 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         drawText(renderer, pillX + 4, pillY + 2, video.duration_string, 1, {255, 255, 255, 255});
     }
 
-    // Mask card corners to prevent thumbnail bleed
-    maskRoundedCorners(renderer, cardRect, 8, {15, 15, 15, 255});
+    // maskRoundedCorners paints background-colour pixels into the corners; when
+    // previewing this would overwrite the mpv video corners, so skip it.
+    if (!is_previewing) {
+        maskRoundedCorners(renderer, cardRect, 8, {15, 15, 15, 255});
+    }
 
     // Draw card border on top of masked corners
     if (focused) {

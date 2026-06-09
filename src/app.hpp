@@ -56,7 +56,8 @@ private:
     bool isInputLocked() const;
     std::shared_ptr<ui::GridContainer> activeGrid() const;
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
-    void renderBrowseHeader(int width, int height, const std::string& title, const std::string& subtitle, float scrollY, bool searchScreen);
+    void renderBrowseHeader(int width, int height, const std::string& title, float scrollY, bool searchScreen);
+    void renderPlaybackOverlay(int width, int height);
     void renderBrowseLoadingState(int width, int height, const std::string& text);
 
 

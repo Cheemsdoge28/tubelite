@@ -40,13 +40,13 @@ bool App::initialize() {
     home_grid_ = std::make_shared<ui::GridContainer>();
     home_grid_->title = "Trending Now";
     home_grid_->columns = 2;
-    home_grid_->bounds = {0, 92, 640, 340};
+    home_grid_->bounds = {0, 100, 640, 332};
     home_grid_->onScrolledToBottom = [this]() { loadMoreHomeFeeds(); };
 
     search_grid_ = std::make_shared<ui::GridContainer>();
     search_grid_->title = "";
     search_grid_->columns = 2;
-    search_grid_->bounds = {0, 92, 640, 340};
+    search_grid_->bounds = {0, 100, 640, 332};
     search_grid_->onScrolledToBottom = [this]() { loadMoreSearchResults(); };
     
     if (!mpv_player_.initialize(window_, renderer_)) {
@@ -225,37 +225,175 @@ void App::renderBrowseLoadingState(int width, int height, const std::string& tex
     uiDirty_ = true;
 }
 
-void App::renderBrowseHeader(int width, int /*height*/, const std::string& title, const std::string& subtitle, float scrollY, bool searchScreen) {
+void App::renderBrowseHeader(int width, int /*height*/, const std::string& title,
+                              float scrollY, bool searchScreen) {
     const int expandedHeight = 84;
     const int collapsedHeight = 58;
-    const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
+    const int headerHeight = std::max(collapsedHeight,
+        expandedHeight - static_cast<int>(scrollY * 0.12f));
 
+    // ── Background ────────────────────────────────────────────────────────────
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(renderer_, 12, 12, 14, 255);
+    SDL_SetRenderDrawColor(renderer_, 10, 10, 12, 255);
     SDL_Rect fill{0, 0, width, headerHeight};
     SDL_RenderFillRect(renderer_, &fill);
+    // Subtle red accent line at bottom
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer_, 28, 28, 32, 220);
-    SDL_Rect accent{0, headerHeight - 1, width, 1};
+    SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 80);
+    SDL_Rect accent{0, headerHeight - 2, width, 2};
     SDL_RenderFillRect(renderer_, &accent);
 
     float t = (headerHeight - collapsedHeight) / (float)(expandedHeight - collapsedHeight);
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
+    t = std::max(0.0f, std::min(1.0f, t));
 
+    // ── Title (left) ─────────────────────────────────────────────────────────
     int titleW = 0, titleH = 0;
-    getTextSize(title, searchScreen ? 2 : 3, &titleW, &titleH);
+    int titleScale = searchScreen ? 2 : 3;
+    getTextSize(title, titleScale, &titleW, &titleH);
     int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
+    SDL_Color titleColor = searchScreen ? SDL_Color{255, 80, 80, 255} : SDL_Color{255, 52, 52, 255};
+    drawTextShadow(renderer_, 16, titleY, title, titleScale, titleColor);
 
-    SDL_Color titleColor = searchScreen ? SDL_Color{255, 96, 96, 255} : SDL_Color{255, 52, 52, 255};
-    drawTextShadow(renderer_, 18, titleY, title, searchScreen ? 2 : 3, titleColor);
+    if (!searchScreen) {
+        // ── Home: "Y  SEARCH" pill on the right ──────────────────────────────
+        const char* yLabel = "Y";
+        const char* srchLabel = "  SEARCH";
+        int yw = 0, yh = 0, sw = 0;
+        getTextSize(yLabel, 1, &yw, &yh);
+        getTextSize(srchLabel, 1, &sw, nullptr);
+        int pillW = yw + sw + 18;
+        int pillH = yh + 8;
+        int pillX = width - pillW - 12;
+        int pillY = (headerHeight - pillH) / 2;
 
-    if (!subtitle.empty() && t > 0.1f) {
-        Uint8 alpha = static_cast<Uint8>(255.0f * t);
-        int subtitleY = static_cast<int>(titleY + titleH + 8.0f * t - 4.0f * (1.0f - t));
-        drawText(renderer_, 20, subtitleY, utf8Truncate(subtitle, 52, true), 1, {170, 170, 176, alpha});
+        SDL_Rect pill{pillX, pillY, pillW, pillH};
+        fillRoundedRect(renderer_, pill, 5, {28, 28, 32, 220});
+        drawRoundedRect(renderer_, pill, 5, {70, 70, 82, 180});
+        // "Y" in accent red, rest dim
+        drawText(renderer_, pillX + 9, pillY + 4, yLabel,   1, {255, 52, 52, 255});
+        drawText(renderer_, pillX + 9 + yw, pillY + 4, srchLabel, 1, {160, 160, 170, 255});
+
+        // ── "TRENDING NOW" sub-label (visible when expanded) ─────────────────
+        if (t > 0.25f) {
+            Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.25f) / 0.5f));
+            drawText(renderer_, 18, titleY + titleH + 5,
+                     "TRENDING NOW", 1, {90, 90, 100, alpha});
+        }
+
+    } else {
+        // ── Search: styled query bar (visible when expanded) ──────────────────
+        if (t > 0.15f) {
+            Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.15f) / 0.5f));
+            const int bx = 16;
+            const int by = titleY + titleH + 6;
+            const int bw = width - bx - 12;
+            const int bh = 20;
+
+            // Background trough
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer_, 26, 26, 30, alpha);
+            SDL_Rect bar{bx, by, bw, bh};
+            SDL_RenderFillRect(renderer_, &bar);
+            // Bottom underline accent
+            SDL_SetRenderDrawColor(renderer_, 255, 52, 52, (Uint8)(alpha / 2));
+            SDL_Rect under{bx, by + bh - 1, bw, 1};
+            SDL_RenderFillRect(renderer_, &under);
+
+            std::string q = current_search_query_.empty()
+                            ? "Press Y to search..."
+                            : utf8Truncate(current_search_query_, 50, true);
+            SDL_Color qCol = current_search_query_.empty()
+                             ? SDL_Color{70, 70, 80, alpha}
+                             : SDL_Color{210, 210, 220, alpha};
+            drawText(renderer_, bx + 8, by + 3, q, 1, qCol);
+        }
     }
 }
+
+void App::renderPlaybackOverlay(int width, int height) {
+    double pos = mpv_player_.getPlaybackTime();
+    double dur  = mpv_player_.getDuration();
+    bool   playing = mpv_player_.isPlaying();
+
+    auto fmtTime = [](double s) -> std::string {
+        if (s < 0) s = 0;
+        int tot = static_cast<int>(s);
+        int h = tot / 3600, m = (tot % 3600) / 60, sec = tot % 60;
+        char buf[16];
+        if (h > 0) snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, sec);
+        else       snprintf(buf, sizeof(buf), "%d:%02d", m, sec);
+        return buf;
+    };
+
+    // ── Top bar: gradient bg + title ──────────────────────────────────────────
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 210);
+    SDL_Rect topBg{0, 0, width, 50};
+    SDL_RenderFillRect(renderer_, &topBg);
+
+    std::string titleTxt = utf8Truncate(current_video_.title, 56, true);
+    drawText(renderer_, 14, 15, titleTxt, 2, {235, 235, 235, 255});
+
+    // Speed badge
+    if (state_.speed != 1.0) {
+        char spd[10]; snprintf(spd, sizeof(spd), "%.1fx", state_.speed);
+        int sw = 0; getTextSize(spd, 1, &sw, nullptr);
+        SDL_Rect badge{width - sw - 22, 16, sw + 14, 18};
+        fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
+        drawText(renderer_, width - sw - 15, 19, spd, 1, {255, 255, 255, 255});
+    }
+
+    // ── Bottom bar: progress + controls ───────────────────────────────────────
+    const int barAreaH = 58;
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 195);
+    SDL_Rect botBg{0, height - barAreaH, width, barAreaH};
+    SDL_RenderFillRect(renderer_, &botBg);
+
+    // Progress bar
+    const int mg = 14;
+    const int pbY = height - barAreaH + 9;
+    const int pbH = 4;
+    const int pbW = width - mg * 2;
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer_, 65, 65, 72, 255);
+    SDL_Rect pbBg{mg, pbY, pbW, pbH};
+    SDL_RenderFillRect(renderer_, &pbBg);
+
+    if (dur > 0.0) {
+        double frac = std::max(0.0, std::min(1.0, pos / dur));
+        int fillW = static_cast<int>(pbW * frac);
+        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 255);
+        SDL_Rect pbFill{mg, pbY, fillW, pbH};
+        SDL_RenderFillRect(renderer_, &pbFill);
+        // Playhead dot
+        SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+        SDL_Rect dot{mg + fillW - 3, pbY - 3, 7, pbH + 6};
+        SDL_RenderFillRect(renderer_, &dot);
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+    // Timestamps
+    std::string posStr = fmtTime(pos);
+    std::string durStr = dur > 0.0 ? fmtTime(dur) : "--:--";
+    int tsY = pbY + pbH + 6;
+    drawText(renderer_, mg, tsY, posStr, 1, {195, 195, 205, 255});
+    int durW2 = 0; getTextSize(durStr, 1, &durW2, nullptr);
+    drawText(renderer_, mg + pbW - durW2, tsY, durStr, 1, {195, 195, 205, 255});
+
+    // Pause indicator (centre)
+    if (!playing) {
+        drawTextCentered(renderer_, width / 2, tsY, "\x7c\x7c  PAUSED",
+                         1, {255, 210, 60, 255});
+    }
+
+    // Control hints
+    const char* hints = "A:Pause  B:Exit  LB/RB:+/-10s  LT/RT:Vol  Y:Quality";
+    drawTextCentered(renderer_, width / 2, height - 11, hints,
+                     1, {100, 100, 112, 255});
+}
+
 
 void App::openKeyboard() {
     state_.inputMode = TubeState::InputMode::SearchText;
@@ -487,8 +625,8 @@ void App::renderFrame() {
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         auto focusedCard = focus_manager_.getFocusedCard();
-        std::string subtitle = focusedCard ? focusedCard->video.title : "";
-        renderBrowseHeader(width, height, "TubeLite", subtitle, scrollY, false);
+        (void)focusedCard;
+        renderBrowseHeader(width, height, "TubeLite", scrollY, false);
     } else if (state_.currentScreen == TubeState::Screen::Search) {
         if (state_.isSearching && search_grid_->cards.empty()) {
             renderBrowseLoadingState(width, height, "Searching...");
@@ -502,8 +640,7 @@ void App::renderFrame() {
             search_grid_->render(renderer_, 0.0f, 0.0f);
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
-        std::string subtitle = current_search_query_.empty() ? "Controller-first search and fast paging" : current_search_query_;
-        renderBrowseHeader(width, height, "Search", subtitle, scrollY, true);
+        renderBrowseHeader(width, height, "Search", scrollY, true);
     }
 
     // Render header-level spinner if searching and grid is not empty
@@ -516,9 +653,13 @@ void App::renderFrame() {
         uiDirty_ = true;
     }
 
-    // Bottom tooltips (Status Bar)
+    // Playback HUD (progress, title, controls) or browse status bar
     if (state_.showUi) {
-        status_.render(renderer_, state_, width, height, uiDirty_);
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            renderPlaybackOverlay(width, height);
+        } else {
+            status_.render(renderer_, state_, width, height, uiDirty_);
+        }
     }
     
     // Loading overlay
