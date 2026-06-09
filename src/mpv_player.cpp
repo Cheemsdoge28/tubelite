@@ -65,7 +65,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_ = mpv_create();
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
-    mpv_set_option_string(mpv_, "hwdec",                  "no");
+    mpv_set_option_string(mpv_, "hwdec",                  "auto-safe");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     mpv_set_option_string(mpv_, "keepaspect",             "yes");
@@ -76,6 +76,9 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "sub-auto",               "fuzzy");
     mpv_set_option_string(mpv_, "cache",                  "yes");
     mpv_set_option_string(mpv_, "demuxer-max-bytes",      "16MiB");
+    mpv_set_option_string(mpv_, "vd-lavc-threads",        "2");
+    mpv_set_option_string(mpv_, "vd-lavc-skiploopfilter", "nonkey");
+    mpv_set_option_string(mpv_, "vd-lavc-fast",           "yes");
 
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }

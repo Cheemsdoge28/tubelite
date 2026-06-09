@@ -38,6 +38,8 @@ public:
     void stop();
     void setVolume(int volume);
     void seek(int seconds);
+    void seekAbsoluteKeyframes(double seconds);
+    void seekAbsoluteExact(double seconds);
     void toggleSubtitles();
     void cycleSubtitleTrack();
     void setMute(bool mute);

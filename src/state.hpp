@@ -22,6 +22,9 @@ struct TubeState {
     int volume{100};
     bool muted{false};
     double speed{1.0};
+    bool isScrubbing{false};
+    double scrubTargetTime{0.0};
+    bool showDebugOverlay{false};
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};
