@@ -59,7 +59,10 @@ bool App::initialize() {
 }
 
 void App::run() {
+    using namespace std::chrono;
+    const milliseconds frameTarget(16); // ~60fps
     while (state_.running) {
+        auto start = steady_clock::now();
         processMainThreadQueue();
         SDL_Event event;
         while (SDL_PollEvent(&event)) { handleEvent(event); }
@@ -71,7 +74,10 @@ void App::run() {
         }
         focus_manager_.update(16.0f / 1000.0f); // dt for 60fps
         renderFrame();
-        SDL_Delay(16);
+        auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start);
+        if (elapsed < frameTarget) {
+            SDL_Delay(static_cast<Uint32>((frameTarget - elapsed).count()));
+        }
     }
 }
 
@@ -289,18 +295,13 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
             const int bw = width - bx - 12;
             const int bh = 20;
 
-            // Background trough
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer_, 26, 26, 30, alpha);
+            // Background trough (rounded pill with subtle border)
             SDL_Rect bar{bx, by, bw, bh};
-            SDL_RenderFillRect(renderer_, &bar);
-            // Bottom underline accent
-            SDL_SetRenderDrawColor(renderer_, 255, 52, 52, (Uint8)(alpha / 2));
-            SDL_Rect under{bx, by + bh - 1, bw, 1};
-            SDL_RenderFillRect(renderer_, &under);
+            fillRoundedRect(renderer_, bar, 6, {26, 26, 30, alpha});
+            drawRoundedRect(renderer_, bar, 6, {70, 70, 82, static_cast<Uint8>(alpha * 0.7f)});
 
             std::string q = current_search_query_.empty()
-                            ? "Press Y to search..."
+                            ? "Search..."
                             : utf8Truncate(current_search_query_, 50, true);
             SDL_Color qCol = current_search_query_.empty()
                              ? SDL_Color{70, 70, 80, alpha}
@@ -1209,15 +1210,32 @@ void App::updateHoverPreviews() {
     }
 
     if (preview_card_ != focusedCard) {
-        if (is_playing_preview_) {
-            mpv_player_.stop();
-            mpv_player_.resetGeometry();
-            mpv_player_.setMute(state_.muted);
-            if (preview_card_) preview_card_->is_previewing = false;
-            is_playing_preview_ = false;
-        }
+        stopBrowsePreviewState();
         preview_card_ = focusedCard;
-        is_loading_preview_ = false;
+        return;
+    }
+
+    if (is_playing_preview_) {
+        auto grid = activeGrid();
+        if (grid) {
+            const float screenY = focusedCard->bounds.y - grid->scrollY;
+            const bool horizontal = (focusedCard->bounds.w > 400);
+            const int thumbW = horizontal ? 160 : static_cast<int>(focusedCard->bounds.w);
+            const int thumbH = horizontal ? 90 : static_cast<int>(focusedCard->bounds.w * (9.0f / 16.0f));
+            
+            const bool fullyVisible =
+                screenY >= grid->bounds.y &&
+                screenY + thumbH <= grid->bounds.y + grid->bounds.h &&
+                focusedCard->bounds.x >= grid->bounds.x &&
+                focusedCard->bounds.x + thumbW <= grid->bounds.x + grid->bounds.w;
+
+            if (!fullyVisible || screenY < 96.0f) {
+                stopBrowsePreviewState();
+                return;
+            }
+
+            mpv_player_.setGeometry(static_cast<int>(focusedCard->bounds.x), static_cast<int>(screenY), thumbW, thumbH);
+        }
         return;
     }
 
@@ -1244,11 +1262,8 @@ void App::updateHoverPreviews() {
         return;
     }
 
-    if (stream_url_cache_.find(cacheKey) != stream_url_cache_.end()) {
-        if (is_playing_preview_) {
-            return;
-        }
-        
+    auto cached = stream_url_cache_.find(cacheKey);
+    if (cached != stream_url_cache_.end()) {
         auto grid = activeGrid();
         if (!grid) return;
 
@@ -1268,7 +1283,7 @@ void App::updateHoverPreviews() {
 
         mpv_player_.setMute(true);
         mpv_player_.setGeometry(static_cast<int>(focusedCard->bounds.x), static_cast<int>(screenY), thumbW, thumbH);
-        mpv_player_.play(stream_url_cache_[cacheKey]);
+        mpv_player_.play(cached->second);
         is_playing_preview_ = true;
         focusedCard->is_previewing = true;
         uiDirty_ = true;

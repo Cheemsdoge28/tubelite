@@ -39,13 +39,18 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     int thumbW = horizontal ? 160 : static_cast<int>(bounds.w);
     int thumbH = horizontal ? 90 : static_cast<int>(bounds.w * (9.0f / 16.0f));
 
-    // Card background — when previewing in portrait layout, skip thumbnail area
+    // Card background — when previewing, skip thumbnail area
     // so the mpv GLES video (rendered in the first pass) shows through.
-    if (is_previewing && !horizontal) {
+    if (is_previewing) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
-        SDL_Rect textSection{cardRect.x, cardRect.y + thumbH, cardRect.w, cardRect.h - thumbH};
-        SDL_RenderFillRect(renderer, &textSection);
+        if (horizontal) {
+            SDL_Rect textSection{cardRect.x + thumbW, cardRect.y, cardRect.w - thumbW, cardRect.h};
+            SDL_RenderFillRect(renderer, &textSection);
+        } else {
+            SDL_Rect textSection{cardRect.x, cardRect.y + thumbH, cardRect.w, cardRect.h - thumbH};
+            SDL_RenderFillRect(renderer, &textSection);
+        }
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     } else {
         fillRoundedRect(renderer, cardRect, 8, {26, 26, 26, 255});
@@ -93,17 +98,24 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
             getTextSize(ell, 2, &ellW, nullptr);
             int targetW = tempMaxW - ellW;
             size_t len = utf8Length(video.title);
-            truncated_title_ = video.title;
-            while (len > 0) {
-                std::string temp = utf8Slice(video.title, 0, len);
+            
+            size_t low = 0;
+            size_t high = len;
+            size_t best_len = 0;
+            while (low <= high) {
+                size_t mid = low + (high - low) / 2;
+                std::string temp = utf8Slice(video.title, 0, mid);
                 int tempW = 0;
                 getTextSize(temp, 2, &tempW, nullptr);
                 if (tempW <= targetW) {
-                    truncated_title_ = temp + ell;
-                    break;
+                    best_len = mid;
+                    low = mid + 1;
+                } else {
+                    if (mid == 0) break;
+                    high = mid - 1;
                 }
-                len--;
             }
+            truncated_title_ = utf8Slice(video.title, 0, best_len) + ell;
         } else {
             truncated_title_ = video.title;
         }
@@ -118,17 +130,24 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
             getTextSize(ell, 1, &ellW, nullptr);
             int targetW = tempMaxW - ellW;
             size_t len = utf8Length(meta);
-            truncated_meta_ = meta;
-            while (len > 0) {
-                std::string temp = utf8Slice(meta, 0, len);
+            
+            size_t low = 0;
+            size_t high = len;
+            size_t best_len = 0;
+            while (low <= high) {
+                size_t mid = low + (high - low) / 2;
+                std::string temp = utf8Slice(meta, 0, mid);
                 int tempW = 0;
                 getTextSize(temp, 1, &tempW, nullptr);
                 if (tempW <= targetW) {
-                    truncated_meta_ = temp + ell;
-                    break;
+                    best_len = mid;
+                    low = mid + 1;
+                } else {
+                    if (mid == 0) break;
+                    high = mid - 1;
                 }
-                len--;
             }
+            truncated_meta_ = utf8Slice(meta, 0, best_len) + ell;
         } else {
             truncated_meta_ = meta;
         }
