@@ -127,6 +127,7 @@ void App::shutdown() {
     closeController();
     keyboard_.destroyTexture();
     status_.destroyTexture();
+    storyboard_.stop();
     mpv_player_.shutdown();
     cleanupFonts();
     if (renderer_) { SDL_DestroyRenderer(renderer_); renderer_ = nullptr; }
@@ -236,6 +237,7 @@ void App::stopBrowsePreviewState() {
 void App::leavePlayback() {
     mpv_player_.stop();
     mpv_player_.resetGeometry();
+    storyboard_.stop();
     state_.currentScreen = TubeState::Screen::Home;
     state_.showUi = true;
     last_playback_seconds_ = -1;
@@ -386,8 +388,10 @@ void App::renderPlaybackOverlay(int width, int height) {
     SDL_Rect pbBg{mg, pbY, pbW, pbH};
     SDL_RenderFillRect(renderer_, &pbBg);
 
+    double displayTime = state_.isScrubbing ? state_.scrubTargetTime : pos;
+
     if (dur > 0.0) {
-        double frac = std::max(0.0, std::min(1.0, pos / dur));
+        double frac = std::max(0.0, std::min(1.0, displayTime / dur));
         int fillW = static_cast<int>(pbW * frac);
         SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 255);
         SDL_Rect pbFill{mg, pbY, fillW, pbH};
@@ -398,10 +402,48 @@ void App::renderPlaybackOverlay(int width, int height) {
         SDL_RenderFillRect(renderer_, &dot);
     }
 
+    if (state_.isScrubbing) {
+        SDL_Texture* sbTex = storyboard_.getTexture(renderer_, state_.scrubTargetTime);
+        if (sbTex) {
+            int previewW = 160;
+            int previewH = 90;
+            double frac = 0.0;
+            if (dur > 0.0) frac = state_.scrubTargetTime / dur;
+            int previewX = mg + static_cast<int>(pbW * frac) - previewW / 2;
+            previewX = std::max(mg, std::min(width - mg - previewW, previewX));
+            int previewY = pbY - previewH - 12;
+
+            // Draw border/background shadow
+            SDL_Rect border{previewX - 2, previewY - 2, previewW + 4, previewH + 4};
+            SDL_SetRenderDrawColor(renderer_, 30, 30, 35, 255);
+            SDL_RenderFillRect(renderer_, &border);
+            SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 255); // Red accent border
+            SDL_RenderDrawRect(renderer_, &border);
+
+            SDL_Rect dst{previewX, previewY, previewW, previewH};
+            SDL_RenderCopy(renderer_, sbTex, nullptr, &dst);
+
+            // Draw timestamp overlay under the preview frame
+            std::string timeStr = fmtTime(state_.scrubTargetTime);
+            int tw = 0, th = 0;
+            getTextSize(timeStr, 1, &tw, &th);
+            SDL_Rect tsBg{previewX + (previewW - tw) / 2 - 4, previewY + previewH - th - 6, tw + 8, th + 4};
+            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 180});
+            drawText(renderer_, previewX + (previewW - tw) / 2, previewY + previewH - th - 4, timeStr, 1, {255, 255, 255, 255});
+        } else {
+            // Storyboard not loaded yet — seek player asynchronously on keyframe
+            static double last_keyframe_seek_time = -999.0;
+            if (std::abs(state_.scrubTargetTime - last_keyframe_seek_time) > 1.0) {
+                mpv_player_.seekAbsoluteKeyframes(state_.scrubTargetTime);
+                last_keyframe_seek_time = state_.scrubTargetTime;
+            }
+        }
+    }
+
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
     // Timestamps
-    std::string posStr = fmtTime(pos);
+    std::string posStr = fmtTime(displayTime);
     std::string durStr = dur > 0.0 ? fmtTime(dur) : "--:--";
     int tsY = pbY + pbH + 6;
     drawText(renderer_, mg, tsY, posStr, 1, {195, 195, 205, 255});
@@ -507,6 +549,7 @@ void App::playVideo(const YouTubeVideo& video) {
     if (state_.isLoadingVideo || state_.currentScreen == TubeState::Screen::Playback) return;
     
     stopBrowsePreviewState();
+    storyboard_.stop();
     
     current_video_ = video;
     state_.isLoadingVideo = true;
@@ -526,6 +569,24 @@ void App::playVideo(const YouTubeVideo& video) {
         mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
         state_.showUi = false;
         uiDirty_ = true;
+
+        // Start storyboard extraction
+        const std::string lowResCacheKey = streamCacheKey(video.id, 144);
+        auto lowResCached = stream_url_cache_.find(lowResCacheKey);
+        if (lowResCached != stream_url_cache_.end()) {
+            storyboard_.start(lowResCached->second, video.duration_seconds);
+        } else {
+            youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success, const std::string& url) {
+                queueOnMainThread([this, video, success, url]() {
+                    if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
+                        if (success) {
+                            stream_url_cache_[streamCacheKey(video.id, 144)] = url;
+                            storyboard_.start(url, video.duration_seconds);
+                        }
+                    }
+                });
+            });
+        }
         return;
     }
 
@@ -542,6 +603,24 @@ void App::playVideo(const YouTubeVideo& video) {
                 mpv_player_.play(url);
                 mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
                 state_.showUi = false;
+
+                // Start storyboard extraction
+                const std::string lowResCacheKey = streamCacheKey(video.id, 144);
+                auto lowResCached = stream_url_cache_.find(lowResCacheKey);
+                if (lowResCached != stream_url_cache_.end()) {
+                    storyboard_.start(lowResCached->second, video.duration_seconds);
+                } else {
+                    youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success2, const std::string& url2) {
+                        queueOnMainThread([this, video, success2, url2]() {
+                            if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
+                                if (success2) {
+                                    stream_url_cache_[streamCacheKey(video.id, 144)] = url2;
+                                    storyboard_.start(url2, video.duration_seconds);
+                                }
+                            }
+                        });
+                    });
+                }
             } else {
                 loading_status_text_ = "Stream Resolve Failed";
             }
@@ -589,6 +668,40 @@ void App::updateSticks() {
         } else {
             lastStickDirX_ = 0;
             lastStickDirY_ = 0;
+        }
+    } else if (state_.currentScreen == TubeState::Screen::Playback) {
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        bool kbLeft = keys[SDL_SCANCODE_LEFT];
+        bool kbRight = keys[SDL_SCANCODE_RIGHT];
+        bool wantsScrub = state_.dpadLeftPressed || state_.dpadRightPressed || kbLeft || kbRight || std::abs(state_.leftStickX) > 0.2f;
+        if (wantsScrub) {
+            if (!state_.isScrubbing) {
+                state_.isScrubbing = true;
+                state_.scrubTargetTime = mpv_player_.getPlaybackTime();
+                mpv_player_.pause();
+            }
+            
+            double delta = 0.0;
+            if (state_.dpadLeftPressed || kbLeft) {
+                delta = -2.0; // 2 seconds per frame
+            } else if (state_.dpadRightPressed || kbRight) {
+                delta = 2.0;
+            } else if (std::abs(state_.leftStickX) > 0.2f) {
+                delta = state_.leftStickX * 4.0;
+            }
+            
+            if (delta != 0.0) {
+                state_.scrubTargetTime += delta;
+                state_.scrubTargetTime = std::max(0.0, std::min(mpv_player_.getDuration(), state_.scrubTargetTime));
+                uiDirty_ = true;
+            }
+        } else {
+            if (state_.isScrubbing) {
+                mpv_player_.seekAbsoluteExact(state_.scrubTargetTime);
+                mpv_player_.resume();
+                state_.isScrubbing = false;
+                uiDirty_ = true;
+            }
         }
     }
 }
@@ -909,18 +1022,12 @@ void App::handleKey(SDL_Keycode key) {
         }
         break;
     case SDLK_LEFT:
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.seek(-10);
-            showPlaybackToast("Seek -10s", true);
-        } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
+        if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(-1, 0);
         }
         break;
     case SDLK_RIGHT:
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.seek(10);
-            showPlaybackToast("Seek +10s", true);
-        } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
+        if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(1, 0);
         }
         break;
@@ -1049,15 +1156,9 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.seek(-10);
-            showPlaybackToast("Seek -10s", true);
-        }
+        // Handled via updateSticks() scrubbing
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.seek(10);
-            showPlaybackToast("Seek +10s", true);
-        }
+        // Handled via updateSticks() scrubbing
     } else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             state_.speed = std::max(0.25, state_.speed - 0.25);
