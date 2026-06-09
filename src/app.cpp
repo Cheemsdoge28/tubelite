@@ -1229,6 +1229,12 @@ void App::updateHoverPreviews() {
                 focusedCard->bounds.x >= grid->bounds.x &&
                 focusedCard->bounds.x + thumbW <= grid->bounds.x + grid->bounds.w;
 
+            static float last_screenY = -9999.0f;
+            if (std::abs(screenY - last_screenY) > 0.01f) {
+                std::cerr << "[app preview ongoing] cardY: " << focusedCard->bounds.y << ", scrollY: " << grid->scrollY << ", screenY: " << screenY << ", x: " << focusedCard->bounds.x << ", w: " << focusedCard->bounds.w << ", h: " << focusedCard->bounds.h << "\n";
+                last_screenY = screenY;
+            }
+
             if (!fullyVisible || screenY < 96.0f) {
                 stopBrowsePreviewState();
                 return;
@@ -1276,6 +1282,8 @@ void App::updateHoverPreviews() {
             screenY + thumbH <= grid->bounds.y + grid->bounds.h &&
             focusedCard->bounds.x >= grid->bounds.x &&
             focusedCard->bounds.x + thumbW <= grid->bounds.x + grid->bounds.w;
+
+        std::cerr << "[app preview start] cardY: " << focusedCard->bounds.y << ", scrollY: " << grid->scrollY << ", screenY: " << screenY << ", x: " << focusedCard->bounds.x << ", w: " << focusedCard->bounds.w << ", h: " << focusedCard->bounds.h << ", fullyVisible: " << fullyVisible << "\n";
 
         if (!fullyVisible || screenY < 96.0f) {
             return;
