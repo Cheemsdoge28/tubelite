@@ -160,7 +160,124 @@ std::string utf8Truncate(const std::string& text, size_t maxCodepoints, bool ell
     return clipped;
 }
 
-bool initFonts() {
+FontAtlas g_atlas_small;
+FontAtlas g_atlas_medium;
+FontAtlas g_atlas_large;
+
+SDL_Texture* g_corner_mask_texture = nullptr;
+SDL_Texture* g_solid_corner_texture = nullptr;
+
+static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
+    FontAtlas atlas;
+    int slot_w = 32;
+    int slot_h = 32;
+    int cols = 16;
+    int rows = 8;
+    
+    SDL_Surface* atlas_surface = SDL_CreateRGBSurfaceWithFormat(0, cols * slot_w, rows * slot_h, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!atlas_surface) return atlas;
+    
+    SDL_FillRect(atlas_surface, nullptr, 0x00000000);
+    
+    atlas.line_skip = TTF_FontLineSkip(font);
+    atlas.ascent = TTF_FontAscent(font);
+    
+    for (int ch = 32; ch < 127; ++ch) {
+        int col = (ch - 32) % cols;
+        int row = (ch - 32) / cols;
+        
+        int minx = 0, maxx = 0, miny = 0, maxy = 0, advance = 0;
+        TTF_GlyphMetrics(font, ch, &minx, &maxx, &miny, &maxy, &advance);
+        
+        SDL_Surface* glyph_surf = TTF_RenderGlyph_Blended(font, ch, {255, 255, 255, 255});
+        if (glyph_surf) {
+            SDL_Rect dst{col * slot_w, row * slot_h, glyph_surf->w, glyph_surf->h};
+            
+            SDL_BlendMode prev_mode;
+            SDL_GetSurfaceBlendMode(glyph_surf, &prev_mode);
+            SDL_SetSurfaceBlendMode(glyph_surf, SDL_BLENDMODE_NONE);
+            SDL_BlitSurface(glyph_surf, nullptr, atlas_surface, &dst);
+            SDL_SetSurfaceBlendMode(glyph_surf, prev_mode);
+            
+            GlyphInfo& info = atlas.glyphs[ch];
+            info.src_rect = {col * slot_w, row * slot_h, glyph_surf->w, glyph_surf->h};
+            info.minx = minx;
+            info.maxx = maxx;
+            info.miny = miny;
+            info.maxy = maxy;
+            info.advance = advance;
+            
+            SDL_FreeSurface(glyph_surf);
+        } else {
+            GlyphInfo& info = atlas.glyphs[ch];
+            info.src_rect = {col * slot_w, row * slot_h, 0, 0};
+            info.minx = 0;
+            info.maxx = 0;
+            info.miny = 0;
+            info.maxy = 0;
+            info.advance = advance > 0 ? advance : slot_w / 4;
+        }
+    }
+    
+    atlas.texture = SDL_CreateTextureFromSurface(renderer, atlas_surface);
+    atlas.tex_width = atlas_surface->w;
+    atlas.tex_height = atlas_surface->h;
+    
+    SDL_FreeSurface(atlas_surface);
+    return atlas;
+}
+
+static void initCornerMask(SDL_Renderer* renderer) {
+    int r = 8;
+    int size = r * 2;
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) return;
+    
+    SDL_FillRect(surf, nullptr, 0x00000000);
+    
+    uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
+    uint32_t mask_color = SDL_MapRGBA(surf->format, 15, 15, 15, 255);
+    
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            double dx = x - (r - 0.5);
+            double dy = y - (r - 0.5);
+            if (dx * dx + dy * dy > r * r) {
+                pixels[y * size + x] = mask_color;
+            }
+        }
+    }
+    
+    g_corner_mask_texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_FreeSurface(surf);
+}
+
+static void initSolidCorner(SDL_Renderer* renderer) {
+    int r = 8;
+    int size = r * 2;
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) return;
+    
+    SDL_FillRect(surf, nullptr, 0x00000000);
+    
+    uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
+    uint32_t white = SDL_MapRGBA(surf->format, 255, 255, 255, 255);
+    
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            double dx = x - (r - 0.5);
+            double dy = y - (r - 0.5);
+            if (dx * dx + dy * dy <= r * r) {
+                pixels[y * size + x] = white;
+            }
+        }
+    }
+    
+    g_solid_corner_texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_FreeSurface(surf);
+}
+
+bool initFonts(SDL_Renderer* renderer) {
     if (TTF_Init() != 0) {
         std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
         return false;
@@ -202,7 +319,6 @@ bool initFonts() {
         return false;
     }
     
-    // Loaded sizes optimized for 640x480 screen
     g_font_small = TTF_OpenFont(regPath.c_str(), 14);
     g_font_medium = TTF_OpenFont(regPath.c_str(), 18);
     g_font_large = TTF_OpenFont(boldPath.c_str(), 24);
@@ -211,6 +327,13 @@ bool initFonts() {
         std::cerr << "TTF_OpenFont failed: " << TTF_GetError() << std::endl;
         return false;
     }
+    
+    g_atlas_small = createFontAtlas(renderer, g_font_small);
+    g_atlas_medium = createFontAtlas(renderer, g_font_medium);
+    g_atlas_large = createFontAtlas(renderer, g_font_large);
+    
+    initCornerMask(renderer);
+    initSolidCorner(renderer);
     
     return true;
 }
@@ -262,6 +385,11 @@ void clearTextCache() {
 
 void cleanupFonts() {
     clearTextCache();
+    if (g_atlas_small.texture)  { SDL_DestroyTexture(g_atlas_small.texture);  g_atlas_small.texture = nullptr; }
+    if (g_atlas_medium.texture) { SDL_DestroyTexture(g_atlas_medium.texture); g_atlas_medium.texture = nullptr; }
+    if (g_atlas_large.texture)  { SDL_DestroyTexture(g_atlas_large.texture);  g_atlas_large.texture = nullptr; }
+    if (g_corner_mask_texture)  { SDL_DestroyTexture(g_corner_mask_texture);  g_corner_mask_texture = nullptr; }
+    if (g_solid_corner_texture) { SDL_DestroyTexture(g_solid_corner_texture); g_solid_corner_texture = nullptr; }
     if (g_font_small)  { TTF_CloseFont(g_font_small);  g_font_small = nullptr; }
     if (g_font_medium) { TTF_CloseFont(g_font_medium); g_font_medium = nullptr; }
     if (g_font_large)  { TTF_CloseFont(g_font_large);  g_font_large = nullptr; }
@@ -271,50 +399,39 @@ void cleanupFonts() {
 void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {
     if (text.empty()) return;
     
-    TTF_Font* font = nullptr;
-    if (scale <= 1)      font = g_font_small;
-    else if (scale == 2) font = g_font_medium;
-    else                 font = g_font_large;
+    const FontAtlas* atlas = nullptr;
+    if (scale <= 1)      atlas = &g_atlas_small;
+    else if (scale == 2) atlas = &g_atlas_medium;
+    else                 atlas = &g_atlas_large;
     
-    if (font) {
-        uint32_t color_rgba = (static_cast<uint32_t>(color.r) << 24) |
-                              (static_cast<uint32_t>(color.g) << 16) |
-                              (static_cast<uint32_t>(color.b) << 8) |
-                              color.a;
-        TextCacheKey key{text, scale, color_rgba};
-        uint32_t now = SDL_GetTicks();
+    if (atlas && atlas->texture) {
+        SDL_SetTextureColorMod(atlas->texture, color.r, color.g, color.b);
+        SDL_SetTextureAlphaMod(atlas->texture, color.a);
+        SDL_SetTextureBlendMode(atlas->texture, SDL_BLENDMODE_BLEND);
         
-        auto it = g_text_cache.find(key);
-        if (it != g_text_cache.end()) {
-            it->second.last_used = now;
-            SDL_Rect dst{x, y, it->second.w, it->second.h};
-            SDL_RenderCopy(renderer, it->second.texture, nullptr, &dst);
-            
-            if (now - g_last_prune_time > 5000) {
-                pruneTextCache(now);
+        int cursor_x = x;
+        for (size_t i = 0; i < text.size(); ) {
+            unsigned char ch = text[i];
+            if (ch >= 32 && ch < 127) {
+                const GlyphInfo& info = atlas->glyphs[ch];
+                if (info.src_rect.w > 0) {
+                    int draw_y = y + (atlas->ascent - info.maxy);
+                    int draw_x = cursor_x + info.minx;
+                    
+                    SDL_Rect dst{draw_x, draw_y, info.src_rect.w, info.src_rect.h};
+                    SDL_RenderCopy(renderer, atlas->texture, &info.src_rect, &dst);
+                }
+                cursor_x += info.advance;
+                i += 1;
+            } else {
+                if ((ch & 0x80) == 0) i += 1;
+                else if ((ch & 0xE0) == 0xC0) i += 2;
+                else if ((ch & 0xF0) == 0xE0) i += 3;
+                else if ((ch & 0xF8) == 0xF0) i += 4;
+                else i += 1;
             }
-            return;
         }
-        
-        SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
-        if (surface) {
-            SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
-            if (texture) {
-                int w = surface->w;
-                int h = surface->h;
-                SDL_Rect dst{x, y, w, h};
-                SDL_RenderCopy(renderer, texture, nullptr, &dst);
-                
-                CachedText cached{texture, w, h, now};
-                g_text_cache[key] = cached;
-            }
-            SDL_FreeSurface(surface);
-            
-            if (now - g_last_prune_time > 5000) {
-                pruneTextCache(now);
-            }
-            return;
-        }
+        return;
     }
     
     // Fallback to custom pixel font if TTF is not available
@@ -367,13 +484,28 @@ void getTextSize(const std::string& text, int scale, int* w, int* h) {
     if (h) *h = 0;
     if (text.empty()) return;
     
-    TTF_Font* font = nullptr;
-    if (scale <= 1)      font = g_font_small;
-    else if (scale == 2) font = g_font_medium;
-    else                 font = g_font_large;
+    const FontAtlas* atlas = nullptr;
+    if (scale <= 1)      atlas = &g_atlas_small;
+    else if (scale == 2) atlas = &g_atlas_medium;
+    else                 atlas = &g_atlas_large;
     
-    if (font) {
-        TTF_SizeUTF8(font, text.c_str(), w, h);
+    if (atlas && atlas->texture) {
+        int width = 0;
+        for (size_t i = 0; i < text.size(); ) {
+            unsigned char ch = text[i];
+            if (ch >= 32 && ch < 127) {
+                width += atlas->glyphs[ch].advance;
+                i += 1;
+            } else {
+                if ((ch & 0x80) == 0) i += 1;
+                else if ((ch & 0xE0) == 0xC0) i += 2;
+                else if ((ch & 0xF0) == 0xE0) i += 3;
+                else if ((ch & 0xF8) == 0xF0) i += 4;
+                else i += 1;
+            }
+        }
+        if (w) *w = width;
+        if (h) *h = atlas->line_skip;
         return;
     }
     
@@ -382,44 +514,37 @@ void getTextSize(const std::string& text, int scale, int* w, int* h) {
 }
 
 void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
-    if (radius <= 0) {
+    if (radius <= 0 || !g_solid_corner_texture) {
         SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
         SDL_RenderFillRect(renderer, &rect);
         return;
     }
     
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_SetTextureColorMod(g_solid_corner_texture, color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(g_solid_corner_texture, color.a);
     
-    int right = rect.x + rect.w - 1;
-    int bottom = rect.y + rect.h - 1;
-    
-    SDL_Rect middleRect{rect.x + radius, rect.y, rect.w - 2 * radius, rect.h};
-    SDL_Rect leftRect{rect.x, rect.y + radius, radius, rect.h - 2 * radius};
-    SDL_Rect rightRect{right - radius + 1, rect.y + radius, radius, rect.h - 2 * radius};
-    
+    int r = radius;
+    SDL_Rect middleRect{rect.x + r, rect.y, rect.w - 2 * r, rect.h};
+    SDL_Rect sideRect{rect.x, rect.y + r, rect.w, rect.h - 2 * r};
     SDL_RenderFillRect(renderer, &middleRect);
-    SDL_RenderFillRect(renderer, &leftRect);
-    SDL_RenderFillRect(renderer, &rightRect);
+    SDL_RenderFillRect(renderer, &sideRect);
     
-    auto drawCornerHelper = [&](int cx, int cy, int corner) {
-        for (int w = 0; w < radius; w++) {
-            int h = static_cast<int>(std::sqrt(radius * radius - w * w));
-            if (corner == 0) {
-                SDL_RenderDrawLine(renderer, cx - w, cy - h, cx - w, cy);
-            } else if (corner == 1) {
-                SDL_RenderDrawLine(renderer, cx + w, cy - h, cx + w, cy);
-            } else if (corner == 2) {
-                SDL_RenderDrawLine(renderer, cx - w, cy, cx - w, cy + h);
-            } else if (corner == 3) {
-                SDL_RenderDrawLine(renderer, cx + w, cy, cx + w, cy + h);
-            }
-        }
-    };
+    SDL_Rect srcTL{0, 0, r, r};
+    SDL_Rect dstTL{rect.x, rect.y, r, r};
+    SDL_RenderCopy(renderer, g_solid_corner_texture, &srcTL, &dstTL);
     
-    drawCornerHelper(rect.x + radius, rect.y + radius, 0);
-    drawCornerHelper(right - radius, rect.y + radius, 1);
-    drawCornerHelper(rect.x + radius, bottom - radius, 2);
-    drawCornerHelper(right - radius, bottom - radius, 3);
+    SDL_Rect srcTR{r, 0, r, r};
+    SDL_Rect dstTR{rect.x + rect.w - r, rect.y, r, r};
+    SDL_RenderCopy(renderer, g_solid_corner_texture, &srcTR, &dstTR);
+    
+    SDL_Rect srcBL{0, r, r, r};
+    SDL_Rect dstBL{rect.x, rect.y + rect.h - r, r, r};
+    SDL_RenderCopy(renderer, g_solid_corner_texture, &srcBL, &dstBL);
+    
+    SDL_Rect srcBR{r, r, r, r};
+    SDL_Rect dstBR{rect.x + rect.w - r, rect.y + rect.h - r, r, r};
+    SDL_RenderCopy(renderer, g_solid_corner_texture, &srcBR, &dstBR);
 }
 
 void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
@@ -476,26 +601,26 @@ void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
 }
 
 void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
-    if (radius <= 0) return;
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    if (radius <= 0 || !g_corner_mask_texture) return;
     
-    int right = rect.x + rect.w - 1;
-    int bottom = rect.y + rect.h - 1;
+    SDL_SetTextureColorMod(g_corner_mask_texture, color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(g_corner_mask_texture, color.a);
+    SDL_SetTextureBlendMode(g_corner_mask_texture, SDL_BLENDMODE_BLEND);
     
-    for (int y = 0; y < radius; ++y) {
-        for (int x = 0; x < radius; ++x) {
-            int dx = radius - x;
-            int dy = radius - y;
-            if (dx * dx + dy * dy > radius * radius) {
-                // Top-left
-                SDL_RenderDrawPoint(renderer, rect.x + x, rect.y + y);
-                // Top-right
-                SDL_RenderDrawPoint(renderer, right - x, rect.y + y);
-                // Bottom-left
-                SDL_RenderDrawPoint(renderer, rect.x + x, bottom - y);
-                // Bottom-right
-                SDL_RenderDrawPoint(renderer, right - x, bottom - y);
-            }
-        }
-    }
+    int r = radius;
+    SDL_Rect srcTL{0, 0, r, r};
+    SDL_Rect dstTL{rect.x, rect.y, r, r};
+    SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTL, &dstTL);
+    
+    SDL_Rect srcTR{r, 0, r, r};
+    SDL_Rect dstTR{rect.x + rect.w - r, rect.y, r, r};
+    SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTR, &dstTR);
+    
+    SDL_Rect srcBL{0, r, r, r};
+    SDL_Rect dstBL{rect.x, rect.y + rect.h - r, r, r};
+    SDL_RenderCopy(renderer, g_corner_mask_texture, &srcBL, &dstBL);
+    
+    SDL_Rect srcBR{r, r, r, r};
+    SDL_Rect dstBR{rect.x + rect.w - r, rect.y + rect.h - r, r, r};
+    SDL_RenderCopy(renderer, g_corner_mask_texture, &srcBR, &dstBR);
 }

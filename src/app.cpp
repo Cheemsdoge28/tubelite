@@ -30,7 +30,7 @@ bool App::initialize() {
     
 
     
-    if (!initFonts()) {
+    if (!initFonts(renderer_)) {
         logError("Failed to initialize TTF fonts, falling back to pixel font");
     }
     
@@ -661,7 +661,7 @@ void App::updateSticks() {
             if (dirX != lastStickDirX_ || dirY != lastStickDirY_ || now >= nextStickNavAt_) {
                 lastStickDirX_ = dirX;
                 lastStickDirY_ = dirY;
-                nextStickNavAt_ = now + milliseconds(250);
+                nextStickNavAt_ = now + milliseconds(140);
                 focus_manager_.handleInput(dirX, dirY);
                 uiDirty_ = true;
             }
@@ -744,9 +744,6 @@ void App::renderFrame() {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // #0f0f0f background
         SDL_RenderClear(renderer_);
-        if (is_playing_preview_) {
-            mpv_player_.render(width, height);  // blits video texture at thumbnail rect
-        }
     }
 
     auto currentGrid = activeGrid();
@@ -762,6 +759,9 @@ void App::renderFrame() {
             }
         } else {
             home_grid_->render(renderer_, 0.0f, 0.0f);
+            if (is_playing_preview_) {
+                mpv_player_.render(width, height);
+            }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         auto focusedCard = focus_manager_.getFocusedCard();
@@ -778,6 +778,9 @@ void App::renderFrame() {
             }
         } else {
             search_grid_->render(renderer_, 0.0f, 0.0f);
+            if (is_playing_preview_) {
+                mpv_player_.render(width, height);
+            }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         renderBrowseHeader(width, height, "Search", scrollY, true);

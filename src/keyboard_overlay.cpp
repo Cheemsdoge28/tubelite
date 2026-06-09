@@ -260,13 +260,13 @@ bool KeyboardOverlay::updateSelectionFromStick(TubeState& state, int width, int 
     if (dirX != navDirectionX_ || dirY != navDirectionY_) {
         navDirectionX_ = dirX; navDirectionY_ = dirY;
         navStartedAt_ = now;
-        navNextAt_ = now + std::chrono::milliseconds(220);
+        navNextAt_ = now + std::chrono::milliseconds(180);
         moveSelection(state, dirX, dirY, width, height, uiDirty);
         return true;
     }
     if (now >= navNextAt_) {
         moveSelection(state, dirX, dirY, width, height, uiDirty);
-        navNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(navStartedAt_, 135, 70));
+        navNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(navStartedAt_, 90, 45));
         return true;
     }
     return false;
@@ -285,13 +285,13 @@ bool KeyboardOverlay::updateSelectionFromDpad(TubeState& state, int width, int h
     if (dirX != dpadDirectionX_ || dirY != dpadDirectionY_) {
         dpadDirectionX_ = dirX; dpadDirectionY_ = dirY;
         dpadStartedAt_ = now;
-        dpadNextAt_ = now + std::chrono::milliseconds(220);
+        dpadNextAt_ = now + std::chrono::milliseconds(180);
         moveSelection(state, dirX, dirY, width, height, uiDirty);
         return true;
     }
     if (now >= dpadNextAt_) {
         moveSelection(state, dirX, dirY, width, height, uiDirty);
-        dpadNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(dpadStartedAt_, 135, 70));
+        dpadNextAt_ = now + std::chrono::milliseconds(repeatIntervalMs(dpadStartedAt_, 90, 45));
         return true;
     }
     return false;

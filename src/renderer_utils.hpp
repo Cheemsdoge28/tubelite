@@ -18,7 +18,25 @@ void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
 void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time);
 SDL_Texture* createTargetTexture(SDL_Renderer* renderer, int width, int height);
 
-bool initFonts();
+struct GlyphInfo {
+    SDL_Rect src_rect;
+    int minx, maxx, miny, maxy, advance;
+};
+
+struct FontAtlas {
+    SDL_Texture* texture = nullptr;
+    int tex_width = 0;
+    int tex_height = 0;
+    std::array<GlyphInfo, 128> glyphs;
+    int line_skip = 0;
+    int ascent = 0;
+};
+
+extern FontAtlas g_atlas_small;
+extern FontAtlas g_atlas_medium;
+extern FontAtlas g_atlas_large;
+
+bool initFonts(SDL_Renderer* renderer);
 void cleanupFonts();
 void clearTextCache();
 
