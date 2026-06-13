@@ -385,11 +385,15 @@ void MpvPlayer::destroyPreviewTexture() {
 
 // ── Playback controls ─────────────────────────────────────────────────────────
 
-void MpvPlayer::play(const std::string& url) {
+void MpvPlayer::play(const std::string& url, const std::string& subtitle_url) {
     if (!mpv_) return;
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     const char* cmd[] = {"loadfile", url.c_str(), nullptr};
     mpv_command_async(mpv_, 0, cmd);
+    if (!subtitle_url.empty()) {
+        const char* subCmd[] = {"sub-add", subtitle_url.c_str(), "select", nullptr};
+        mpv_command_async(mpv_, 0, subCmd);
+    }
     resume();
 }
 void MpvPlayer::pause() {

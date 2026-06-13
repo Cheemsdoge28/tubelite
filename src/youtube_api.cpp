@@ -255,8 +255,78 @@ void YouTubeAPI::search(const std::string& query, int page,
     }).detach();
 }
 
+static std::string extractSubtitleUrl(const json& j) {
+    // 1. Manual English subtitles
+    if (j.contains("subtitles")) {
+        const auto& subs = j["subtitles"];
+        if (subs.is_object() && subs.contains("en")) {
+            const auto& en_subs = subs["en"];
+            if (en_subs.is_array() && !en_subs.empty()) {
+                for (const auto& item : en_subs) {
+                    if (item.is_object() && item.contains("url")) {
+                        std::string url = item.value("url", "");
+                        if (!url.empty()) return url;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Any other manual subtitles
+    if (j.contains("subtitles")) {
+        const auto& subs = j["subtitles"];
+        if (subs.is_object()) {
+            for (auto it = subs.begin(); it != subs.end(); ++it) {
+                if (it.value().is_array() && !it.value().empty()) {
+                    for (const auto& item : it.value()) {
+                        if (item.is_object() && item.contains("url")) {
+                            std::string url = item.value("url", "");
+                            if (!url.empty()) return url;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Automatic English captions
+    if (j.contains("automatic_captions")) {
+        const auto& caps = j["automatic_captions"];
+        if (caps.is_object() && caps.contains("en")) {
+            const auto& en_caps = caps["en"];
+            if (en_caps.is_array() && !en_caps.empty()) {
+                for (const auto& item : en_caps) {
+                    if (item.is_object() && item.contains("url")) {
+                        std::string url = item.value("url", "");
+                        if (!url.empty()) return url;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Any other automatic captions
+    if (j.contains("automatic_captions")) {
+        const auto& caps = j["automatic_captions"];
+        if (caps.is_object()) {
+            for (auto it = caps.begin(); it != caps.end(); ++it) {
+                if (it.value().is_array() && !it.value().empty()) {
+                    for (const auto& item : it.value()) {
+                        if (item.is_object() && item.contains("url")) {
+                            std::string url = item.value("url", "");
+                            if (!url.empty()) return url;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return "";
+}
+
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
-    std::function<void(bool success, const std::string& url)> callback,
+    std::function<void(bool success, const std::string& url, const std::string& subtitle_url)> callback,
     bool isPreview) {
 
     // Use separate counters so preview prefetches and main playback
@@ -269,7 +339,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         std::atomic<int>& id_counter2 = isPreview ? current_preview_request_id_
                                                    : current_stream_request_id_;
         try {
-            if (req_id != id_counter2) { callback(false, ""); return; }
+            if (req_id != id_counter2) { callback(false, "", ""); return; }
 
             const std::string safeId  = sanitizeShellText(video_id);
             const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
@@ -287,58 +357,63 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-playlist "
                 "--extractor-args \"youtube:player_client=android;skip=dash,hls\" "
-                "-f \"" + fmtMain + "\" --get-url \"" + watchUrl + "\" 2>&1",
+                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1",
 
                 // 2nd: ios client fallback
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-playlist "
                 "--extractor-args \"youtube:player_client=ios;skip=dash,hls\" "
-                "-f \"" + fmtMain + "\" --get-url \"" + watchUrl + "\" 2>&1",
+                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1",
 
                 // 3rd: web client, no format restriction – last resort
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-playlist "
-                "--get-url \"" + watchUrl + "\" 2>&1"
+                "--dump-json \"" + watchUrl + "\" 2>&1"
             };
 
             std::string url;
+            std::string subtitle_url;
             for (const auto& cmd : commands) {
-                if (req_id != id_counter2) { callback(false, ""); return; }
+                if (req_id != id_counter2) { callback(false, "", ""); return; }
 
                 const std::string output = executeCommand(cmd);
 
-                if (req_id != id_counter2) { callback(false, ""); return; }
+                if (req_id != id_counter2) { callback(false, "", ""); return; }
 
                 appendLog(std::string("getStreamUrl cmd"), output);
 
-                // The output may be multiple lines if yt-dlp found multiple streams.
-                // Take the FIRST line that starts with http – we want the muxed video URL,
-                // not a second audio-only URL that sometimes appears on line 2.
                 std::istringstream iss(output);
                 std::string line;
                 while (std::getline(iss, line)) {
-                    // Strip trailing \r
                     if (!line.empty() && line.back() == '\r') line.pop_back();
-                    if (line.rfind("http://", 0) == 0 || line.rfind("https://", 0) == 0) {
-                        url = line;
-                        break;
+                    if (line.empty()) continue;
+                    try {
+                        auto j = json::parse(line);
+                        if (j.is_object() && j.contains("url")) {
+                            url = j.value("url", "");
+                            subtitle_url = extractSubtitleUrl(j);
+                            if (!url.empty()) break;
+                        }
+                    } catch (...) {
+                        // ignore
                     }
                 }
 
                 if (!url.empty()) {
                     appendLog("Selected URL", url);
+                    appendLog("Selected Subtitle URL", subtitle_url);
                     break;
                 }
             }
 
             if (url.empty()) {
                 appendLog("yt-dlp: no URL found", "No playable URL was extracted.");
-                callback(false, "");
+                callback(false, "", "");
             } else {
-                callback(true, url);
+                callback(true, url, subtitle_url);
             }
         } catch (...) {
-            callback(false, "");
+            callback(false, "", "");
         }
     }).detach();
 }

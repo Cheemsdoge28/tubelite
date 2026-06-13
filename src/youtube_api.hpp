@@ -32,7 +32,7 @@ public:
     // isPreview=true uses a separate request counter so preview prefetches
     // don't cancel main playback resolutions and vice versa.
     void getStreamUrl(const std::string& video_id, int max_height,
-        std::function<void(bool success, const std::string& url)> callback,
+        std::function<void(bool success, const std::string& url, const std::string& subtitle_url)> callback,
         bool isPreview = false);
 
 private:

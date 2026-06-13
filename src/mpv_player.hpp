@@ -30,7 +30,7 @@ public:
     bool update();
 
     // ── Playback controls ─────────────────────────────────────────────────────
-    void play(const std::string& url);
+    void play(const std::string& url, const std::string& subtitle_url = "");
     void pause();
     void resume();
     void stop();
