@@ -51,6 +51,52 @@ static void appendLog(const std::string& title, const std::string& body) {
     ofs << body << "\n\n";
 }
 
+static std::string calculateUploadedAgo(const std::string& upload_date) {
+    if (upload_date.length() != 8) return "";
+    try {
+        int year = std::stoi(upload_date.substr(0, 4));
+        int month = std::stoi(upload_date.substr(4, 2));
+        int day = std::stoi(upload_date.substr(6, 2));
+
+        std::time_t t = std::time(nullptr);
+        std::tm* now = std::localtime(&t);
+        if (!now) return "";
+        int cur_year = now->tm_year + 1900;
+        int cur_month = now->tm_mon + 1;
+        int cur_day = now->tm_mday;
+
+        int diff_years = cur_year - year;
+        int diff_months = cur_month - month;
+        int diff_days = cur_day - day;
+
+        if (diff_days < 0) {
+            diff_months -= 1;
+            diff_days += 30; // approximate month length
+        }
+        if (diff_months < 0) {
+            diff_years -= 1;
+            diff_months += 12;
+        }
+
+        if (diff_years > 0) {
+            return std::to_string(diff_years) + (diff_years == 1 ? " year ago" : " years ago");
+        }
+        if (diff_months > 0) {
+            return std::to_string(diff_months) + (diff_months == 1 ? " month ago" : " months ago");
+        }
+        if (diff_days > 7) {
+            int weeks = diff_days / 7;
+            return std::to_string(weeks) + (weeks == 1 ? " week ago" : " weeks ago");
+        }
+        if (diff_days > 0) {
+            return std::to_string(diff_days) + (diff_days == 1 ? " day ago" : " days ago");
+        }
+        return "today";
+    } catch (...) {
+        return "";
+    }
+}
+
 static YouTubeVideo parseVideoJson(const nlohmann::json& j) {
     YouTubeVideo video;
     video.id = j.value("id", "");
@@ -70,6 +116,9 @@ static YouTubeVideo parseVideoJson(const nlohmann::json& j) {
     } else {
         video.view_count_string = std::to_string(views) + " views";
     }
+
+    std::string upload_date = j.value("upload_date", "");
+    video.uploaded_ago_string = calculateUploadedAgo(upload_date);
     return video;
 }
 

@@ -481,16 +481,16 @@ void App::renderPlaybackOverlay(int width, int height) {
 
     // ── Bottom Panel ──────────────────────────────────────────────────────────
     SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
-    SDL_Rect botPanel{0, height - 48, width, 48};
+    SDL_Rect botPanel{0, height - 72, width, 72};
     SDL_RenderFillRect(renderer_, &botPanel);
     
     SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
-    SDL_Rect botBorder{0, height - 48, width, 2};
+    SDL_Rect botBorder{0, height - 72, width, 2};
     SDL_RenderFillRect(renderer_, &botBorder);
 
     // Progress bar
     const int mg  = 14;
-    const int pbY = height - 44;
+    const int pbY = height - 64;
     const int pbH = 5;
     const int pbW = width - mg * 2;
 
@@ -576,7 +576,7 @@ void App::renderPlaybackOverlay(int width, int height) {
     {
         std::string posStr = fmtTime(displayTime);
         std::string durStr = (dur > 0.0) ? fmtTime(dur) : "--:--";
-        int tsY = pbY + pbH + 7;
+        int tsY = pbY + pbH + 4;
         drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 230, 255});
         // "remaining" time in dim
         if (dur > 0.0) {
@@ -609,8 +609,8 @@ void App::renderPlaybackOverlay(int width, int height) {
         {"LT/RT", textColor, "VOL"}
     };
 
-    int boxH = 26;
-    int boxY = height - 48 + (48 - boxH) / 2;
+    int boxH = 24;
+    int boxY = height - 34;
     int fontHeight = 14;
     getTextSize("Ay", 1, nullptr, &fontHeight);
 
@@ -1848,6 +1848,7 @@ void App::saveHistory() {
             item["duration_seconds"] = it->duration_seconds;
             item["duration_string"] = it->duration_string;
             item["view_count_string"] = it->view_count_string;
+            item["uploaded_ago_string"] = it->uploaded_ago_string;
             j.push_back(item);
         }
         std::ofstream ofs("history.json");
@@ -1874,6 +1875,7 @@ void App::loadHistory() {
                     v.duration_seconds = item.value("duration_seconds", 0);
                     v.duration_string = item.value("duration_string", "");
                     v.view_count_string = item.value("view_count_string", "");
+                    v.uploaded_ago_string = item.value("uploaded_ago_string", "");
                     if (!v.id.empty()) {
                         temp.push_back(v);
                     }

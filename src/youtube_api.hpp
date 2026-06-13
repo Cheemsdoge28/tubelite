@@ -15,6 +15,7 @@ struct YouTubeVideo {
     std::string author;
     std::string duration_string;
     std::string view_count_string;
+    std::string uploaded_ago_string;
     int duration_seconds = 0;
 };
 

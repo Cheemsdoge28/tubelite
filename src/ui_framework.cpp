@@ -104,23 +104,19 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
             truncated_title_ = video.title;
         }
         
-        // 2. Meta layout cache
-        std::string meta = video.author;
-        if (!video.view_count_string.empty()) meta += " | " + video.view_count_string;
-        getTextSize(meta, 1, &metaW_, nullptr);
-        if (metaW_ > tempMaxW) {
+        // 2. Author/Channel layout cache
+        std::string author_str = video.author;
+        getTextSize(author_str, 1, &authorW_, nullptr);
+        if (authorW_ > tempMaxW) {
             std::string ell = "...";
             int ellW = 0;
             getTextSize(ell, 1, &ellW, nullptr);
             int targetW = tempMaxW - ellW;
-            size_t len = utf8Length(meta);
-            
-            size_t low = 0;
-            size_t high = len;
-            size_t best_len = 0;
+            size_t len = utf8Length(author_str);
+            size_t low = 0, high = len, best_len = 0;
             while (low <= high) {
                 size_t mid = low + (high - low) / 2;
-                std::string temp = utf8Slice(meta, 0, mid);
+                std::string temp = utf8Slice(author_str, 0, mid);
                 int tempW = 0;
                 getTextSize(temp, 1, &tempW, nullptr);
                 if (tempW <= targetW) {
@@ -131,9 +127,41 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
                     high = mid - 1;
                 }
             }
-            truncated_meta_ = utf8Slice(meta, 0, best_len) + ell;
+            truncated_author_ = utf8Slice(author_str, 0, best_len) + ell;
         } else {
-            truncated_meta_ = meta;
+            truncated_author_ = author_str;
+        }
+
+        // 3. Views & Date layout cache
+        std::string views_date = video.view_count_string;
+        if (!video.uploaded_ago_string.empty()) {
+            if (!views_date.empty()) views_date += " - "; // safe separator dot/dash
+            views_date += video.uploaded_ago_string;
+        }
+        getTextSize(views_date, 1, &viewsDateW_, nullptr);
+        if (viewsDateW_ > tempMaxW) {
+            std::string ell = "...";
+            int ellW = 0;
+            getTextSize(ell, 1, &ellW, nullptr);
+            int targetW = tempMaxW - ellW;
+            size_t len = utf8Length(views_date);
+            size_t low = 0, high = len, best_len = 0;
+            while (low <= high) {
+                size_t mid = low + (high - low) / 2;
+                std::string temp = utf8Slice(views_date, 0, mid);
+                int tempW = 0;
+                getTextSize(temp, 1, &tempW, nullptr);
+                if (tempW <= targetW) {
+                    best_len = mid;
+                    low = mid + 1;
+                } else {
+                    if (mid == 0) break;
+                    high = mid - 1;
+                }
+            }
+            truncated_views_date_ = utf8Slice(views_date, 0, best_len) + ell;
+        } else {
+            truncated_views_date_ = views_date;
         }
         
         getTextSize("Ay", 2, nullptr, &titleH_);  // cap_height for scale-2 font
@@ -187,8 +215,11 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         drawText(renderer, textX, textY, video.title, 2, {240, 240, 240, 255});
     }
     
-    // Meta line: offset by measured title height + small gap
-    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_meta_, 1, {150, 150, 150, 255});
+    // Draw Channel Name
+    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_author_, 1, {160, 160, 160, 255});
+    
+    // Draw Views & Date line
+    drawText(renderer, textX, textY + titleH_ + lineGap + metaH_ + lineGap, truncated_views_date_, 1, {120, 120, 120, 255});
     
     if (!video.duration_string.empty() && !is_previewing) {
         int pillW = durW_ + 8;
@@ -224,7 +255,7 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     if (columns == 1) {
         card->bounds.h = 90.0f;
     } else {
-        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 54.0f;
+        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 70.0f;
     }
     
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);

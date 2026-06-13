@@ -45,14 +45,16 @@ public:
 
     bool layout_cached_ = false;
     int titleW_ = 0;
-    int metaW_ = 0;
+    int authorW_ = 0;
+    int viewsDateW_ = 0;
     int titleH_ = 0;
     int metaH_ = 0;
     int durW_ = 0;
     int durH_ = 0;
     int maxPixelW_ = 0;
     std::string truncated_title_ = "";
-    std::string truncated_meta_ = "";
+    std::string truncated_author_ = "";
+    std::string truncated_views_date_ = "";
     bool is_previewing = false;
 };
 
