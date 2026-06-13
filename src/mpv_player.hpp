@@ -45,6 +45,7 @@ public:
     void cycleSubtitleTrack();
     void setMute(bool mute);
     SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
+    void destroyPreviewTexture();
     void setSpeed(double speed);
     void adjustSpeed(double delta);
     double getSpeed() const;
@@ -64,6 +65,7 @@ private:
 
     SDL_Window*   window_   = nullptr;
     SDL_Renderer* renderer_ = nullptr;
+    SDL_GLContext gl_context_{nullptr};
 
     bool   is_playing_   = false;
     double playback_time_ = 0.0;

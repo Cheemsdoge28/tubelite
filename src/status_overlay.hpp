@@ -12,7 +12,7 @@ private:
     SDL_Texture* texture_{nullptr};
     int width_{0};
     int height_{0};
-    TubeState::InputMode last_input_mode_{TubeState::InputMode::Browse};
+    TubeState::InputMode last_input_mode_{TubeState::InputMode::None};
     TubeState::Screen last_screen_{TubeState::Screen::Home};
     int last_max_quality_{0};
 };

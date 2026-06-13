@@ -300,6 +300,7 @@ void App::stopBrowsePreviewState() {
     if (is_playing_preview_) {
         mpv_player_.stop();
         mpv_player_.setMute(state_.muted);
+        mpv_player_.destroyPreviewTexture();
     }
     if (preview_card_) {
         preview_card_->is_previewing = false;
@@ -322,6 +323,14 @@ void App::showPlaybackToast(const std::string& text, bool withProgress) {
     mpv_player_.showText(text);
     if (withProgress) {
         mpv_player_.showProgress();
+    }
+}
+
+void App::showPlaybackUi() {
+    playback_ui_timeout_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    if (!state_.showUi) {
+        state_.showUi = true;
+        uiDirty_ = true;
     }
 }
 
@@ -783,6 +792,7 @@ void App::updateSticks() {
         bool kbRight = keys[SDL_SCANCODE_RIGHT];
         bool wantsScrub = state_.dpadLeftPressed || state_.dpadRightPressed || kbLeft || kbRight || std::abs(state_.leftStickX) > 0.2f;
         if (wantsScrub) {
+            showPlaybackUi();
             if (!state_.isScrubbing) {
                 state_.isScrubbing = true;
                 state_.scrubTargetTime = mpv_player_.getPlaybackTime();
@@ -830,6 +840,15 @@ void App::renderFrame() {
     
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
+
+    if (state_.currentScreen == TubeState::Screen::Playback) {
+        auto now = std::chrono::steady_clock::now();
+        bool shouldShow = (now < playback_ui_timeout_) || !mpv_player_.isPlaying() || state_.isScrubbing;
+        if (state_.showUi != shouldShow) {
+            state_.showUi = shouldShow;
+            uiDirty_ = true;
+        }
+    }
 
     if (state_.currentScreen == TubeState::Screen::Playback && state_.showUi) {
         int cur_seconds = static_cast<int>(mpv_player_.getPlaybackTime());
@@ -1069,6 +1088,14 @@ void App::renderFrame() {
 }
 
 void App::handleEvent(SDL_Event& event) {
+    if (state_.currentScreen == TubeState::Screen::Playback) {
+        if (event.type == SDL_KEYDOWN || event.type == SDL_CONTROLLERBUTTONDOWN ||
+            event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYHATMOTION ||
+            event.type == SDL_CONTROLLERAXISMOTION || event.type == SDL_JOYAXISMOTION) {
+            showPlaybackUi();
+        }
+    }
+
     switch (event.type) {
     case SDL_QUIT: state_.running = false; break;
     case SDL_KEYDOWN: handleKey(event.key.keysym.sym); break;

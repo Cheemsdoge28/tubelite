@@ -51,8 +51,9 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     SDL_GLContext gl_ctx = SDL_GL_GetCurrentContext();
     std::cerr << "[mpv] SDL_GL_GetCurrentContext = " << reinterpret_cast<void*>(gl_ctx) << "\n";
     if (gl_ctx) {
+        gl_context_ = gl_ctx;
         // Re-bind explicitly: forces eglMakeCurrent with the real surface + context.
-        if (SDL_GL_MakeCurrent(window_, gl_ctx) < 0)
+        if (SDL_GL_MakeCurrent(window_, gl_context_) < 0)
             std::cerr << "[mpv] SDL_GL_MakeCurrent warning: " << SDL_GetError() << "\n";
         else
             std::cerr << "[mpv] EGL context re-bound OK\n";
@@ -164,6 +165,10 @@ void MpvPlayer::render(int winWidth, int winHeight) {
     if (!mpv_gl_) return;
     if (winWidth <= 0 || winHeight <= 0) return;
 
+    if (gl_context_) {
+        SDL_GL_MakeCurrent(window_, gl_context_);
+    }
+
     // Flush any pending SDL draw commands before we touch GL state directly.
     SDL_RenderFlush(renderer_);
 
@@ -188,6 +193,10 @@ void MpvPlayer::render(int winWidth, int winHeight) {
 
 SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     if (!mpv_gl_) return nullptr;
+
+    if (gl_context_) {
+        SDL_GL_MakeCurrent(window_, gl_context_);
+    }
 
     if (!preview_tex_ || preview_tex_w_ != w || preview_tex_h_ != h) {
         if (preview_tex_) {
@@ -228,12 +237,22 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     return preview_tex_;
 }
 
+void MpvPlayer::destroyPreviewTexture() {
+    if (preview_tex_) {
+        SDL_DestroyTexture(preview_tex_);
+        preview_tex_ = nullptr;
+    }
+    preview_tex_w_ = 0;
+    preview_tex_h_ = 0;
+}
+
 // ── Playback controls ─────────────────────────────────────────────────────────
 
 void MpvPlayer::play(const std::string& url) {
     if (!mpv_) return;
     const char* cmd[] = {"loadfile", url.c_str(), nullptr};
     mpv_command(mpv_, cmd);
+    resume();
 }
 void MpvPlayer::pause() {
     if (!mpv_) return;

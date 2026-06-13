@@ -55,6 +55,7 @@ private:
     void stopBrowsePreviewState();
     void leavePlayback();
     void showPlaybackToast(const std::string& text, bool withProgress = false);
+    void showPlaybackUi();
     bool isInputLocked() const;
     std::shared_ptr<ui::GridContainer> activeGrid() const;
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
@@ -117,6 +118,7 @@ private:
     void startInputThread();
     void stopInputThread();
     
+    std::chrono::steady_clock::time_point playback_ui_timeout_;
     std::chrono::steady_clock::time_point volume_overlay_timeout_;
     std::chrono::steady_clock::time_point speed_overlay_timeout_;
     std::chrono::steady_clock::time_point last_fps_update_;
