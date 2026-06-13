@@ -63,10 +63,16 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(c
             
             std::string cmd;
             if (query.find("http") == 0) {
+                // Use the trending feed URL which yt-dlp can enumerate reliably
+                // Map https://www.youtube.com/ to /feed/trending for reliable extraction
+                std::string feedUrl = safeQuery;
+                if (feedUrl == "https://www.youtube.com/" || feedUrl == "https://www.youtube.com") {
+                    feedUrl = "https://www.youtube.com/feed/trending";
+                }
                 cmd =
                     "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 --no-check-certificate --force-ipv4 "
                     "--no-check-formats --extractor-args \"youtube:player_client=android,ios;skip=dash,hls\" "
-                    "--flat-playlist --dump-json \"" + safeQuery +
+                    "--flat-playlist --dump-json \"" + feedUrl +
                     "\" --playlist-start " + std::to_string(startIdx) +
                     " --playlist-end " + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
             } else {

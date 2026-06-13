@@ -739,7 +739,11 @@ void App::doSearch(const std::string& query) {
 }
 
 void App::playVideo(const YouTubeVideo& video) {
-    if (state_.isLoadingVideo || state_.currentScreen == TubeState::Screen::Playback) return;
+    if (state_.currentScreen == TubeState::Screen::Playback) return;
+    // If same video is already loading, do not restart it
+    if (state_.isLoadingVideo && current_video_.id == video.id) return;
+    // If a different video is loading, cancel it and start the new one
+    state_.isLoadingVideo = false;
     
     addToHistory(video);
     stopBrowsePreviewState();
@@ -816,7 +820,8 @@ void App::playVideo(const YouTubeVideo& video) {
                     });
                 }
             } else {
-                loading_status_text_ = "Stream Resolve Failed";
+                loading_status_text_ = "Stream Resolve Failed — Press A to retry";
+                state_.isLoadingVideo = false;
             }
             uiDirty_ = true;
         });
@@ -1583,6 +1588,9 @@ void App::loadHomeFeeds() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
             
             if (finished) {
+                if (home_grid_->cards.empty()) {
+                    homeLoadFailed_ = true;
+                }
                 state_.isSearching = false;
                 uiDirty_ = true;
                 return;
@@ -1735,12 +1743,15 @@ void App::updateHoverPreviews() {
         if (stream_url_cache_.find(cacheKey) == stream_url_cache_.end() &&
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
+            is_loading_preview_ = true;
             youtube_api_.getStreamUrl(focusedCard->video.id, 144, [this, focusedCard, cacheKey](bool success, const std::string& url) {
                 queueOnMainThread([this, focusedCard, cacheKey, success, url]() {
                     stream_prefetch_inflight_.erase(cacheKey);
+                    is_loading_preview_ = false;
                     if (success && !url.empty()) {
                         stream_url_cache_[cacheKey] = url;
                     }
+                    uiDirty_ = true;
                 });
             });
         }
