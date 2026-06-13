@@ -757,7 +757,7 @@ void App::playVideo(const YouTubeVideo& video) {
 
     const std::string cacheKey = streamCacheKey(video.id, state_.maxQualityHeight);
     auto cached = stream_url_cache_.find(cacheKey);
-    if (cached != stream_url_cache_.end()) {
+    if (cached != stream_url_cache_.end() && !cached->second.empty()) {
         state_.isLoadingVideo = false;
         state_.currentScreen = TubeState::Screen::Playback;
         mpv_player_.setMute(state_.muted);
@@ -771,15 +771,17 @@ void App::playVideo(const YouTubeVideo& video) {
         // Start storyboard extraction
         const std::string lowResCacheKey = streamCacheKey(video.id, 144);
         auto lowResCached = stream_url_cache_.find(lowResCacheKey);
-        if (lowResCached != stream_url_cache_.end()) {
+        if (lowResCached != stream_url_cache_.end() && !lowResCached->second.empty()) {
             storyboard_.start(lowResCached->second, video.duration_seconds);
         } else {
             youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success, const std::string& url) {
                 queueOnMainThread([this, video, success, url]() {
                     if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
-                        if (success) {
+                        if (success && !url.empty()) {
                             stream_url_cache_[streamCacheKey(video.id, 144)] = url;
                             storyboard_.start(url, video.duration_seconds);
+                        } else {
+                            stream_url_cache_[streamCacheKey(video.id, 144)] = ""; // Cache failure
                         }
                     }
                 });
@@ -805,15 +807,17 @@ void App::playVideo(const YouTubeVideo& video) {
                 // Start storyboard extraction
                 const std::string lowResCacheKey = streamCacheKey(video.id, 144);
                 auto lowResCached = stream_url_cache_.find(lowResCacheKey);
-                if (lowResCached != stream_url_cache_.end()) {
+                if (lowResCached != stream_url_cache_.end() && !lowResCached->second.empty()) {
                     storyboard_.start(lowResCached->second, video.duration_seconds);
                 } else {
                     youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success2, const std::string& url2) {
                         queueOnMainThread([this, video, success2, url2]() {
                             if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
-                                if (success2) {
+                                if (success2 && !url2.empty()) {
                                     stream_url_cache_[streamCacheKey(video.id, 144)] = url2;
                                     storyboard_.start(url2, video.duration_seconds);
+                                } else {
+                                    stream_url_cache_[streamCacheKey(video.id, 144)] = ""; // Cache failure
                                 }
                             }
                         });
@@ -1792,6 +1796,8 @@ void App::updateHoverPreviews() {
                     is_loading_preview_ = false;
                     if (success && !url.empty()) {
                         stream_url_cache_[cacheKey] = url;
+                    } else {
+                        stream_url_cache_[cacheKey] = ""; // Cache failure
                     }
                     uiDirty_ = true;
                 });
@@ -1805,7 +1811,7 @@ void App::updateHoverPreviews() {
     }
 
     auto cached = stream_url_cache_.find(cacheKey);
-    if (cached != stream_url_cache_.end()) {
+    if (cached != stream_url_cache_.end() && !cached->second.empty()) {
         auto grid = activeGrid();
         if (!grid) return;
 
