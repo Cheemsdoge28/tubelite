@@ -83,6 +83,8 @@ bool App::initialize() {
     if (!initFonts(renderer_)) {
         logError("Failed to initialize TTF fonts, falling back to pixel font");
     }
+    getTextSize("TubeLite", 3, &headerTitleW_Home_, &headerTitleH_Home_);
+    getTextSize("Search", 2, &headerTitleW_Search_, &headerTitleH_Search_);
     
     openController();
     image_manager_ = std::make_unique<ImageManager>(renderer_);
@@ -114,11 +116,32 @@ void App::run() {
     using namespace std::chrono;
     const milliseconds frameTarget(16); // ~60fps
     last_fps_update_ = steady_clock::now();
+    last_frame_time_ = steady_clock::now();
+    
     while (state_.running) {
         auto start = steady_clock::now();
+        
+        auto now_dt = steady_clock::now();
+        float dt = duration<float>(now_dt - last_frame_time_).count();
+        last_frame_time_ = now_dt;
+        if (dt > 0.1f) dt = 0.1f; // Clamp to prevent spikes after waking up
+        
         processMainThreadQueue();
         
+        if (image_manager_ && image_manager_->update()) {
+            uiDirty_ = true;
+        }
+        
+        auto focusedCard = focus_manager_.getFocusedCard();
+        if (focusedCard && focusedCard->focusedTime_ > 1.5f && focusedCard->focusedTime_ < 25.0f && focusedCard->titleW_ > focusedCard->maxPixelW_) {
+            uiDirty_ = true;
+        }
+        
         bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing;
+        if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
+            active = true;
+        }
+        
         if (!active) {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             if (!main_thread_queue_.empty()) active = true;
@@ -126,7 +149,7 @@ void App::run() {
         
         SDL_Event event;
         if (!active) {
-            if (SDL_WaitEventTimeout(&event, 10)) {
+            if (SDL_WaitEventTimeout(&event, 100)) {
                 handleEvent(event);
             }
         }
@@ -138,7 +161,7 @@ void App::run() {
         if (mpv_player_.update()) {
             uiDirty_ = true;
         }
-        focus_manager_.update(16.0f / 1000.0f); // dt for 60fps
+        focus_manager_.update(dt);
         renderFrame();
         
         // Calculate FPS
@@ -331,9 +354,9 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
     t = std::max(0.0f, std::min(1.0f, t));
 
     // ── Title (left) ─────────────────────────────────────────────────────────
-    int titleW = 0, titleH = 0;
     int titleScale = searchScreen ? 2 : 3;
-    getTextSize(title, titleScale, &titleW, &titleH);
+    int titleW = searchScreen ? headerTitleW_Search_ : headerTitleW_Home_;
+    int titleH = searchScreen ? headerTitleH_Search_ : headerTitleH_Home_;
     int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
     SDL_Color titleColor = searchScreen ? SDL_Color{255, 80, 80, 255} : SDL_Color{255, 52, 52, 255};
     drawTextShadow(renderer_, 16, titleY, title, titleScale, titleColor);
@@ -804,7 +827,6 @@ void App::updateKeyboardCursorBlinkState() {
 
 void App::renderFrame() {
     auto render_start = std::chrono::steady_clock::now();
-    if (image_manager_) image_manager_->update();
     
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
@@ -817,7 +839,7 @@ void App::renderFrame() {
         }
     }
 
-    bool shouldPresent = (state_.currentScreen != TubeState::Screen::Playback) || state_.isLoadingVideo || uiDirty_;
+    bool shouldPresent = uiDirty_ || state_.isLoadingVideo || (state_.currentScreen == TubeState::Screen::Playback) || is_playing_preview_ || state_.isScrubbing;
     if (!shouldPresent) return;
 
     if (state_.currentScreen == TubeState::Screen::Playback) {

@@ -52,7 +52,10 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         }
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     } else {
-        fillRoundedRect(renderer, cardRect, 8, {26, 26, 26, 255});
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
+        SDL_RenderFillRect(renderer, &cardRect);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     }
 
     SDL_Rect thumbRect{cardRect.x, cardRect.y, thumbW, thumbH};
@@ -65,12 +68,11 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
             SDL_RenderFillRect(renderer, &thumbRect);
         }
     }
-    
-    int maxPixelW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
-    int textX = cardRect.x + (horizontal ? thumbW + 12 : 10);
+       int textX = cardRect.x + (horizontal ? thumbW + 12 : 10);
     int textY = cardRect.y + (horizontal ? 8 : thumbH + 8);
     if (!layout_cached_) {
         int tempMaxW = horizontal ? (static_cast<int>(bounds.w) - thumbW - 24) : (static_cast<int>(bounds.w) - 20);
+        maxPixelW_ = tempMaxW;
         
         // 1. Title layout cache
         getTextSize(video.title, 2, &titleW_, nullptr);
@@ -134,18 +136,20 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
             truncated_meta_ = meta;
         }
         
+        getTextSize("Ay", 2, nullptr, &titleH_);  // cap_height for scale-2 font
+        getTextSize("Ay", 1, nullptr, &metaH_);   // cap_height for scale-1 font
+        if (!video.duration_string.empty()) {
+            getTextSize(video.duration_string, 1, &durW_, &durH_);
+        }
+        
         layout_cached_ = true;
     }
     
-    int titleH = 0;
-    getTextSize("Ay", 2, nullptr, &titleH);  // cap_height for scale-2 font
-    int metaH = 0;
-    getTextSize("Ay", 1, nullptr, &metaH);   // cap_height for scale-1 font
     const int lineGap = 5;
 
-    if (titleW_ > maxPixelW) {
-        if (focused && focusedTime_ > 1.5f) {
-            int maxScroll = titleW_ - maxPixelW + 20;
+    if (titleW_ > maxPixelW_) {
+        if (focused && focusedTime_ > 1.5f && focusedTime_ < 25.0f) {
+            int maxScroll = titleW_ - maxPixelW_ + 20;
             int scrollOffset = static_cast<int>((focusedTime_ - 1.5f) * 35.0f);
             if (scrollOffset > maxScroll) {
                 if (scrollOffset > maxScroll + 35) {
@@ -156,7 +160,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
                 }
             }
             
-            SDL_Rect textClip{textX, textY, maxPixelW, titleH + 4};
+            SDL_Rect textClip{textX, textY, maxPixelW_, titleH_ + 4};
             SDL_Rect oldClip;
             SDL_RenderGetClipRect(renderer, &oldClip);
             SDL_bool hasOldClip = SDL_RenderIsClipEnabled(renderer);
@@ -184,16 +188,14 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     }
     
     // Meta line: offset by measured title height + small gap
-    drawText(renderer, textX, textY + titleH + lineGap, truncated_meta_, 1, {150, 150, 150, 255});
+    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_meta_, 1, {150, 150, 150, 255});
     
     if (!video.duration_string.empty() && !is_previewing) {
-        int durW = 0, durH = 0;
-        getTextSize(video.duration_string, 1, &durW, &durH);
-        int pillW = durW + 8;
-        int pillH = durH + 4;
+        int pillW = durW_ + 8;
+        int pillH = durH_ + 4;
         int pillX = cardRect.x + thumbW - pillW - 6;
         int pillY = cardRect.y + thumbH - pillH - 6;
-        int textPillY = pillY + (pillH - durH) / 2;
+        int textPillY = pillY + (pillH - durH_) / 2;
         
         SDL_Rect pillRect{pillX, pillY, pillW, pillH};
         fillRoundedRect(renderer, pillRect, 3, {0, 0, 0, 180});

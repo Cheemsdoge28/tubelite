@@ -46,6 +46,11 @@ public:
     bool layout_cached_ = false;
     int titleW_ = 0;
     int metaW_ = 0;
+    int titleH_ = 0;
+    int metaH_ = 0;
+    int durW_ = 0;
+    int durH_ = 0;
+    int maxPixelW_ = 0;
     std::string truncated_title_ = "";
     std::string truncated_meta_ = "";
     bool is_previewing = false;

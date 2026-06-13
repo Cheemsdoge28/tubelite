@@ -120,9 +120,15 @@ private:
     std::chrono::steady_clock::time_point volume_overlay_timeout_;
     std::chrono::steady_clock::time_point speed_overlay_timeout_;
     std::chrono::steady_clock::time_point last_fps_update_;
+    std::chrono::steady_clock::time_point last_frame_time_;
     int frame_count_{0};
     float current_fps_{0.0f};
     float render_latency_ms_{0.0f};
+
+    int headerTitleW_Home_{0};
+    int headerTitleH_Home_{0};
+    int headerTitleW_Search_{0};
+    int headerTitleH_Search_{0};
 
     void loadHomeFeeds();
     void loadMoreHomeFeeds();

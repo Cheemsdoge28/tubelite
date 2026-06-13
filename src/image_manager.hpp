@@ -24,7 +24,7 @@ public:
     SDL_Texture* getThumbnail(const std::string& videoId);
     
     // Call on main thread to convert loaded image data to SDL_Texture
-    void update(); 
+    bool update(); 
     
     // Free all textures
     void clearCache();

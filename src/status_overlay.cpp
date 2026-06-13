@@ -13,7 +13,13 @@ void StatusOverlay::destroyTexture() {
 void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int width, int height, bool& uiDirty) {
     int statusBarHeight = 48;
     bool needsRecreate = (texture_ == nullptr || width_ != width || height_ != statusBarHeight);
-    if (needsRecreate || uiDirty) {
+    bool stateChanged = (
+        state.inputMode != last_input_mode_ ||
+        state.currentScreen != last_screen_ ||
+        state.maxQualityHeight != last_max_quality_
+    );
+
+    if (needsRecreate || stateChanged) {
         if (needsRecreate) {
             destroyTexture();
             width_ = width;
@@ -22,6 +28,10 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
         }
         
         if (texture_) {
+            last_input_mode_ = state.inputMode;
+            last_screen_ = state.currentScreen;
+            last_max_quality_ = state.maxQualityHeight;
+
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);
             SDL_SetRenderTarget(renderer, texture_);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);

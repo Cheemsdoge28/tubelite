@@ -571,25 +571,26 @@ void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
     SDL_SetTextureColorMod(g_solid_corner_texture, color.r, color.g, color.b);
     SDL_SetTextureAlphaMod(g_solid_corner_texture, color.a);
     
+    int r_base = 8;
     int r = radius;
     SDL_Rect middleRect{rect.x + r, rect.y, rect.w - 2 * r, rect.h};
     SDL_Rect sideRect{rect.x, rect.y + r, rect.w, rect.h - 2 * r};
     SDL_RenderFillRect(renderer, &middleRect);
     SDL_RenderFillRect(renderer, &sideRect);
     
-    SDL_Rect srcTL{0, 0, r, r};
+    SDL_Rect srcTL{0, 0, r_base, r_base};
     SDL_Rect dstTL{rect.x, rect.y, r, r};
     SDL_RenderCopy(renderer, g_solid_corner_texture, &srcTL, &dstTL);
     
-    SDL_Rect srcTR{r, 0, r, r};
+    SDL_Rect srcTR{r_base, 0, r_base, r_base};
     SDL_Rect dstTR{rect.x + rect.w - r, rect.y, r, r};
     SDL_RenderCopy(renderer, g_solid_corner_texture, &srcTR, &dstTR);
     
-    SDL_Rect srcBL{0, r, r, r};
+    SDL_Rect srcBL{0, r_base, r_base, r_base};
     SDL_Rect dstBL{rect.x, rect.y + rect.h - r, r, r};
     SDL_RenderCopy(renderer, g_solid_corner_texture, &srcBL, &dstBL);
     
-    SDL_Rect srcBR{r, r, r, r};
+    SDL_Rect srcBR{r_base, r_base, r_base, r_base};
     SDL_Rect dstBR{rect.x + rect.w - r, rect.y + rect.h - r, r, r};
     SDL_RenderCopy(renderer, g_solid_corner_texture, &srcBR, &dstBR);
 }

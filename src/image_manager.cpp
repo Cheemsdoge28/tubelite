@@ -61,13 +61,15 @@ SDL_Texture* ImageManager::getThumbnail(const std::string& videoId) {
     return nullptr;
 }
 
-void ImageManager::update() {
+bool ImageManager::update() {
     std::queue<PendingImage> pendingTextures;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (textureQueue_.empty()) return false;
         std::swap(pendingTextures, textureQueue_);
     }
 
+    bool updated = false;
     while (!pendingTextures.empty()) {
         auto pending = pendingTextures.front();
         pendingTextures.pop();
@@ -76,6 +78,7 @@ void ImageManager::update() {
             if (atlas_) {
                 atlas_->upload(pending.videoId, pending.data, pending.width, pending.height);
                 loading_[pending.videoId] = true;
+                updated = true;
             } else {
                 SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, pending.width, pending.height);
                 if (tex) {
@@ -95,6 +98,7 @@ void ImageManager::update() {
                 } else {
                     cache_[pending.videoId] = nullptr;
                 }
+                updated = true;
             }
             stbi_image_free(pending.data);
         } else {
@@ -105,6 +109,7 @@ void ImageManager::update() {
             }
         }
     }
+    return updated;
 }
 
 void ImageManager::clearCache() {
