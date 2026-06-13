@@ -130,6 +130,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "osd-level",              "1");
     mpv_set_option_string(mpv_, "sub-auto",               "fuzzy");
     mpv_set_option_string(mpv_, "cache",                  "yes");
+    mpv_set_option_string(mpv_, "network-timeout",        "5");
     mpv_set_option_string(mpv_, "demuxer-max-bytes",      "16MiB");
     mpv_set_option_string(mpv_, "vd-lavc-threads",        "2");
     mpv_set_option_string(mpv_, "vd-lavc-skiploopfilter", "nonkey");
@@ -386,8 +387,9 @@ void MpvPlayer::destroyPreviewTexture() {
 
 void MpvPlayer::play(const std::string& url) {
     if (!mpv_) return;
+    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     const char* cmd[] = {"loadfile", url.c_str(), nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
     resume();
 }
 void MpvPlayer::pause() {
@@ -400,7 +402,9 @@ void MpvPlayer::resume() {
 }
 void MpvPlayer::stop() {
     if (!mpv_) return;
-    const char* cmd[] = {"stop", nullptr}; mpv_command(mpv_, cmd);
+    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
+    const char* cmd[] = {"stop", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::setVolume(int volume) {
     if (!mpv_) return;
@@ -410,19 +414,19 @@ void MpvPlayer::seek(int seconds) {
     if (!mpv_) return;
     std::string s = std::to_string(seconds);
     const char* cmd[] = {"seek", s.c_str(), "relative", nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::seekAbsoluteKeyframes(double seconds) {
     if (!mpv_) return;
     std::string s = std::to_string(seconds);
     const char* cmd[] = {"seek", s.c_str(), "absolute", "keyframes", nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::seekAbsoluteExact(double seconds) {
     if (!mpv_) return;
     std::string s = std::to_string(seconds);
     const char* cmd[] = {"seek", s.c_str(), "absolute", "exact", nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::toggleSubtitles() {
     if (!mpv_) return;
@@ -432,11 +436,13 @@ void MpvPlayer::toggleSubtitles() {
 }
 void MpvPlayer::cycleSubtitleTrack() {
     if (!mpv_) return;
-    const char* cmd[] = {"cycle", "sub", nullptr}; mpv_command(mpv_, cmd);
+    const char* cmd[] = {"cycle", "sub", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::cycleAudioTrack() {
     if (!mpv_) return;
-    const char* cmd[] = {"cycle", "audio", nullptr}; mpv_command(mpv_, cmd);
+    const char* cmd[] = {"cycle", "audio", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::setMute(bool mute) {
     if (!mpv_) return;
@@ -468,15 +474,17 @@ void MpvPlayer::showText(const std::string& text, int duration_ms) {
     if (!mpv_) return;
     std::string d = std::to_string(duration_ms);
     const char* cmd[] = {"show-text", text.c_str(), d.c_str(), nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::showProgress() {
     if (!mpv_) return;
-    const char* cmd[] = {"show-progress", nullptr}; mpv_command(mpv_, cmd);
+    const char* cmd[] = {"show-progress", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::cycleStatsOverlay() {
     if (!mpv_) return;
-    const char* cmd[] = {"cycle", "stats-display", nullptr}; mpv_command(mpv_, cmd);
+    const char* cmd[] = {"cycle", "stats-display", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
 }
 
 std::string MpvPlayer::getSubtitleTrackName() {

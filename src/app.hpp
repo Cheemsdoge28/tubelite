@@ -41,7 +41,7 @@ private:
     void handleJoyAxis(const SDL_JoyAxisEvent& jaxis);
     void handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down);
 
-    void updateSticks();
+    void updateSticks(float dt);
     void updateKeyboardCursorBlinkState();
     void renderFrame();
 
@@ -107,6 +107,7 @@ private:
     std::unordered_set<std::string> stream_prefetch_inflight_;
     
     int last_playback_seconds_{-1};
+    float scrub_hold_time_{0.0f};
     std::mutex queue_mutex_;
     std::vector<std::function<void()>> main_thread_queue_;
     void queueOnMainThread(std::function<void()> cb);
@@ -137,6 +138,9 @@ private:
     void saveHistory();
     void loadHistory();
     void addToHistory(const YouTubeVideo& video);
+
+    void saveHomeCache();
+    bool loadHomeCache();
 
     void loadHomeFeeds();
     void loadMoreHomeFeeds();

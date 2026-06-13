@@ -5,6 +5,16 @@
 #include <cstdlib>
 #include <vector>
 #include <cstdio>
+#include <fstream>
+
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(dir) _mkdir(dir)
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#define MKDIR(dir) mkdir(dir, 0777)
+#endif
 
 ImageManager::ImageManager(SDL_Renderer* renderer) : renderer_(renderer) {
     worker_ = std::thread(&ImageManager::workerThread, this);
@@ -140,28 +150,48 @@ void ImageManager::workerThread() {
             downloadQueue_.pop();
         }
         
-        std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
-        std::string dl = "curl -s -L \"" + url + "\"";
-        
-#ifdef _WIN32
-        FILE* pipe = _popen(dl.c_str(), "rb");
-#else
-        FILE* pipe = popen(dl.c_str(), "r");
-#endif
-
+        std::string cachePath = "thumbs/" + videoId + ".jpg";
         std::vector<unsigned char> buffer;
-        if (pipe) {
-            unsigned char temp[4096];
-            while (true) {
-                size_t n = fread(temp, 1, sizeof(temp), pipe);
-                if (n == 0) break;
-                buffer.insert(buffer.end(), temp, temp + n);
-            }
+        
+        std::ifstream ifs(cachePath, std::ios::binary);
+        if (ifs) {
+            ifs.seekg(0, std::ios::end);
+            size_t size = ifs.tellg();
+            ifs.seekg(0, std::ios::beg);
+            buffer.resize(size);
+            ifs.read(reinterpret_cast<char*>(buffer.data()), size);
+            ifs.close();
+        } else {
+            std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
+            std::string dl = "curl -s -L \"" + url + "\"";
+            
 #ifdef _WIN32
-            _pclose(pipe);
+            FILE* pipe = _popen(dl.c_str(), "rb");
 #else
-            pclose(pipe);
+            FILE* pipe = popen(dl.c_str(), "r");
 #endif
+            if (pipe) {
+                unsigned char temp[4096];
+                while (true) {
+                    size_t n = fread(temp, 1, sizeof(temp), pipe);
+                    if (n == 0) break;
+                    buffer.insert(buffer.end(), temp, temp + n);
+                }
+#ifdef _WIN32
+                _pclose(pipe);
+#else
+                pclose(pipe);
+#endif
+            }
+            
+            if (!buffer.empty()) {
+                MKDIR("thumbs");
+                std::ofstream ofs(cachePath, std::ios::binary);
+                if (ofs) {
+                    ofs.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+                    ofs.close();
+                }
+            }
         }
         
         unsigned char* data = nullptr;

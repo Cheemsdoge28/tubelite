@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "json.hpp"
 #include "renderer_utils.hpp"
 #include "stb_image.h"
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <ctime>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -157,7 +159,7 @@ void App::run() {
         }
         while (SDL_PollEvent(&event)) { handleEvent(event); }
         
-        updateSticks();
+        updateSticks(dt);
         updateKeyboardCursorBlinkState();
         updateHoverPreviews();
         if (mpv_player_.update()) {
@@ -832,7 +834,7 @@ void App::playVideo(const YouTubeVideo& video) {
     });
 }
 
-void App::updateSticks() {
+void App::updateSticks(float dt) {
     if (state_.inputMode == TubeState::InputMode::SearchText) {
         int w = 0, h = 0;
         SDL_GetWindowSize(window_, &w, &h);
@@ -900,27 +902,33 @@ void App::updateSticks() {
                 state_.isScrubbing = true;
                 state_.scrubTargetTime = mpv_player_.getPlaybackTime();
                 mpv_player_.pause();
+                scrub_hold_time_ = 0.0f;
             }
             
             double delta = 0.0;
             if (state_.dpadLeftPressed || kbLeft) {
-                delta = -2.0; // 2 seconds per frame
+                delta = -0.5; // 0.5 seconds base rate
             } else if (state_.dpadRightPressed || kbRight) {
-                delta = 2.0;
+                delta = 0.5;
             } else if (std::abs(state_.leftStickX) > 0.2f) {
-                delta = state_.leftStickX * 4.0;
+                delta = state_.leftStickX * 1.0;
             }
             
             if (delta != 0.0) {
-                state_.scrubTargetTime += delta;
+                scrub_hold_time_ += dt;
+                double multiplier = 1.0 + static_cast<double>(scrub_hold_time_ * scrub_hold_time_ * 15.0);
+                if (multiplier > 100.0) multiplier = 100.0;
+                
+                state_.scrubTargetTime += delta * multiplier;
                 state_.scrubTargetTime = std::max(0.0, std::min(mpv_player_.getDuration(), state_.scrubTargetTime));
                 uiDirty_ = true;
             }
         } else {
             if (state_.isScrubbing) {
-                mpv_player_.seekAbsoluteExact(state_.scrubTargetTime);
+                mpv_player_.seekAbsoluteKeyframes(state_.scrubTargetTime);
                 mpv_player_.resume();
                 state_.isScrubbing = false;
+                scrub_hold_time_ = 0.0f;
                 uiDirty_ = true;
             }
         }
@@ -1313,6 +1321,8 @@ void App::handleKey(SDL_Keycode key) {
         if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
+        } else if (state_.currentScreen == TubeState::Screen::Playback) {
+            leavePlayback();
         } else {
             state_.running = false;
         }
@@ -1604,39 +1614,63 @@ void App::loadHomeFeeds() {
     stopBrowsePreviewState();
     home_page_ = 1;
     homeLoadFailed_ = false;
-    state_.isSearching = true;
     state_.isLoadingVideo = false;
-    uiDirty_ = true;
     
     using namespace std::chrono;
     auto now = steady_clock::now();
-    if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 15) {
+    
+    // Load from disk cache if memory cache is empty
+    if (cached_trending_videos_.empty()) {
+        loadHomeCache();
+    }
+    
+    // If cache is fresh (< 30 minutes), use it and return
+    if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 30) {
         state_.isSearching = false;
-        home_grid_->cards.clear();
-        for (const auto& v : cached_trending_videos_) {
-            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-            card->onClick = [this, v]() { playVideo(v); };
-            home_grid_->addCard(card);
+        if (home_grid_->cards.empty()) {
+            for (const auto& v : cached_trending_videos_) {
+                auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                card->onClick = [this, v]() { playVideo(v); };
+                home_grid_->addCard(card);
+            }
+            focus_manager_.setGrid(home_grid_);
         }
-        focus_manager_.setGrid(home_grid_);
         uiDirty_ = true;
         return;
     }
     
-    home_grid_->cards.clear();
-    focus_manager_.setGrid(home_grid_);
-    cached_trending_videos_.clear();
+    // Stale-While-Revalidate: If we have no cache, we must clear and show loading
+    if (cached_trending_videos_.empty()) {
+        home_grid_->cards.clear();
+        focus_manager_.setGrid(home_grid_);
+    }
     
+    state_.isSearching = true;
+    uiDirty_ = true;
     home_grid_->title = "Trending";
     home_feed_query_ = "trending";
     
     int reqPage = home_page_;
-    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
-        queueOnMainThread([this, reqPage, results, finished]() {
+    auto accumulated_results = std::make_shared<std::vector<YouTubeVideo>>();
+    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage, accumulated_results](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqPage, results, finished, accumulated_results]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
             
             if (finished) {
-                if (home_grid_->cards.empty()) {
+                if (!accumulated_results->empty()) {
+                    homeLoadFailed_ = false;
+                    home_grid_->cards.clear();
+                    cached_trending_videos_.clear();
+                    for (const auto& v : *accumulated_results) {
+                        auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+                        card->onClick = [this, v]() { playVideo(v); };
+                        home_grid_->addCard(card);
+                        cached_trending_videos_.push_back(v);
+                    }
+                    focus_manager_.setGrid(home_grid_);
+                    trending_cache_time_ = std::chrono::steady_clock::now();
+                    saveHomeCache();
+                } else if (home_grid_->cards.empty()) {
                     homeLoadFailed_ = true;
                 }
                 state_.isSearching = false;
@@ -1645,24 +1679,7 @@ void App::loadHomeFeeds() {
             }
             
             if (!results.empty()) {
-                homeLoadFailed_ = false;
-                bool isFirstCard = home_grid_->cards.empty();
-                for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    home_grid_->addCard(card);
-                }
-                
-                cached_trending_videos_.clear();
-                for (const auto& card : home_grid_->cards) {
-                    cached_trending_videos_.push_back(card->video);
-                }
-                
-                if (isFirstCard && !home_grid_->cards.empty()) {
-                    focus_manager_.setGrid(home_grid_);
-                }
-                trending_cache_time_ = std::chrono::steady_clock::now();
-                uiDirty_ = true;
+                accumulated_results->insert(accumulated_results->end(), results.begin(), results.end());
             }
         });
     });
@@ -1896,3 +1913,77 @@ void App::addToHistory(const YouTubeVideo& video) {
     playback_history_.push_back(video);
     saveHistory();
 }
+
+void App::saveHomeCache() {
+    try {
+        nlohmann::json j;
+        j["timestamp"] = static_cast<long long>(std::time(nullptr));
+        nlohmann::json videosArray = nlohmann::json::array();
+        for (const auto& v : cached_trending_videos_) {
+            nlohmann::json item;
+            item["id"] = v.id;
+            item["title"] = v.title;
+            item["author"] = v.author;
+            item["duration_seconds"] = v.duration_seconds;
+            item["duration_string"] = v.duration_string;
+            item["view_count_string"] = v.view_count_string;
+            item["uploaded_ago_string"] = v.uploaded_ago_string;
+            videosArray.push_back(item);
+        }
+        j["videos"] = videosArray;
+        std::ofstream ofs("home_cache.json");
+        if (ofs) {
+            ofs << j.dump(4);
+        }
+    } catch (...) {}
+}
+
+bool App::loadHomeCache() {
+    try {
+        std::ifstream ifs("home_cache.json");
+        if (!ifs) return false;
+        nlohmann::json j;
+        ifs >> j;
+        if (!j.is_object() || !j.contains("videos") || !j["videos"].is_array()) return false;
+        
+        long long timestamp = j.value("timestamp", 0LL);
+        
+        std::vector<YouTubeVideo> temp;
+        for (const auto& item : j["videos"]) {
+            YouTubeVideo v;
+            v.id = item.value("id", "");
+            v.title = item.value("title", "");
+            v.author = item.value("author", "");
+            v.duration_seconds = item.value("duration_seconds", 0);
+            v.duration_string = item.value("duration_string", "");
+            v.view_count_string = item.value("view_count_string", "");
+            v.uploaded_ago_string = item.value("uploaded_ago_string", "");
+            if (!v.id.empty()) {
+                temp.push_back(v);
+            }
+        }
+        
+        if (temp.empty()) return false;
+        
+        cached_trending_videos_ = temp;
+        home_grid_->cards.clear();
+        for (const auto& v : cached_trending_videos_) {
+            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+            card->onClick = [this, v]() { playVideo(v); };
+            home_grid_->addCard(card);
+        }
+        
+        focus_manager_.setGrid(home_grid_);
+        
+        long long now_epoch = static_cast<long long>(std::time(nullptr));
+        long long diff_seconds = now_epoch - timestamp;
+        if (diff_seconds < 0) diff_seconds = 0;
+        
+        trending_cache_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(diff_seconds);
+        
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+

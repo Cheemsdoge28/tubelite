@@ -7,6 +7,7 @@
 #include <ctime>
 
 // Since nlohmann/json is a single-header library, we include it here.
+#include "json.hpp"
 using json = nlohmann::json;
 
 YouTubeAPI::YouTubeAPI() {
