@@ -43,8 +43,7 @@ public:
     void toggleSubtitles();
     void cycleSubtitleTrack();
     void setMute(bool mute);
-    void setGeometry(int x, int y, int w, int h);
-    void resetGeometry();
+    SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
     void setSpeed(double speed);
     void adjustSpeed(double delta);
     double getSpeed() const;
@@ -69,7 +68,7 @@ private:
     double playback_time_ = 0.0;
     double duration_      = 0.0;
 
-    int  target_x_ = 0, target_y_ = 0;
-    int  target_w_ = 0, target_h_ = 0;
-    bool has_custom_geometry_ = false;
+    SDL_Texture* preview_tex_{nullptr};
+    int          preview_tex_w_{0};
+    int          preview_tex_h_{0};
 };

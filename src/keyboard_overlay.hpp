@@ -85,6 +85,14 @@ private:
     int width_{0};
     int height_{0};
 
+    // Track keyboard-specific dirty state: texture is only re-rendered when these change.
+    bool kb_dirty_{true};
+    int  last_selected_index_{-1};
+    TubeState::KeyboardMode last_kb_mode_{TubeState::KeyboardMode::Lowercase};
+    std::string last_text_buffer_;
+    int  last_text_cursor_{-1};
+    bool last_cursor_visible_{false};
+
     int navDirectionX_{0};
     int navDirectionY_{0};
     int dpadDirectionX_{0};

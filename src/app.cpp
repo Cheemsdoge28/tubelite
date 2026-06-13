@@ -3,6 +3,56 @@
 #include "stb_image.h"
 #include <iostream>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/statvfs.h>
+#include <unistd.h>
+#endif
+
+static void getSystemMemoryAndStorage(double& ram_used_mb, double& storage_free_gb, double& storage_total_gb) {
+    ram_used_mb = 0.0;
+    storage_free_gb = 0.0;
+    storage_total_gb = 0.0;
+
+    // RAM RSS
+#ifdef _WIN32
+    ram_used_mb = 0.0;
+#else
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (f) {
+        char line[128];
+        while (std::fgets(line, sizeof(line), f)) {
+            if (std::strncmp(line, "VmRSS:", 6) == 0) {
+                long rss_kb = 0;
+                if (std::sscanf(line + 6, "%ld", &rss_kb) == 1) {
+                    ram_used_mb = rss_kb / 1024.0;
+                }
+                break;
+            }
+        }
+        std::fclose(f);
+    }
+#endif
+
+    // Storage
+#ifdef _WIN32
+    ULARGE_INTEGER freeBytes, totalBytes, totalFreeBytes;
+    if (GetDiskFreeSpaceExA(".", &freeBytes, &totalBytes, &totalFreeBytes)) {
+        storage_free_gb = (double)freeBytes.QuadPart / (1024.0 * 1024.0 * 1024.0);
+        storage_total_gb = (double)totalBytes.QuadPart / (1024.0 * 1024.0 * 1024.0);
+    }
+#else
+    struct statvfs stat;
+    if (statvfs(".", &stat) == 0) {
+        storage_free_gb = (double)(stat.f_frsize * stat.f_bavail) / (1024.0 * 1024.0 * 1024.0);
+        storage_total_gb = (double)(stat.f_frsize * stat.f_blocks) / (1024.0 * 1024.0 * 1024.0);
+    }
+#endif
+}
 
 // static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
 static void logError(const std::string& msg) { std::cerr << "[ERROR] " << msg << std::endl; }
@@ -36,6 +86,8 @@ bool App::initialize() {
     
     openController();
     image_manager_ = std::make_unique<ImageManager>(renderer_);
+    thumb_atlas_ = std::make_unique<ThumbnailAtlas>(renderer_, 3);
+    image_manager_->setAtlas(thumb_atlas_.get());
     
     home_grid_ = std::make_shared<ui::GridContainer>();
     home_grid_->title = "Trending Now";
@@ -129,6 +181,7 @@ void App::shutdown() {
     status_.destroyTexture();
     storyboard_.stop();
     mpv_player_.shutdown();
+    thumb_atlas_.reset();
     cleanupFonts();
     if (renderer_) { SDL_DestroyRenderer(renderer_); renderer_ = nullptr; }
     if (window_)   { SDL_DestroyWindow(window_);     window_ = nullptr;   }
@@ -223,7 +276,6 @@ std::string App::streamCacheKey(const std::string& videoId, int maxHeight) const
 void App::stopBrowsePreviewState() {
     if (is_playing_preview_) {
         mpv_player_.stop();
-        mpv_player_.resetGeometry();
         mpv_player_.setMute(state_.muted);
     }
     if (preview_card_) {
@@ -236,7 +288,6 @@ void App::stopBrowsePreviewState() {
 
 void App::leavePlayback() {
     mpv_player_.stop();
-    mpv_player_.resetGeometry();
     storyboard_.stop();
     state_.currentScreen = TubeState::Screen::Home;
     state_.showUi = true;
@@ -321,8 +372,8 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
 }
 
 void App::renderPlaybackOverlay(int width, int height) {
-    double pos = mpv_player_.getPlaybackTime();
-    double dur  = mpv_player_.getDuration();
+    double pos    = mpv_player_.getPlaybackTime();
+    double dur    = mpv_player_.getDuration();
     bool   playing = mpv_player_.isPlaying();
 
     auto fmtTime = [](double s) -> std::string {
@@ -335,113 +386,165 @@ void App::renderPlaybackOverlay(int width, int height) {
         return buf;
     };
 
-    // ── Top bar: gradient bg + title ──────────────────────────────────────────
+    const double displayTime = state_.isScrubbing ? state_.scrubTargetTime : pos;
+    const double frac        = (dur > 0.0) ? std::max(0.0, std::min(1.0, displayTime / dur)) : 0.0;
+
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 210);
-    SDL_Rect topBg{0, 0, width, 50};
-    SDL_RenderFillRect(renderer_, &topBg);
 
-    std::string titleTxt = utf8Truncate(current_video_.title, 56, true);
-    drawText(renderer_, 14, 15, titleTxt, 2, {235, 235, 235, 255});
-
-    // Speed badge
-    if (state_.speed != 1.0) {
-        char spd[10]; snprintf(spd, sizeof(spd), "%.1fx", state_.speed);
-        int sw = 0; getTextSize(spd, 1, &sw, nullptr);
-        SDL_Rect badge{width - sw - 22, 16, sw + 14, 18};
-        fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
-        drawText(renderer_, width - sw - 15, 19, spd, 1, {255, 255, 255, 255});
+    // ── Top gradient bar: title + channel ─────────────────────────────────────
+    // Draw a 4-step fading gradient from black to transparent.
+    for (int i = 0; i < 5; ++i) {
+        Uint8 a = static_cast<Uint8>(200 - i * 38);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, a);
+        SDL_Rect band{0, i * 10, width, 10};
+        SDL_RenderFillRect(renderer_, &band);
     }
+    {
+        std::string titleTxt = utf8Truncate(current_video_.title, 48, true);
+        drawTextShadow(renderer_, 14, 8, titleTxt, 2, {240, 240, 240, 255});
 
-    // ── Bottom bar: progress + controls ───────────────────────────────────────
-    const int barAreaH = 58;
-    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 195);
-    SDL_Rect botBg{0, height - barAreaH, width, barAreaH};
-    SDL_RenderFillRect(renderer_, &botBg);
+        int titleH = 0; getTextSize(titleTxt, 2, nullptr, &titleH);
+        if (!current_video_.author.empty()) {
+            std::string author = utf8Truncate(current_video_.author, 52, false);
+            drawText(renderer_, 14, 8 + titleH + 4, author, 1, {180, 180, 190, 255});
+        }
 
-    // Progress bar
-    const int mg = 14;
-    const int pbY = height - barAreaH + 9;
-    const int pbH = 4;
-    const int pbW = width - mg * 2;
-
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(renderer_, 65, 65, 72, 255);
-    SDL_Rect pbBg{mg, pbY, pbW, pbH};
-    SDL_RenderFillRect(renderer_, &pbBg);
-
-    double displayTime = state_.isScrubbing ? state_.scrubTargetTime : pos;
-
-    if (dur > 0.0) {
-        double frac = std::max(0.0, std::min(1.0, displayTime / dur));
-        int fillW = static_cast<int>(pbW * frac);
-        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 255);
-        SDL_Rect pbFill{mg, pbY, fillW, pbH};
-        SDL_RenderFillRect(renderer_, &pbFill);
-        // Playhead dot
-        SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
-        SDL_Rect dot{mg + fillW - 3, pbY - 3, 7, pbH + 6};
-        SDL_RenderFillRect(renderer_, &dot);
-    }
-
-    if (state_.isScrubbing) {
-        SDL_Texture* sbTex = storyboard_.getTexture(renderer_, state_.scrubTargetTime);
-        if (sbTex) {
-            int previewW = 160;
-            int previewH = 90;
-            double frac = 0.0;
-            if (dur > 0.0) frac = state_.scrubTargetTime / dur;
-            int previewX = mg + static_cast<int>(pbW * frac) - previewW / 2;
-            previewX = std::max(mg, std::min(width - mg - previewW, previewX));
-            int previewY = pbY - previewH - 12;
-
-            // Draw border/background shadow
-            SDL_Rect border{previewX - 2, previewY - 2, previewW + 4, previewH + 4};
-            SDL_SetRenderDrawColor(renderer_, 30, 30, 35, 255);
-            SDL_RenderFillRect(renderer_, &border);
-            SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 255); // Red accent border
-            SDL_RenderDrawRect(renderer_, &border);
-
-            SDL_Rect dst{previewX, previewY, previewW, previewH};
-            SDL_RenderCopy(renderer_, sbTex, nullptr, &dst);
-
-            // Draw timestamp overlay under the preview frame
-            std::string timeStr = fmtTime(state_.scrubTargetTime);
-            int tw = 0, th = 0;
-            getTextSize(timeStr, 1, &tw, &th);
-            SDL_Rect tsBg{previewX + (previewW - tw) / 2 - 4, previewY + previewH - th - 6, tw + 8, th + 4};
-            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 180});
-            drawText(renderer_, previewX + (previewW - tw) / 2, previewY + previewH - th - 4, timeStr, 1, {255, 255, 255, 255});
-        } else {
-            // Storyboard not loaded yet — seek player asynchronously on keyframe
-            static double last_keyframe_seek_time = -999.0;
-            if (std::abs(state_.scrubTargetTime - last_keyframe_seek_time) > 1.0) {
-                mpv_player_.seekAbsoluteKeyframes(state_.scrubTargetTime);
-                last_keyframe_seek_time = state_.scrubTargetTime;
-            }
+        // Speed badge (top right)
+        if (state_.speed != 1.0) {
+            char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", state_.speed);
+            int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
+            SDL_Rect badge{width - sw - 20, 8, sw + 12, sh + 6};
+            fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
+            drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, {255, 255, 255, 255});
         }
     }
 
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-
-    // Timestamps
-    std::string posStr = fmtTime(displayTime);
-    std::string durStr = dur > 0.0 ? fmtTime(dur) : "--:--";
-    int tsY = pbY + pbH + 6;
-    drawText(renderer_, mg, tsY, posStr, 1, {195, 195, 205, 255});
-    int durW2 = 0; getTextSize(durStr, 1, &durW2, nullptr);
-    drawText(renderer_, mg + pbW - durW2, tsY, durStr, 1, {195, 195, 205, 255});
-
-    // Pause indicator (centre)
-    if (!playing) {
-        drawTextCentered(renderer_, width / 2, tsY, "\x7c\x7c  PAUSED",
-                         1, {255, 210, 60, 255});
+    // ── Centre pause/play icon ─────────────────────────────────────────────────
+    if (!playing || state_.isScrubbing) {
+        int iconSize = 40;
+        int iconX = (width - iconSize) / 2;
+        int iconY = (height - iconSize) / 2;
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 100);
+        SDL_Rect iconBg{iconX - 8, iconY - 8, iconSize + 16, iconSize + 16};
+        fillRoundedRect(renderer_, iconBg, 24, {0, 0, 0, 120});
+        drawTextCentered(renderer_, width / 2, iconY + 8, state_.isScrubbing ? "||" : "||",
+                         3, {255, 255, 255, 200});
     }
 
-    // Control hints
-    const char* hints = "A:Pause  B:Exit  LB/RB:+/-10s  LT/RT:Vol  Y:Quality";
-    drawTextCentered(renderer_, width / 2, height - 11, hints,
-                     1, {100, 100, 112, 255});
+    // ── Bottom bar: progress + timestamps + hints ──────────────────────────────
+    const int barAreaH = 72;
+    // Bottom gradient: transparent → black
+    for (int i = 0; i < 5; ++i) {
+        Uint8 a = static_cast<Uint8>(i * 40 + 20);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, a);
+        SDL_Rect band{0, height - barAreaH + i * (barAreaH / 5), width, barAreaH / 5};
+        SDL_RenderFillRect(renderer_, &band);
+    }
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 200);
+    SDL_Rect botSolid{0, height - 48, width, 48};
+    SDL_RenderFillRect(renderer_, &botSolid);
+
+    // Progress bar
+    const int mg  = 14;
+    const int pbY = height - 44;
+    const int pbH = 5;
+    const int pbW = width - mg * 2;
+
+    // Track (background)
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer_, 80, 80, 88, 255);
+    SDL_Rect pbBg{mg, pbY, pbW, pbH};
+    SDL_RenderFillRect(renderer_, &pbBg);
+
+    // Buffered indicator (subtle lighter region, simulated as 60% of duration)
+    {
+        int bufW = static_cast<int>(pbW * std::min(frac + 0.15, 1.0));
+        SDL_SetRenderDrawColor(renderer_, 130, 130, 138, 255);
+        SDL_Rect pbBuf{mg, pbY, bufW, pbH};
+        SDL_RenderFillRect(renderer_, &pbBuf);
+    }
+
+    // Played (red fill)
+    {
+        int fillW = static_cast<int>(pbW * frac);
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_Rect pbFill{mg, pbY, fillW, pbH};
+        SDL_RenderFillRect(renderer_, &pbFill);
+    }
+
+    // Playhead circle
+    {
+        int dotX = mg + static_cast<int>(pbW * frac);
+        int dotR = 7;
+        SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+        SDL_Rect dot{dotX - dotR, pbY - dotR + pbH / 2, dotR * 2, dotR * 2};
+        SDL_RenderFillRect(renderer_, &dot); // Simple square dot (GPU-friendly)
+        // Inner fill (red centre)
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_Rect dotInner{dotX - 4, pbY - 4 + pbH / 2, 8, 8};
+        SDL_RenderFillRect(renderer_, &dotInner);
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+    // Scrub preview thumbnail above playhead
+    if (state_.isScrubbing) {
+        SDL_Texture* sbTex = storyboard_.getTexture(renderer_, displayTime);
+        int previewW = 160, previewH = 90;
+        int dotX = mg + static_cast<int>(pbW * frac);
+        int previewX = std::max(mg, std::min(width - mg - previewW, dotX - previewW / 2));
+        int previewY = pbY - previewH - 18;
+
+        // Shadow frame
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 220);
+        SDL_Rect shadow{previewX - 3, previewY - 3, previewW + 6, previewH + 6};
+        SDL_RenderFillRect(renderer_, &shadow);
+        // Red accent border
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_RenderDrawRect(renderer_, &shadow);
+
+        if (sbTex) {
+            SDL_Rect dst{previewX, previewY, previewW, previewH};
+            SDL_RenderCopy(renderer_, sbTex, nullptr, &dst);
+        } else {
+            SDL_SetRenderDrawColor(renderer_, 26, 26, 30, 255);
+            SDL_Rect dst{previewX, previewY, previewW, previewH};
+            SDL_RenderFillRect(renderer_, &dst);
+            drawTextCentered(renderer_, previewX + previewW / 2, previewY + previewH / 2 - 8,
+                             fmtTime(displayTime), 2, {200, 200, 210, 255});
+            // trigger keyframe seek for preview
+            static double last_kf_seek = -999.0;
+            if (std::abs(displayTime - last_kf_seek) > 1.0) {
+                mpv_player_.seekAbsoluteKeyframes(displayTime);
+                last_kf_seek = displayTime;
+            }
+        }
+
+        // Timestamp under preview
+        std::string timeStr = fmtTime(displayTime);
+        int tw = 0, th = 0; getTextSize(timeStr, 1, &tw, &th);
+        SDL_Rect tsBg{previewX + (previewW - tw) / 2 - 4, previewY + previewH + 3, tw + 8, th + 4};
+        fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 190});
+        drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+    }
+
+    // Timestamps
+    {
+        std::string posStr = fmtTime(displayTime);
+        std::string durStr = (dur > 0.0) ? fmtTime(dur) : "--:--";
+        int tsY = pbY + pbH + 7;
+        drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 230, 255});
+        // "remaining" time in dim
+        if (dur > 0.0) {
+            std::string remStr = "-" + fmtTime(dur - displayTime);
+            int rw = 0; getTextSize(remStr, 1, &rw, nullptr);
+            drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, {160, 160, 170, 255});
+        }
+    }
+
+    // Bottom hint line
+    const char* hints = "A:Pause  B:Exit  LB/RB:Speed  LT/RT:Vol  Y:Subs  X:Stats";
+    drawTextCentered(renderer_, width / 2, height - 13, hints, 1, {110, 110, 120, 255});
 }
 
 
@@ -740,13 +843,24 @@ void App::renderFrame() {
                 renderBrowseLoadingState(width, height, "Loading Trending...");
             }
         } else {
-            // Render mpv FIRST into FBO=0 (the region is already scissored to thumb area).
-            // SDL then draws the grid on top — the previewing card leaves a blank thumb hole
-            // so the video underneath shows through correctly.
-            if (is_playing_preview_) {
-                mpv_player_.render(width, height);
-            }
             home_grid_->render(renderer_, 0.0f, 0.0f);
+            if (is_playing_preview_ && preview_card_) {
+                float screenY = preview_card_->bounds.y - scrollY;
+                bool horizontal = (preview_card_->bounds.w > 400);
+                int thumbW = horizontal ? 160 : static_cast<int>(preview_card_->bounds.w);
+                int thumbH = horizontal ? 90 : static_cast<int>(preview_card_->bounds.w * (9.0f / 16.0f));
+                SDL_Rect thumbDst{
+                    static_cast<int>(preview_card_->bounds.x),
+                    static_cast<int>(screenY),
+                    thumbW,
+                    thumbH
+                };
+                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
+                if (previewTex) {
+                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
+                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                }
+            }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         auto focusedCard = focus_manager_.getFocusedCard();
@@ -762,11 +876,24 @@ void App::renderFrame() {
                 drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, {150, 150, 150, 255});
             }
         } else {
-            // Same render order: mpv first, SDL grid on top.
-            if (is_playing_preview_) {
-                mpv_player_.render(width, height);
-            }
             search_grid_->render(renderer_, 0.0f, 0.0f);
+            if (is_playing_preview_ && preview_card_) {
+                float screenY = preview_card_->bounds.y - scrollY;
+                bool horizontal = (preview_card_->bounds.w > 400);
+                int thumbW = horizontal ? 160 : static_cast<int>(preview_card_->bounds.w);
+                int thumbH = horizontal ? 90 : static_cast<int>(preview_card_->bounds.w * (9.0f / 16.0f));
+                SDL_Rect thumbDst{
+                    static_cast<int>(preview_card_->bounds.x),
+                    static_cast<int>(screenY),
+                    thumbW,
+                    thumbH
+                };
+                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
+                if (previewTex) {
+                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
+                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                }
+            }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         renderBrowseHeader(width, height, "Search", scrollY, true);
@@ -868,7 +995,7 @@ void App::renderFrame() {
     // Draw telemetry overlay if enabled
     if (state_.showDebugOverlay) {
         int panelW = 240;
-        int panelH = 75;
+        int panelH = 110;
         int panelX = width - panelW - 10;
         int panelY = 60; // below top bar/header
 
@@ -899,6 +1026,16 @@ void App::renderFrame() {
             q_size = main_thread_queue_.size();
         }
         std::snprintf(buf, sizeof(buf), "Queue Size: %zu", q_size);
+        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        textY += 16;
+
+        double ram_used = 0.0, storage_free = 0.0, storage_total = 0.0;
+        getSystemMemoryAndStorage(ram_used, storage_free, storage_total);
+        std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", ram_used);
+        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        textY += 16;
+
+        std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", storage_free, storage_total);
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
     }
 
@@ -1398,8 +1535,6 @@ void App::updateHoverPreviews() {
                 stopBrowsePreviewState();
                 return;
             }
-
-            mpv_player_.setGeometry(static_cast<int>(focusedCard->bounds.x), static_cast<int>(screenY), thumbW, thumbH);
         }
         return;
     }
@@ -1448,7 +1583,6 @@ void App::updateHoverPreviews() {
         }
 
         mpv_player_.setMute(true);
-        mpv_player_.setGeometry(static_cast<int>(focusedCard->bounds.x), static_cast<int>(screenY), thumbW, thumbH);
         mpv_player_.play(cached->second);
         is_playing_preview_ = true;
         focusedCard->is_previewing = true;

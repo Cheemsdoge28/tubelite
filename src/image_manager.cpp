@@ -1,4 +1,5 @@
 #include "image_manager.hpp"
+#include "thumbnail_atlas.hpp"
 #include "stb_image.h"
 #include <iostream>
 #include <cstdlib>
@@ -14,6 +15,35 @@ ImageManager::~ImageManager() {
     cv_.notify_all();
     if (worker_.joinable()) worker_.join();
     clearCache();
+}
+
+bool ImageManager::renderThumbnail(SDL_Renderer* renderer, const std::string& videoId, const SDL_Rect& dst) {
+    if (atlas_) {
+        if (atlas_->render(renderer, videoId, dst)) {
+            return true;
+        }
+    } else {
+        SDL_Texture* tex = getThumbnail(videoId);
+        if (tex) {
+            SDL_RenderCopy(renderer, tex, nullptr, &dst);
+            return true;
+        }
+    }
+
+    if (loading_.find(videoId) == loading_.end()) {
+        loading_[videoId] = true;
+        std::lock_guard<std::mutex> lock(mutex_);
+        downloadQueue_.push(videoId);
+        cv_.notify_one();
+    }
+    return false;
+}
+
+bool ImageManager::isLoaded(const std::string& videoId) {
+    if (atlas_) {
+        return atlas_->isLoaded(videoId);
+    }
+    return cache_.find(videoId) != cache_.end() && cache_[videoId] != nullptr;
 }
 
 SDL_Texture* ImageManager::getThumbnail(const std::string& videoId) {
@@ -43,27 +73,36 @@ void ImageManager::update() {
         pendingTextures.pop();
         
         if (pending.data) {
-            SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, pending.width, pending.height);
-            if (tex) {
-                SDL_UpdateTexture(tex, nullptr, pending.data, pending.width * 4);
-                cache_[pending.videoId] = tex;
-                cacheOrder_.push_back(pending.videoId);
-                
-                if (cacheOrder_.size() > 20) {
-                    std::string oldest = cacheOrder_.front();
-                    cacheOrder_.pop_front();
-                    if (cache_.find(oldest) != cache_.end()) {
-                        if (cache_[oldest]) SDL_DestroyTexture(cache_[oldest]);
-                        cache_.erase(oldest);
-                        loading_.erase(oldest);
-                    }
-                }
+            if (atlas_) {
+                atlas_->upload(pending.videoId, pending.data, pending.width, pending.height);
+                loading_[pending.videoId] = true;
             } else {
-                cache_[pending.videoId] = nullptr;
+                SDL_Texture* tex = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, pending.width, pending.height);
+                if (tex) {
+                    SDL_UpdateTexture(tex, nullptr, pending.data, pending.width * 4);
+                    cache_[pending.videoId] = tex;
+                    cacheOrder_.push_back(pending.videoId);
+                    
+                    if (cacheOrder_.size() > 20) {
+                        std::string oldest = cacheOrder_.front();
+                        cacheOrder_.pop_front();
+                        if (cache_.find(oldest) != cache_.end()) {
+                            if (cache_[oldest]) SDL_DestroyTexture(cache_[oldest]);
+                            cache_.erase(oldest);
+                            loading_.erase(oldest);
+                        }
+                    }
+                } else {
+                    cache_[pending.videoId] = nullptr;
+                }
             }
             stbi_image_free(pending.data);
         } else {
-            cache_[pending.videoId] = nullptr;
+            if (atlas_) {
+                loading_[pending.videoId] = true;
+            } else {
+                cache_[pending.videoId] = nullptr;
+            }
         }
     }
 }

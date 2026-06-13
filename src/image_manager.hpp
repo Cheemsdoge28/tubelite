@@ -9,10 +9,16 @@
 #include <condition_variable>
 #include <list>
 
+class ThumbnailAtlas;
+
 class ImageManager {
 public:
     ImageManager(SDL_Renderer* renderer);
     ~ImageManager();
+
+    void setAtlas(ThumbnailAtlas* atlas) { atlas_ = atlas; }
+    bool renderThumbnail(SDL_Renderer* renderer, const std::string& videoId, const SDL_Rect& dst);
+    bool isLoaded(const std::string& videoId);
 
     // Returns texture if loaded. If not loaded, returns nullptr and queues download/load.
     SDL_Texture* getThumbnail(const std::string& videoId);
@@ -45,4 +51,5 @@ private:
     std::condition_variable cv_;
     std::atomic<bool> running_{true};
     std::thread worker_;
+    ThumbnailAtlas* atlas_{nullptr};
 };

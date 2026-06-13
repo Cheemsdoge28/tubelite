@@ -34,13 +34,12 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     
     SDL_Rect cardRect{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
 
-    SDL_Texture* thumb = im_->getThumbnail(video.id);
     bool horizontal = (bounds.w > 400);
     int thumbW = horizontal ? 160 : static_cast<int>(bounds.w);
     int thumbH = horizontal ? 90 : static_cast<int>(bounds.w * (9.0f / 16.0f));
 
     // Card background — when previewing, skip thumbnail area
-    // so the mpv GLES video (rendered in the first pass) shows through.
+    // so the mpv GLES video (rendered in the? first pass) shows through.
     if (is_previewing) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
@@ -61,24 +60,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     if (is_previewing) {
         // Do nothing: GLES video frame was already drawn to this region in the first pass
     } else {
-        if (thumb) {
-            int texW = 0, texH = 0;
-            SDL_QueryTexture(thumb, nullptr, nullptr, &texW, &texH);
-            
-            int srcW = texW;
-            int srcH = texW * 9 / 16;
-            int srcX = 0;
-            int srcY = (texH - srcH) / 2;
-            if (srcH > texH) {
-                srcH = texH;
-                srcW = texH * 16 / 9;
-                srcX = (texW - srcW) / 2;
-                srcY = 0;
-            }
-            SDL_Rect srcRect{srcX, srcY, srcW, srcH};
-            
-            SDL_RenderCopy(renderer, thumb, &srcRect, &thumbRect);
-        } else {
+        if (!im_->renderThumbnail(renderer, video.id, thumbRect)) {
             SDL_SetRenderDrawColor(renderer, 37, 37, 37, 255); // Fallback thumb background (#252525)
             SDL_RenderFillRect(renderer, &thumbRect);
         }

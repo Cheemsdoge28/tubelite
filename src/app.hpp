@@ -11,6 +11,7 @@
 #include "status_overlay.hpp"
 #include "storyboard.hpp"
 #include "image_manager.hpp"
+#include "thumbnail_atlas.hpp"
 #include "ui_framework.hpp"
 #include <memory>
 #include <thread>
@@ -81,6 +82,7 @@ private:
     YouTubeVideo current_video_;
 
     std::unique_ptr<ImageManager> image_manager_;
+    std::unique_ptr<ThumbnailAtlas> thumb_atlas_;
     ui::FocusManager focus_manager_;
     std::shared_ptr<ui::GridContainer> home_grid_;
     std::shared_ptr<ui::GridContainer> search_grid_;

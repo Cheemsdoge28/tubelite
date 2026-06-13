@@ -118,6 +118,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
 
 
 void MpvPlayer::shutdown() {
+    if (preview_tex_) { SDL_DestroyTexture(preview_tex_); preview_tex_ = nullptr; }
     if (mpv_gl_) { mpv_render_context_free(mpv_gl_); mpv_gl_ = nullptr; }
     if (mpv_)    { mpv_terminate_destroy(mpv_);       mpv_    = nullptr; }
 }
@@ -161,34 +162,19 @@ bool MpvPlayer::update() {
 
 void MpvPlayer::render(int winWidth, int winHeight) {
     if (!mpv_gl_) return;
-
-    // Determine where the video goes (fullscreen or constrained thumbnail rect).
-    int rx, ry, rw, rh;
-    if (has_custom_geometry_) {
-        rx = target_x_; ry = target_y_;
-        rw = target_w_; rh = target_h_;
-    } else {
-        rx = 0; ry = 0; rw = winWidth; rh = winHeight;
-    }
-    if (rw <= 0 || rh <= 0) return;
+    if (winWidth <= 0 || winHeight <= 0) return;
 
     // Flush any pending SDL draw commands before we touch GL state directly.
     SDL_RenderFlush(renderer_);
 
-    // GL viewport/scissor: SDL Y=0 is at the top; GL Y=0 is at the bottom.
-    // Flip the rect vertically.
-    int gl_x = rx;
-    int gl_y = winHeight - ry - rh;
-    glViewport(gl_x, gl_y, rw, rh);
-    glScissor (gl_x, gl_y, rw, rh);
-    glEnable(GL_SCISSOR_TEST);
+    glViewport(0, 0, winWidth, winHeight);
 
     // Render mpv into FBO=0 (the real framebuffer / SDL's EGL surface).
     // flip_y=1: compensates for GL's Y-flip so the video is right-side-up.
     mpv_opengl_fbo fbo{};
     fbo.fbo = 0;
-    fbo.w   = rw;        // tell mpv the target logical size
-    fbo.h   = rh;
+    fbo.w   = winWidth;        // tell mpv the target logical size
+    fbo.h   = winHeight;
     fbo.internal_format = 0;
 
     int flip_y = 1;
@@ -198,10 +184,48 @@ void MpvPlayer::render(int winWidth, int winHeight) {
         {MPV_RENDER_PARAM_INVALID,    nullptr}
     };
     mpv_render_context_render(mpv_gl_, rparams);
+}
 
-    // Restore full-window viewport and disable scissor so SDL draws correctly.
-    glDisable(GL_SCISSOR_TEST);
-    glViewport(0, 0, winWidth, winHeight);
+SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
+    if (!mpv_gl_) return nullptr;
+
+    if (!preview_tex_ || preview_tex_w_ != w || preview_tex_h_ != h) {
+        if (preview_tex_) {
+            SDL_DestroyTexture(preview_tex_);
+        }
+        preview_tex_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_TARGET, w, h);
+        preview_tex_w_ = w;
+        preview_tex_h_ = h;
+    }
+
+    if (!preview_tex_) return nullptr;
+
+    SDL_Texture* old_target = SDL_GetRenderTarget(renderer);
+    SDL_SetRenderTarget(renderer, preview_tex_);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderFlush(renderer);
+
+    GLint fbo_id = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo_id);
+
+    mpv_opengl_fbo fbo{};
+    fbo.fbo = fbo_id;
+    fbo.w   = w;
+    fbo.h   = h;
+    fbo.internal_format = 0;
+
+    int flip_y = 0; // standard EGL texture alignment inside SDL
+    mpv_render_param rparams[] = {
+        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
+        {MPV_RENDER_PARAM_FLIP_Y,     &flip_y},
+        {MPV_RENDER_PARAM_INVALID,    nullptr}
+    };
+    mpv_render_context_render(mpv_gl_, rparams);
+
+    SDL_SetRenderTarget(renderer, old_target);
+    return preview_tex_;
 }
 
 // ── Playback controls ─────────────────────────────────────────────────────────
@@ -259,14 +283,7 @@ void MpvPlayer::setMute(bool mute) {
     if (!mpv_) return;
     int v = mute ? 1 : 0; mpv_set_property(mpv_, "mute", MPV_FORMAT_FLAG, &v);
 }
-void MpvPlayer::setGeometry(int x, int y, int w, int h) {
-    target_x_ = x; target_y_ = y; target_w_ = w; target_h_ = h;
-    has_custom_geometry_ = true;
-}
-void MpvPlayer::resetGeometry() {
-    target_x_ = target_y_ = target_w_ = target_h_ = 0;
-    has_custom_geometry_ = false;
-}
+
 void MpvPlayer::setSpeed(double speed) {
     if (!mpv_) return;
     mpv_set_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &speed);

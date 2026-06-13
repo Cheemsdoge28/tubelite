@@ -299,20 +299,45 @@ bool KeyboardOverlay::updateSelectionFromDpad(TubeState& state, int width, int h
 
 void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int width, int height, bool& uiDirty) {
     if (state.inputMode != TubeState::InputMode::SearchText) {
-        destroyTexture();
+        if (texture_) { destroyTexture(); kb_dirty_ = true; }
         return;
     }
 
     const auto layoutInfo = buildLayout(state, width, height);
+
+    // Cursor blink: compute visibility WITHOUT triggering a full redraw every frame.
+    using namespace std::chrono;
+    const auto phase = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() / 500;
+    bool cursorVisible = (phase % 2) == 0;
+
+    // Detect what actually changed in keyboard-relevant state.
+    bool contentChanged = (
+        kb_dirty_ ||
+        last_selected_index_ != state.keyboardSelectedIndex ||
+        last_kb_mode_         != state.keyboardMode         ||
+        last_text_buffer_     != state.textBuffer           ||
+        last_text_cursor_     != state.textCursor           ||
+        last_cursor_visible_  != cursorVisible
+    );
+
     bool needsRecreate = (texture_ == nullptr || width_ != layoutInfo.panel.w || height_ != layoutInfo.panel.h);
-    if (needsRecreate || uiDirty) {
-        if (needsRecreate) {
-            destroyTexture();
-            width_ = layoutInfo.panel.w;
-            height_ = layoutInfo.panel.h;
-            texture_ = createTargetTexture(renderer, width_, height_);
-        }
-        if (texture_ == nullptr) return;
+    if (needsRecreate) {
+        destroyTexture();
+        width_ = layoutInfo.panel.w;
+        height_ = layoutInfo.panel.h;
+        texture_ = createTargetTexture(renderer, width_, height_);
+        contentChanged = true;
+    }
+    if (texture_ == nullptr) return;
+
+    if (contentChanged) {
+        // Cache current state for next-frame comparison.
+        last_selected_index_ = state.keyboardSelectedIndex;
+        last_kb_mode_        = state.keyboardMode;
+        last_text_buffer_    = state.textBuffer;
+        last_text_cursor_    = state.textCursor;
+        last_cursor_visible_ = cursorVisible;
+        kb_dirty_            = false;
 
         SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer);
         SDL_SetRenderTarget(renderer, texture_);
@@ -322,10 +347,6 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
 
         SDL_Color textColor{226, 230, 236, 255};
         SDL_Color accent{110, 192, 255, 255};
-        
-        using namespace std::chrono;
-        const auto phase = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() / 400;
-        bool cursorVisible = (phase % 2) == 0;
 
         const std::string header = "SEARCH [" + keyboardModeLabel(state) + "]";
         drawTextShadow(renderer, 12, 12, header, 2, accent);
@@ -344,21 +365,21 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
             const bool selected = key.index == state.keyboardSelectedIndex;
             SDL_Color keyBg = selected ? SDL_Color{72, 138, 190, 255} : SDL_Color{28, 32, 38, 255};
             SDL_Color keyBorder = selected ? SDL_Color{178, 216, 240, 255} : SDL_Color{46, 52, 58, 255};
-            
+
             fillRoundedRect(renderer, keyRect, 4, keyBg);
             drawRoundedRect(renderer, keyRect, 4, keyBorder);
-            
+
             int scale = (key.label.length() > 1) ? 1 : 2;
             int labelW = 0, labelH = 0;
             getTextSize(key.label, scale, &labelW, &labelH);
             int textX = keyRect.x + (keyRect.w - labelW) / 2;
             int textY = keyRect.y + (keyRect.h - labelH) / 2;
-            
+
             drawTextShadow(renderer, textX, textY, key.label, scale, selected ? SDL_Color{12, 16, 22, 255} : textColor);
         }
 
         SDL_SetRenderTarget(renderer, previousTarget);
-        uiDirty = false;
+        uiDirty = true; // Keyboard content changed — push a frame.
     }
 
     SDL_Rect overlay = layoutInfo.panel;

@@ -170,19 +170,18 @@ SDL_Texture* g_solid_corner_texture = nullptr;
 static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
     FontAtlas atlas;
 
-    // Compute slot size from font metrics to prevent glyph overflow into adjacent rows.
-    int ascent  = TTF_FontAscent(font);
-    int descent = -TTF_FontDescent(font); // TTF descent is negative; flip to positive
-    int cell_h  = ascent + descent + 2;  // +2px padding
+    // cell_h: use line_skip so every glyph (including deep descenders) fits without clipping.
+    int cell_h  = TTF_FontLineSkip(font);
 
-    // Measure the widest glyph in the printable ASCII range.
+    // Measure the widest advance in the printable ASCII range.
     int max_adv = 0;
     for (int ch = 32; ch < 127; ++ch) {
         int adv = 0;
         TTF_GlyphMetrics(font, ch, nullptr, nullptr, nullptr, nullptr, &adv);
         if (adv > max_adv) max_adv = adv;
     }
-    int cell_w = max_adv + 2; // +2px padding
+    // Also consider the rendered glyph pixel width (e.g. italic overhang).
+    int cell_w = max_adv + 4; // +4px safety margin
 
     // Pack 96 printable ASCII chars (32..126) into a square-ish atlas.
     int cols = 16;
@@ -195,10 +194,9 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
     SDL_FillRect(atlas_surface, nullptr, 0x00000000);
 
     atlas.line_skip = TTF_FontLineSkip(font);
-    atlas.ascent    = ascent;
-    // Store cap-height as the "visual" line height (ascent only, no external leading).
-    // getTextSize() returns this so vertical-centering math works correctly.
-    atlas.cap_height = ascent + descent;
+    atlas.ascent    = TTF_FontAscent(font);
+    // cap_height = ascent + |descent|, used for centering single lines of text.
+    atlas.cap_height = atlas.ascent + (-TTF_FontDescent(font));
 
     for (int ch = 32; ch < 127; ++ch) {
         int idx = ch - 32;
@@ -436,10 +434,11 @@ void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int
             if (ch >= 32 && ch < 127) {
                 const GlyphInfo& info = atlas->glyphs[ch];
                 if (info.src_rect.w > 0) {
-                    int draw_y = y + (atlas->ascent - info.maxy);
+                    // SDL_ttf TTF_RenderGlyph_Blended creates a full line-height surface
+                    // with the glyph already positioned at row (ascent - maxy) from the top.
+                    // Simply place the surface top at y — do NOT add (ascent - maxy) again.
                     int draw_x = cursor_x + info.minx;
-                    
-                    SDL_Rect dst{draw_x, draw_y, info.src_rect.w, info.src_rect.h};
+                    SDL_Rect dst{draw_x, y, info.src_rect.w, info.src_rect.h};
                     SDL_RenderCopy(renderer, atlas->texture, &info.src_rect, &dst);
                 }
                 cursor_x += info.advance;
@@ -630,20 +629,41 @@ void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius
     SDL_SetTextureAlphaMod(g_corner_mask_texture, color.a);
     SDL_SetTextureBlendMode(g_corner_mask_texture, SDL_BLENDMODE_BLEND);
     
+    int r_base = 8;
     int r = radius;
-    SDL_Rect srcTL{0, 0, r, r};
+    
+    SDL_Rect srcTL{0, 0, r_base, r_base};
     SDL_Rect dstTL{rect.x, rect.y, r, r};
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTL, &dstTL);
     
-    SDL_Rect srcTR{r, 0, r, r};
+    SDL_Rect srcTR{r_base, 0, r_base, r_base};
     SDL_Rect dstTR{rect.x + rect.w - r, rect.y, r, r};
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTR, &dstTR);
     
-    SDL_Rect srcBL{0, r, r, r};
+    SDL_Rect srcBL{0, r_base, r_base, r_base};
     SDL_Rect dstBL{rect.x, rect.y + rect.h - r, r, r};
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcBL, &dstBL);
     
-    SDL_Rect srcBR{r, r, r, r};
+    SDL_Rect srcBR{r_base, r_base, r_base, r_base};
     SDL_Rect dstBR{rect.x + rect.w - r, rect.y + rect.h - r, r, r};
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcBR, &dstBR);
+}
+
+void maskRoundedCornersTop(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
+    if (radius <= 0 || !g_corner_mask_texture) return;
+    
+    SDL_SetTextureColorMod(g_corner_mask_texture, color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(g_corner_mask_texture, color.a);
+    SDL_SetTextureBlendMode(g_corner_mask_texture, SDL_BLENDMODE_BLEND);
+    
+    int r_base = 8;
+    int r = radius;
+    
+    SDL_Rect srcTL{0, 0, r_base, r_base};
+    SDL_Rect dstTL{rect.x, rect.y, r, r};
+    SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTL, &dstTL);
+    
+    SDL_Rect srcTR{r_base, 0, r_base, r_base};
+    SDL_Rect dstTR{rect.x + rect.w - r, rect.y, r, r};
+    SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTR, &dstTR);
 }
