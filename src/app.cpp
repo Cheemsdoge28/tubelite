@@ -575,8 +575,72 @@ void App::renderPlaybackOverlay(int width, int height) {
     }
 
     // Bottom hint line
-    const char* hints = "A:Pause  B:Exit  LB/RB:Speed  LT/RT:Vol  Y:Subs  X:Stats";
-    drawTextCentered(renderer_, width / 2, height - 13, hints, 1, {110, 110, 120, 255});
+    struct HintItem {
+        std::string button;
+        SDL_Color btnColor;
+        std::string action;
+    };
+
+    SDL_Color textColor{214, 220, 230, 255};
+    const SDL_Color red{255, 48, 48, 255};
+    const SDL_Color blue{64, 148, 255, 255};
+    const SDL_Color yellow{255, 214, 64, 255};
+    const SDL_Color green{64, 214, 96, 255};
+    const SDL_Color panel{24, 28, 34, 200}; // semi-transparent dark panel
+
+    std::vector<HintItem> activeHints = {
+        {"A", red, playing ? "PAUSE" : "PLAY"},
+        {"B", yellow, "EXIT"},
+        {"Y", green, "SUBS"},
+        {"X", blue, "STATS"},
+        {"LB/RB", textColor, "SPEED"},
+        {"LT/RT", textColor, "VOL"}
+    };
+
+    int boxH = 26;
+    int boxY = height - 48 + (48 - boxH) / 2;
+    int fontHeight = 14;
+    getTextSize("Ay", 1, nullptr, &fontHeight);
+
+    int totalWidth = 0;
+    std::vector<int> boxWidths;
+    std::vector<int> btnWidths;
+    std::vector<int> actWidths;
+    
+    for (const auto& item : activeHints) {
+        int btnW = 0, actW = 0;
+        getTextSize(item.button, 1, &btnW, nullptr);
+        getTextSize(item.action, 1, &actW, nullptr);
+        int boxW = btnW + actW + 16;
+        boxWidths.push_back(boxW);
+        btnWidths.push_back(btnW);
+        actWidths.push_back(actW);
+        totalWidth += boxW;
+    }
+    if (!activeHints.empty()) {
+        totalWidth += (static_cast<int>(activeHints.size()) - 1) * 8;
+    }
+
+    int currentX = (width - totalWidth) / 2;
+    for (size_t i = 0; i < activeHints.size(); ++i) {
+        const auto& item = activeHints[i];
+        int boxW = boxWidths[i];
+        int btnW = btnWidths[i];
+        int actW = actWidths[i];
+        
+        SDL_Rect box{currentX, boxY, boxW, boxH};
+        fillRoundedRect(renderer_, box, 4, panel);
+        drawRoundedRect(renderer_, box, 4, {42, 48, 56, 180});
+        
+        int contentW = btnW + 4 + actW;
+        int contentX = currentX + (boxW - contentW) / 2;
+        int textY = boxY + (boxH - fontHeight) / 2;
+        
+        drawTextShadow(renderer_, contentX, textY, item.button, 1, item.btnColor);
+        drawTextShadow(renderer_, contentX + btnW + 4, textY, item.action, 1, textColor);
+        
+        currentX += boxW + 8;
+    }
 }
 
 

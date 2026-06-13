@@ -62,7 +62,10 @@ private:
 
     SDL_Window*   window_   = nullptr;
     SDL_Renderer* renderer_ = nullptr;
-    SDL_GLContext gl_context_{nullptr};
+    void* egl_display_{nullptr};
+    void* egl_draw_{nullptr};
+    void* egl_read_{nullptr};
+    void* egl_context_{nullptr};
 
     bool   is_playing_   = false;
     double playback_time_ = 0.0;

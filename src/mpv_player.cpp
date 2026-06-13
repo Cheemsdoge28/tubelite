@@ -35,6 +35,34 @@ static void* gl_get_proc_addr(void* /*ctx*/, const char* name) {
     return fn;
 }
 
+using EGLDisplay = void*;
+using EGLSurface = void*;
+using EGLContext = void*;
+
+#define EGL_DRAW 0x3059
+#define EGL_READ 0x305A
+
+typedef EGLDisplay (*PFN_eglGetCurrentDisplay)(void);
+typedef EGLSurface (*PFN_eglGetCurrentSurface)(int re);
+typedef EGLContext (*PFN_eglGetCurrentContext)(void);
+typedef int (*PFN_eglMakeCurrent)(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx);
+
+static bool restore_egl_context(void* dpy, void* draw, void* read, void* ctx) {
+    static auto egl_make_current = []() -> PFN_eglMakeCurrent {
+        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        if (lib) {
+            return reinterpret_cast<PFN_eglMakeCurrent>(dlsym(lib, "eglMakeCurrent"));
+        }
+        return nullptr;
+    }();
+
+    if (egl_make_current && dpy && ctx) {
+        return egl_make_current(dpy, draw, read, ctx) != 0;
+    }
+    return false;
+}
+
 bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     window_   = window;
     renderer_ = renderer;
@@ -48,17 +76,35 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     SDL_RenderClear(renderer_);
     SDL_RenderFlush(renderer_);
 
-    SDL_GLContext gl_ctx = SDL_GL_GetCurrentContext();
-    std::cerr << "[mpv] SDL_GL_GetCurrentContext = " << reinterpret_cast<void*>(gl_ctx) << "\n";
-    if (gl_ctx) {
-        gl_context_ = gl_ctx;
-        // Re-bind explicitly: forces eglMakeCurrent with the real surface + context.
-        if (SDL_GL_MakeCurrent(window_, gl_context_) < 0)
-            std::cerr << "[mpv] SDL_GL_MakeCurrent warning: " << SDL_GetError() << "\n";
-        else
-            std::cerr << "[mpv] EGL context re-bound OK\n";
+    static auto egl_get_current_display = []() -> PFN_eglGetCurrentDisplay {
+        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        return lib ? reinterpret_cast<PFN_eglGetCurrentDisplay>(dlsym(lib, "eglGetCurrentDisplay")) : nullptr;
+    }();
+    static auto egl_get_current_surface = []() -> PFN_eglGetCurrentSurface {
+        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        return lib ? reinterpret_cast<PFN_eglGetCurrentSurface>(dlsym(lib, "eglGetCurrentSurface")) : nullptr;
+    }();
+    static auto egl_get_current_context = []() -> PFN_eglGetCurrentContext {
+        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        return lib ? reinterpret_cast<PFN_eglGetCurrentContext>(dlsym(lib, "eglGetCurrentContext")) : nullptr;
+    }();
+
+    if (egl_get_current_display && egl_get_current_surface && egl_get_current_context) {
+        egl_display_ = egl_get_current_display();
+        egl_draw_    = egl_get_current_surface(EGL_DRAW);
+        egl_read_    = egl_get_current_surface(EGL_READ);
+        egl_context_ = egl_get_current_context();
+        std::cerr << "[mpv] Saved EGL Context: " << egl_context_
+                  << ", Display: " << egl_display_
+                  << ", Draw: " << egl_draw_
+                  << ", Read: " << egl_read_ << "\n";
+        
+        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     } else {
-        std::cerr << "[mpv] WARNING: no GL context current after SDL_RenderFlush!\n";
+        std::cerr << "[mpv] WARNING: no GL/EGL context query pointers found!\n";
     }
 
     // ── Create mpv ───────────────────────────────────────────────────────────
@@ -165,9 +211,7 @@ void MpvPlayer::render(int winWidth, int winHeight) {
     if (!mpv_gl_) return;
     if (winWidth <= 0 || winHeight <= 0) return;
 
-    if (gl_context_) {
-        SDL_GL_MakeCurrent(window_, gl_context_);
-    }
+    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
 
     // Flush any pending SDL draw commands before we touch GL state directly.
     SDL_RenderFlush(renderer_);
@@ -194,9 +238,7 @@ void MpvPlayer::render(int winWidth, int winHeight) {
 SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     if (!mpv_gl_) return nullptr;
 
-    if (gl_context_) {
-        SDL_GL_MakeCurrent(window_, gl_context_);
-    }
+    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
 
     if (!preview_tex_ || preview_tex_w_ != w || preview_tex_h_ != h) {
         if (preview_tex_) {
