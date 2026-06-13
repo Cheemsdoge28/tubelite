@@ -4,17 +4,11 @@
 #include <string>
 #include <vector>
 
-int main() {
-    if (TTF_Init() != 0) {
-        std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
-        return 1;
-    }
-
-    std::string fontPath = "res/fonts/AtkinsonHyperlegible-Regular.ttf";
-    TTF_Font* font = TTF_OpenFont(fontPath.c_str(), 14);
+void printMetrics(const std::string& fontPath, int size) {
+    TTF_Font* font = TTF_OpenFont(fontPath.c_str(), size);
     if (!font) {
-        std::cerr << "Failed to open font: " << TTF_GetError() << std::endl;
-        return 1;
+        std::cerr << "Failed to open font for size " << size << ": " << TTF_GetError() << std::endl;
+        return;
     }
 
     int height = TTF_FontHeight(font);
@@ -22,7 +16,7 @@ int main() {
     int ascent = TTF_FontAscent(font);
     int descent = TTF_FontDescent(font);
 
-    std::cout << "=== Font Metrics (Size 14) ===" << std::endl;
+    std::cout << "=== Font Metrics (Size " << size << ") ===" << std::endl;
     std::cout << "Height: " << height << std::endl;
     std::cout << "LineSkip: " << line_skip << std::endl;
     std::cout << "Ascent: " << ascent << std::endl;
@@ -46,8 +40,23 @@ int main() {
             std::cout << "Glyph '" << ch << "': failed to render" << std::endl;
         }
     }
-
     TTF_CloseFont(font);
+}
+
+int main() {
+    if (TTF_Init() != 0) {
+        std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
+        return 1;
+    }
+
+    std::string regPath = "res/fonts/AtkinsonHyperlegible-Regular.ttf";
+    std::string boldPath = "res/fonts/AtkinsonHyperlegible-Bold.ttf";
+
+    printMetrics(regPath, 14);
+    printMetrics(regPath, 18);
+    printMetrics(boldPath, 24);
+
     TTF_Quit();
     return 0;
 }
+

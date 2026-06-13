@@ -208,10 +208,11 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
 
         SDL_Surface* glyph_surf = TTF_RenderGlyph_Blended(font, ch, {255, 255, 255, 255});
         if (glyph_surf) {
-            // Shift the glyph blit y-origin by offset_y = atlas.ascent - maxy
-            // and shift x-origin by 4 + minx
+            // The surface returned by TTF_RenderGlyph_Blended already has the glyph
+            // vertically aligned/shifted relative to the baseline inside a surface
+            // of height TTF_FontHeight. We blit it directly to the cell top.
             int dst_x = col * cell_w + 4 + minx;
-            int dst_y = row * cell_h + (atlas.ascent - maxy);
+            int dst_y = row * cell_h;
 
             int src_x = 0;
             int src_y = 0;
