@@ -58,7 +58,8 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
     std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 build/tmp/preview_%%03d.jpg >/dev/null 2>&1", stream_url.c_str(), interval);
 #endif
 
-    (void)std::system(cmd);
+    int res = std::system(cmd);
+    (void)res;
 
     for (int i = 1; !cancel_extract_; ++i) {
         char filename[512];

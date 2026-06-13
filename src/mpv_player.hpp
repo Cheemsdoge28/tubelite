@@ -6,6 +6,7 @@
 
 struct SDL_Window;
 struct SDL_Renderer;
+struct SDL_Texture;
 
 // MpvPlayer manages a libmpv instance and its GLES render context.
 //

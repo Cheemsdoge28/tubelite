@@ -434,11 +434,10 @@ void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int
             if (ch >= 32 && ch < 127) {
                 const GlyphInfo& info = atlas->glyphs[ch];
                 if (info.src_rect.w > 0) {
-                    // SDL_ttf TTF_RenderGlyph_Blended creates a full line-height surface
-                    // with the glyph already positioned at row (ascent - maxy) from the top.
-                    // Simply place the surface top at y — do NOT add (ascent - maxy) again.
+                    // Align the glyph's top to the shared font baseline
+                    int draw_y = y + (atlas->ascent - info.maxy);
                     int draw_x = cursor_x + info.minx;
-                    SDL_Rect dst{draw_x, y, info.src_rect.w, info.src_rect.h};
+                    SDL_Rect dst{draw_x, draw_y, info.src_rect.w, info.src_rect.h};
                     SDL_RenderCopy(renderer, atlas->texture, &info.src_rect, &dst);
                 }
                 cursor_x += info.advance;
