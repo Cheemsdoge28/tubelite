@@ -107,6 +107,7 @@ bool App::initialize() {
         logError("MPV init failed");
         return false;
     }
+    loadHistory();
     loadHomeFeeds();
     SDL_StartTextInput();
     return true;
@@ -133,7 +134,7 @@ void App::run() {
         }
         
         auto focusedCard = focus_manager_.getFocusedCard();
-        if (focusedCard && focusedCard->focusedTime_ > 1.5f && focusedCard->focusedTime_ < 25.0f && focusedCard->titleW_ > focusedCard->maxPixelW_) {
+        if (focusedCard && state_.inputMode != TubeState::InputMode::SearchText && focusedCard->focusedTime_ > 1.5f && focusedCard->focusedTime_ < 25.0f && focusedCard->titleW_ > focusedCard->maxPixelW_) {
             uiDirty_ = true;
         }
         
@@ -437,29 +438,30 @@ void App::renderPlaybackOverlay(int width, int height) {
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
-    // ── Top gradient bar: title + channel ─────────────────────────────────────
-    // Draw a 4-step fading gradient from black to transparent.
-    for (int i = 0; i < 5; ++i) {
-        Uint8 a = static_cast<Uint8>(200 - i * 38);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, a);
-        SDL_Rect band{0, i * 10, width, 10};
-        SDL_RenderFillRect(renderer_, &band);
-    }
+    // ── Top Panel ─────────────────────────────────────────────────────────────
+    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
+    SDL_Rect topPanel{0, 0, width, 48};
+    SDL_RenderFillRect(renderer_, &topPanel);
+    
+    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
+    SDL_Rect topBorder{0, 48, width, 2};
+    SDL_RenderFillRect(renderer_, &topBorder);
+    
     {
         std::string titleTxt = utf8Truncate(current_video_.title, 48, true);
-        drawTextShadow(renderer_, 14, 8, titleTxt, 2, {240, 240, 240, 255});
+        drawTextShadow(renderer_, 14, 6, titleTxt, 2, {214, 220, 230, 255});
 
         int titleH = 0; getTextSize(titleTxt, 2, nullptr, &titleH);
         if (!current_video_.author.empty()) {
             std::string author = utf8Truncate(current_video_.author, 52, false);
-            drawText(renderer_, 14, 8 + titleH + 4, author, 1, {180, 180, 190, 255});
+            drawText(renderer_, 14, 6 + titleH + 2, author, 1, {214, 220, 230, 200});
         }
 
         // Speed badge (top right)
         if (state_.speed != 1.0) {
             char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", state_.speed);
             int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
-            SDL_Rect badge{width - sw - 20, 8, sw + 12, sh + 6};
+            SDL_Rect badge{width - sw - 20, 12, sw + 12, sh + 6};
             fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
             drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, {255, 255, 255, 255});
         }
@@ -477,18 +479,14 @@ void App::renderPlaybackOverlay(int width, int height) {
                          3, {255, 255, 255, 200});
     }
 
-    // ── Bottom bar: progress + timestamps + hints ──────────────────────────────
-    const int barAreaH = 72;
-    // Bottom gradient: transparent → black
-    for (int i = 0; i < 5; ++i) {
-        Uint8 a = static_cast<Uint8>(i * 40 + 20);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, a);
-        SDL_Rect band{0, height - barAreaH + i * (barAreaH / 5), width, barAreaH / 5};
-        SDL_RenderFillRect(renderer_, &band);
-    }
-    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 200);
-    SDL_Rect botSolid{0, height - 48, width, 48};
-    SDL_RenderFillRect(renderer_, &botSolid);
+    // ── Bottom Panel ──────────────────────────────────────────────────────────
+    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
+    SDL_Rect botPanel{0, height - 48, width, 48};
+    SDL_RenderFillRect(renderer_, &botPanel);
+    
+    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
+    SDL_Rect botBorder{0, height - 48, width, 2};
+    SDL_RenderFillRect(renderer_, &botBorder);
 
     // Progress bar
     const int mg  = 14;
@@ -743,6 +741,7 @@ void App::doSearch(const std::string& query) {
 void App::playVideo(const YouTubeVideo& video) {
     if (state_.isLoadingVideo || state_.currentScreen == TubeState::Screen::Playback) return;
     
+    addToHistory(video);
     stopBrowsePreviewState();
     storyboard_.stop();
     
@@ -865,6 +864,23 @@ void App::updateSticks() {
             lastStickDirY_ = 0;
         }
     } else if (state_.currentScreen == TubeState::Screen::Playback) {
+        // Trigger-based volume control during playback
+        static auto lastVolumeAdjust = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastVolumeAdjust).count() > 150) {
+            if (state_.leftTrigger > 0.3f) {
+                state_.volume = std::max(0, state_.volume - 5);
+                mpv_player_.setVolume(state_.volume);
+                showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
+                lastVolumeAdjust = now;
+            } else if (state_.rightTrigger > 0.3f) {
+                state_.volume = std::min(100, state_.volume + 5);
+                mpv_player_.setVolume(state_.volume);
+                showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
+                lastVolumeAdjust = now;
+            }
+        }
+
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         bool kbLeft = keys[SDL_SCANCODE_LEFT];
         bool kbRight = keys[SDL_SCANCODE_RIGHT];
@@ -986,10 +1002,10 @@ void App::renderFrame() {
     if (state_.currentScreen == TubeState::Screen::Home) {
         if (home_grid_->cards.empty()) {
             if (homeLoadFailed_) {
-                drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load trending.", 2, {255, 100, 100, 255});
+                drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load feed.", 2, {255, 100, 100, 255});
                 drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
             } else {
-                renderBrowseLoadingState(width, height, "Loading Trending...");
+                renderBrowseLoadingState(width, height, "Loading Feed...");
             }
         } else {
             home_grid_->render(renderer_, 0.0f, 0.0f);
@@ -1288,18 +1304,16 @@ void App::handleKey(SDL_Keycode key) {
         break;
     case SDLK_UP:
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            state_.volume = std::min(100, state_.volume + 5);
-            mpv_player_.setVolume(state_.volume);
-            showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
+            mpv_player_.cycleSubtitleTrack();
+            showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
         } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(0, -1);
         }
         break;
     case SDLK_DOWN:
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            state_.volume = std::max(0, state_.volume - 5);
-            mpv_player_.setVolume(state_.volume);
-            showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
+            mpv_player_.cycleAudioTrack();
+            showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
         } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(0, 1);
         }
@@ -1428,15 +1442,13 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         uiDirty_ = true;
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            state_.volume = std::min(100, state_.volume + 5);
-            mpv_player_.setVolume(state_.volume);
-            showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
+            mpv_player_.cycleSubtitleTrack();
+            showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            state_.volume = std::max(0, state_.volume - 5);
-            mpv_player_.setVolume(state_.volume);
-            showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
+            mpv_player_.cycleAudioTrack();
+            showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
         // Handled via updateSticks() scrubbing
@@ -1550,6 +1562,9 @@ void App::loadHomeFeeds() {
         home_grid_->cards.clear();
         for (const auto& v : cached_trending_videos_) {
             auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+            if (v.title.find("⏳") == 0) {
+                card->title = v.title;
+            }
             card->onClick = [this, v]() { playVideo(v); };
             home_grid_->addCard(card);
         }
@@ -1562,8 +1577,45 @@ void App::loadHomeFeeds() {
     focus_manager_.setGrid(home_grid_);
     cached_trending_videos_.clear();
     
+    int historyCount = 0;
+    std::string recommendationQuery = "";
+    
+    if (!playback_history_.empty()) {
+        for (auto it = playback_history_.rbegin(); it != playback_history_.rend(); ++it) {
+            if (historyCount++ >= 8) break;
+            auto v = *it;
+            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
+            card->title = "⏳ " + v.title;
+            card->onClick = [this, v]() { playVideo(v); };
+            home_grid_->addCard(card);
+        }
+        
+        // Find up to 3 unique authors in history to build a mixed recommendation query
+        std::vector<std::string> uniqueAuthors;
+        for (auto it = playback_history_.rbegin(); it != playback_history_.rend(); ++it) {
+            if (!it->author.empty() && std::find(uniqueAuthors.begin(), uniqueAuthors.end(), it->author) == uniqueAuthors.end()) {
+                uniqueAuthors.push_back(it->author);
+                if (uniqueAuthors.size() >= 3) break;
+            }
+        }
+        
+        if (!uniqueAuthors.empty()) {
+            for (size_t i = 0; i < uniqueAuthors.size(); ++i) {
+                if (i > 0) recommendationQuery += " OR ";
+                recommendationQuery += "\"" + uniqueAuthors[i] + "\"";
+            }
+        }
+    }
+    
+    if (recommendationQuery.empty()) {
+        recommendationQuery = "lofi music OR science OR tech OR gaming OR news";
+    }
+    
+    home_grid_->title = playback_history_.empty() ? "Personal Feed" : "History & Recommendations";
+    home_feed_query_ = recommendationQuery;
+    
     int reqPage = home_page_;
-    youtube_api_.search("trending", reqPage, [this, reqPage, now](const std::vector<YouTubeVideo>& results, bool finished) {
+    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage, now](const std::vector<YouTubeVideo>& results, bool finished) {
         queueOnMainThread([this, reqPage, now, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
             
@@ -1576,11 +1628,22 @@ void App::loadHomeFeeds() {
             if (!results.empty()) {
                 bool isFirstCard = home_grid_->cards.empty();
                 for (const auto& v : results) {
+                    bool inHistory = false;
+                    for (const auto& hv : playback_history_) {
+                        if (hv.id == v.id) { inHistory = true; break; }
+                    }
+                    if (inHistory) continue;
+                    
                     auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
                     card->onClick = [this, v]() { playVideo(v); };
                     home_grid_->addCard(card);
-                    cached_trending_videos_.push_back(v);
                 }
+                
+                cached_trending_videos_.clear();
+                for (const auto& card : home_grid_->cards) {
+                    cached_trending_videos_.push_back(card->video);
+                }
+                
                 if (isFirstCard && !home_grid_->cards.empty()) {
                     focus_manager_.setGrid(home_grid_);
                 }
@@ -1598,7 +1661,7 @@ void App::loadMoreHomeFeeds() {
     home_page_++;
     
     int reqPage = home_page_;
-    youtube_api_.search("trending", reqPage, [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
+    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
         queueOnMainThread([this, reqPage, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
             
@@ -1611,6 +1674,12 @@ void App::loadMoreHomeFeeds() {
             
             if (!results.empty()) {
                 for (const auto& v : results) {
+                    bool inHistory = false;
+                    for (const auto& hv : playback_history_) {
+                        if (hv.id == v.id) { inHistory = true; break; }
+                    }
+                    if (inHistory) continue;
+                    
                     auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
                     card->onClick = [this, v]() { playVideo(v); };
                     home_grid_->addCard(card);
@@ -1656,7 +1725,7 @@ void App::loadMoreSearchResults() {
 // Legacy presentation queue methods removed.
 
 void App::updateHoverPreviews() {
-    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo) {
+    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo || state_.inputMode == TubeState::InputMode::SearchText) {
         stopBrowsePreviewState();
         return;
     }
@@ -1745,4 +1814,64 @@ void App::updateHoverPreviews() {
         focusedCard->is_previewing = true;
         uiDirty_ = true;
     }
+}
+
+void App::saveHistory() {
+    try {
+        nlohmann::json j = nlohmann::json::array();
+        int count = 0;
+        for (auto it = playback_history_.rbegin(); it != playback_history_.rend(); ++it) {
+            if (count++ >= 50) break;
+            nlohmann::json item;
+            item["id"] = it->id;
+            item["title"] = it->title;
+            item["author"] = it->author;
+            item["duration_seconds"] = it->duration_seconds;
+            item["duration_string"] = it->duration_string;
+            item["view_count_string"] = it->view_count_string;
+            j.push_back(item);
+        }
+        std::ofstream ofs("history.json");
+        if (ofs) {
+            ofs << j.dump(4);
+        }
+    } catch (...) {}
+}
+
+void App::loadHistory() {
+    playback_history_.clear();
+    try {
+        std::ifstream ifs("history.json");
+        if (ifs) {
+            nlohmann::json j;
+            ifs >> j;
+            if (j.is_array()) {
+                std::vector<YouTubeVideo> temp;
+                for (const auto& item : j) {
+                    YouTubeVideo v;
+                    v.id = item.value("id", "");
+                    v.title = item.value("title", "");
+                    v.author = item.value("author", "");
+                    v.duration_seconds = item.value("duration_seconds", 0);
+                    v.duration_string = item.value("duration_string", "");
+                    v.view_count_string = item.value("view_count_string", "");
+                    if (!v.id.empty()) {
+                        temp.push_back(v);
+                    }
+                }
+                std::reverse(temp.begin(), temp.end());
+                playback_history_ = temp;
+            }
+        }
+    } catch (...) {}
+}
+
+void App::addToHistory(const YouTubeVideo& video) {
+    playback_history_.erase(
+        std::remove_if(playback_history_.begin(), playback_history_.end(),
+                       [&video](const YouTubeVideo& v) { return v.id == video.id; }),
+        playback_history_.end()
+    );
+    playback_history_.push_back(video);
+    saveHistory();
 }

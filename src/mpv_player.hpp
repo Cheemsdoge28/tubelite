@@ -40,6 +40,9 @@ public:
     void seekAbsoluteExact(double seconds);
     void toggleSubtitles();
     void cycleSubtitleTrack();
+    void cycleAudioTrack();
+    std::string getSubtitleTrackName();
+    std::string getAudioTrackName();
     void setMute(bool mute);
     SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
     void destroyPreviewTexture();

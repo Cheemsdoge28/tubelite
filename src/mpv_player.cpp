@@ -342,6 +342,10 @@ void MpvPlayer::cycleSubtitleTrack() {
     if (!mpv_) return;
     const char* cmd[] = {"cycle", "sub", nullptr}; mpv_command(mpv_, cmd);
 }
+void MpvPlayer::cycleAudioTrack() {
+    if (!mpv_) return;
+    const char* cmd[] = {"cycle", "audio", nullptr}; mpv_command(mpv_, cmd);
+}
 void MpvPlayer::setMute(bool mute) {
     if (!mpv_) return;
     int v = mute ? 1 : 0; mpv_set_property(mpv_, "mute", MPV_FORMAT_FLAG, &v);
@@ -381,4 +385,80 @@ void MpvPlayer::showProgress() {
 void MpvPlayer::cycleStatsOverlay() {
     if (!mpv_) return;
     const char* cmd[] = {"cycle", "stats-display", nullptr}; mpv_command(mpv_, cmd);
+}
+
+std::string MpvPlayer::getSubtitleTrackName() {
+    if (!mpv_) return "None";
+    char* sid = mpv_get_property_string(mpv_, "sid");
+    if (!sid) return "None";
+    std::string s(sid);
+    mpv_free(sid);
+    if (s == "no" || s.empty()) return "None";
+    
+    int64_t count = 0;
+    mpv_get_property(mpv_, "track-list/count", MPV_FORMAT_INT64, &count);
+    for (int64_t i = 0; i < count; ++i) {
+        char* type = mpv_get_property_string(mpv_, ("track-list/" + std::to_string(i) + "/type").c_str());
+        if (type) {
+            std::string t(type);
+            mpv_free(type);
+            if (t == "sub") {
+                int64_t id = 0;
+                mpv_get_property(mpv_, ("track-list/" + std::to_string(i) + "/id").c_str(), MPV_FORMAT_INT64, &id);
+                if (std::to_string(id) == s) {
+                    char* lang = mpv_get_property_string(mpv_, ("track-list/" + std::to_string(i) + "/lang").c_str());
+                    char* title = mpv_get_property_string(mpv_, ("track-list/" + std::to_string(i) + "/title").c_str());
+                    std::string res = "Track " + s;
+                    if (lang && strlen(lang) > 0) {
+                        res += " [" + std::string(lang) + "]";
+                    }
+                    if (title && strlen(title) > 0) {
+                        res += " (" + std::string(title) + ")";
+                    }
+                    if (lang) mpv_free(lang);
+                    if (title) mpv_free(title);
+                    return res;
+                }
+            }
+        }
+    }
+    return "Track " + s;
+}
+
+std::string MpvPlayer::getAudioTrackName() {
+    if (!mpv_) return "None";
+    char* aid = mpv_get_property_string(mpv_, "aid");
+    if (!aid) return "None";
+    std::string a(aid);
+    mpv_free(aid);
+    if (a == "no" || a.empty()) return "None";
+    
+    int64_t count = 0;
+    mpv_get_property(mpv_, "track-list/count", MPV_FORMAT_INT64, &count);
+    for (int64_t i = 0; i < count; ++i) {
+        char* type = mpv_get_property_string(mpv_, ("track-list/" + std::to_string(i) + "/type").c_str());
+        if (type) {
+            std::string t(type);
+            mpv_free(type);
+            if (t == "audio") {
+                int64_t id = 0;
+                mpv_get_property(mpv_, ("track-list/" + std::to_string(i) + "/id").c_str(), MPV_FORMAT_INT64, &id);
+                if (std::to_string(id) == a) {
+                    char* lang = mpv_get_property_string(mpv_, ("track-list/" + std::to_string(i) + "/lang").c_str());
+                    char* title = mpv_get_property_string(mpv_, ("track-list/" + std::to_string(i) + "/title").c_str());
+                    std::string res = "Track " + a;
+                    if (lang && strlen(lang) > 0) {
+                        res += " [" + std::string(lang) + "]";
+                    }
+                    if (title && strlen(title) > 0) {
+                        res += " (" + std::string(title) + ")";
+                    }
+                    if (lang) mpv_free(lang);
+                    if (title) mpv_free(title);
+                    return res;
+                }
+            }
+        }
+    }
+    return "Track " + a;
 }

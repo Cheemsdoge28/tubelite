@@ -132,6 +132,12 @@ private:
     int headerTitleW_Search_{0};
     int headerTitleH_Search_{0};
 
+    std::string home_feed_query_{"trending"};
+    std::vector<YouTubeVideo> playback_history_;
+    void saveHistory();
+    void loadHistory();
+    void addToHistory(const YouTubeVideo& video);
+
     void loadHomeFeeds();
     void loadMoreHomeFeeds();
     void loadMoreSearchResults();
