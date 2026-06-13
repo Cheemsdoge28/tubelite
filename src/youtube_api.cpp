@@ -148,18 +148,36 @@ static std::string calculateUploadedAgoFromTimestamp(long long timestamp) {
     }
 }
 
+template<typename T>
+static T safeGet(const nlohmann::json& j, const std::string& key, const T& default_val) {
+    if (j.contains(key) && !j[key].is_null()) {
+        try {
+            return j[key].get<T>();
+        } catch (...) {
+            return default_val;
+        }
+    }
+    return default_val;
+}
+
 static YouTubeVideo parseVideoJson(const nlohmann::json& j) {
     YouTubeVideo video;
-    video.id = j.value("id", "");
-    video.title = j.value("title", "");
-    video.author = j.value("uploader", j.value("channel", ""));
-    video.duration_seconds = j.value("duration", 0);
+    video.id = safeGet<std::string>(j, "id", "");
+    video.title = safeGet<std::string>(j, "title", "");
+    
+    std::string uploader = safeGet<std::string>(j, "uploader", "");
+    if (uploader.empty()) {
+        uploader = safeGet<std::string>(j, "channel", "");
+    }
+    video.author = uploader;
+    
+    video.duration_seconds = safeGet<int>(j, "duration", 0);
 
     int m = video.duration_seconds / 60;
     int s = video.duration_seconds % 60;
     video.duration_string = std::to_string(m) + ":" + (s < 10 ? "0" : "") + std::to_string(s);
 
-    int views = j.value("view_count", 0);
+    int views = safeGet<int>(j, "view_count", 0);
     if (views > 1000000) {
         video.view_count_string = std::to_string(views / 1000000) + "M views";
     } else if (views > 1000) {
@@ -168,11 +186,11 @@ static YouTubeVideo parseVideoJson(const nlohmann::json& j) {
         video.view_count_string = std::to_string(views) + " views";
     }
 
-    std::string upload_date = j.value("upload_date", "");
+    std::string upload_date = safeGet<std::string>(j, "upload_date", "");
     if (!upload_date.empty()) {
         video.uploaded_ago_string = calculateUploadedAgo(upload_date);
     } else {
-        long long ts = j.value("timestamp", 0LL);
+        long long ts = safeGet<long long>(j, "timestamp", 0LL);
         if (ts > 0) {
             video.uploaded_ago_string = calculateUploadedAgoFromTimestamp(ts);
         } else {
@@ -206,6 +224,7 @@ void YouTubeAPI::search(const std::string& query, int page,
             std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-check-formats "
+                "--extractor-arg \"youtubetab:approximate_date\" "
                 "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + searchTerm +
                 "\" --playlist-start " + std::to_string(startIdx) +
                 " --playlist-end "   + std::to_string(endIdx) + " 2>> \"" + logPath + "\"";
@@ -402,7 +421,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                     try {
                         auto j = json::parse(line);
                         if (j.is_object() && j.contains("url")) {
-                            url = j.value("url", "");
+                            url = safeGet<std::string>(j, "url", "");
                             subtitle_url = extractSubtitleUrl(j);
                             if (!url.empty()) break;
                         }
