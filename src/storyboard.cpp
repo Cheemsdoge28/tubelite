@@ -48,12 +48,24 @@ void StoryboardManager::clearFrames() {
     frames_.clear();
 }
 
+static std::string getTmpDir() {
+#ifdef _WIN32
+    return "build/tmp";
+#else
+    if (std::filesystem::exists("/roms/tools/tubelite")) {
+        return "/roms/tools/tubelite/build/tmp";
+    }
+    return "build/tmp";
+#endif
+}
+
 void StoryboardManager::runExtraction(std::string stream_url, int duration_seconds) {
     if (duration_seconds <= 0) return;
 
+    std::string tmpDir = getTmpDir();
     std::error_code ec;
-    std::filesystem::create_directories("build/tmp", ec);
-    for (const auto& entry : std::filesystem::directory_iterator("build/tmp", ec)) {
+    std::filesystem::create_directories(tmpDir, ec);
+    for (const auto& entry : std::filesystem::directory_iterator(tmpDir, ec)) {
         if (entry.path().filename().string().find("preview_") == 0) {
             std::filesystem::remove(entry.path(), ec);
         }
@@ -64,9 +76,9 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
 
     char cmd[2048];
 #ifdef _WIN32
-    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 build/tmp/preview_%%03d.jpg >NUL 2>&1", stream_url.c_str(), interval);
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 \"%s/preview_%%03d.jpg\" >NUL 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
 #else
-    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 build/tmp/preview_%%03d.jpg >/dev/null 2>&1", stream_url.c_str(), interval);
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 \"%s/preview_%%03d.jpg\" >/dev/null 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
 #endif
 
     int res = std::system(cmd);
@@ -74,7 +86,7 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
 
     for (int i = 1; !cancel_extract_; ++i) {
         char filename[512];
-        std::snprintf(filename, sizeof(filename), "build/tmp/preview_%03d.jpg", i);
+        std::snprintf(filename, sizeof(filename), "%s/preview_%03d.jpg", tmpDir.c_str(), i);
 
         if (!std::filesystem::exists(filename)) {
             break;
@@ -109,7 +121,7 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
     }
 
     // Cleanup remaining files in build/tmp
-    for (const auto& entry : std::filesystem::directory_iterator("build/tmp", ec)) {
+    for (const auto& entry : std::filesystem::directory_iterator(tmpDir, ec)) {
         if (entry.path().filename().string().find("preview_") == 0) {
             std::filesystem::remove(entry.path(), ec);
         }

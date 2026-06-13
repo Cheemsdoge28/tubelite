@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <ctime>
+#include <filesystem>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -15,6 +16,17 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 #endif
+
+static std::string getAppDataPath(const std::string& filename) {
+#ifdef _WIN32
+    return filename;
+#else
+    if (std::filesystem::exists("/roms/tools/tubelite")) {
+        return "/roms/tools/tubelite/" + filename;
+    }
+    return filename;
+#endif
+}
 
 static void getSystemMemoryAndStorage(double& ram_used_mb, double& storage_free_gb, double& storage_total_gb) {
     ram_used_mb = 0.0;
@@ -634,8 +646,8 @@ void App::renderPlaybackOverlay(int width, int height) {
         {"B", yellow, "EXIT"},
         {"Y", green, "SUBS"},
         {"X", blue, "STATS"},
-        {"LB/RB", textColor, "SPEED"},
-        {"LT/RT", textColor, "VOL"}
+        {"L1/R1", textColor, "SPEED"},
+        {"L2/R2", textColor, "VOL"}
     };
 
     int boxH = 24;
@@ -1927,7 +1939,7 @@ void App::saveHistory() {
             item["uploaded_ago_string"] = it->uploaded_ago_string;
             j.push_back(item);
         }
-        std::ofstream ofs("history.json");
+        std::ofstream ofs(getAppDataPath("history.json"));
         if (ofs) {
             ofs << j.dump(4);
         }
@@ -1937,7 +1949,7 @@ void App::saveHistory() {
 void App::loadHistory() {
     playback_history_.clear();
     try {
-        std::ifstream ifs("history.json");
+        std::ifstream ifs(getAppDataPath("history.json"));
         if (ifs) {
             nlohmann::json j;
             ifs >> j;
@@ -1990,7 +2002,7 @@ void App::saveHomeCache() {
             videosArray.push_back(item);
         }
         j["videos"] = videosArray;
-        std::ofstream ofs("home_cache.json");
+        std::ofstream ofs(getAppDataPath("home_cache.json"));
         if (ofs) {
             ofs << j.dump(4);
         }
@@ -1999,7 +2011,7 @@ void App::saveHomeCache() {
 
 bool App::loadHomeCache() {
     try {
-        std::ifstream ifs("home_cache.json");
+        std::ifstream ifs(getAppDataPath("home_cache.json"));
         if (!ifs) return false;
         nlohmann::json j;
         ifs >> j;

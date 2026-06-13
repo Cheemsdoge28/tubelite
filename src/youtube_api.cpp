@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <ctime>
+#include <filesystem>
 
 // Since nlohmann/json is a single-header library, we include it here.
 #include "json.hpp"
@@ -43,8 +44,19 @@ std::string YouTubeAPI::executeCommand(const std::string& cmd) {
     return result;
 }
 
+static std::string getLogPath() {
+#ifdef _WIN32
+    return "yt-dlp-error.log";
+#else
+    if (std::filesystem::exists("/roms/tools/tubelite")) {
+        return "/roms/tools/tubelite/yt-dlp-error.log";
+    }
+    return "yt-dlp-error.log";
+#endif
+}
+
 static void appendLog(const std::string& title, const std::string& body) {
-    std::ofstream ofs("yt-dlp-error.log", std::ios::app);
+    std::ofstream ofs(getLogPath(), std::ios::app);
     if (!ofs) return;
     std::time_t t = std::time(nullptr);
     ofs << "===== " << title << " =====\n";
@@ -190,13 +202,13 @@ void YouTubeAPI::search(const std::string& query, int page,
                 searchTerm = "trending";
             }
 
+            std::string logPath = getLogPath();
             std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-check-formats "
-                "--extractor-args \"youtube:player_client=android,ios;skip=dash,hls\" "
                 "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + searchTerm +
                 "\" --playlist-start " + std::to_string(startIdx) +
-                " --playlist-end "   + std::to_string(endIdx) + " 2>> yt-dlp-error.log";
+                " --playlist-end "   + std::to_string(endIdx) + " 2>> \"" + logPath + "\"";
 
 #ifdef _WIN32
             FILE* pipe = _popen(cmd.c_str(), "r");
