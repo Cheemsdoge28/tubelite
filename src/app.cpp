@@ -983,8 +983,10 @@ void App::renderFrame() {
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
 
-        // Draw the UI overlay layers (HUD, loading spinner, overlays) into SDL's
-        // command buffer – they will be composited on top after mpv renders.
+        // Render the video frame first (directly to the display framebuffer FBO=0)
+        mpv_player_.render(width, height);
+
+        // Draw the UI overlay layers (HUD, loading spinner, overlays) on top of the video
         if (state_.showUi) {
             renderPlaybackOverlay(width, height);
         }
@@ -1038,11 +1040,6 @@ void App::renderFrame() {
 
         keyboard_.render(renderer_, state_, width, height, uiDirty_);
 
-        // Flush SDL commands to GL, then let mpv composite video underneath.
-        // mpv's render() will call SDL_RenderFlush itself before touching GL.
-        mpv_player_.render(width, height);
-
-        // After mpv renders to FBO=0, SDL_RenderPresent swaps the buffer.
         SDL_RenderPresent(renderer_);
         uiDirty_ = false;
 
