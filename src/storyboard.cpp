@@ -21,6 +21,12 @@ void StoryboardManager::start(const std::string& stream_url, int duration_second
 
 void StoryboardManager::stop() {
     cancel_extract_ = true;
+#ifdef _WIN32
+    std::system("taskkill /F /IM ffmpeg.exe >NUL 2>&1");
+#else
+    std::system("pkill -9 -f ffmpeg >/dev/null 2>&1");
+#endif
+
     if (extract_thread_.joinable()) {
         extract_thread_.join();
     }
@@ -47,6 +53,11 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
 
     std::error_code ec;
     std::filesystem::create_directories("build/tmp", ec);
+    for (const auto& entry : std::filesystem::directory_iterator("build/tmp", ec)) {
+        if (entry.path().filename().string().find("preview_") == 0) {
+            std::filesystem::remove(entry.path(), ec);
+        }
+    }
 
     // Dynamic interval to target ~100 frames
     int interval = std::max(1, duration_seconds / 100);
@@ -97,12 +108,11 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
         std::filesystem::remove(filename, ec);
     }
 
-    // Cleanup remaining files if cancelled
-    for (int i = 1; ; ++i) {
-        char filename[512];
-        std::snprintf(filename, sizeof(filename), "build/tmp/preview_%03d.jpg", i);
-        if (!std::filesystem::exists(filename)) break;
-        std::filesystem::remove(filename, ec);
+    // Cleanup remaining files in build/tmp
+    for (const auto& entry : std::filesystem::directory_iterator("build/tmp", ec)) {
+        if (entry.path().filename().string().find("preview_") == 0) {
+            std::filesystem::remove(entry.path(), ec);
+        }
     }
 }
 

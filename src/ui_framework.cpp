@@ -135,7 +135,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         // 3. Views & Date layout cache
         std::string views_date = video.view_count_string;
         if (!video.uploaded_ago_string.empty()) {
-            if (!views_date.empty()) views_date += " - "; // safe separator dot/dash
+            if (!views_date.empty()) views_date += " • "; // safe separator dot/dash
             views_date += video.uploaded_ago_string;
         }
         getTextSize(views_date, 1, &viewsDateW_, nullptr);
@@ -255,7 +255,7 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     if (columns == 1) {
         card->bounds.h = 90.0f;
     } else {
-        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 70.0f;
+        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 80.0f;
     }
     
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
@@ -269,7 +269,7 @@ void GridContainer::pruneOldCards(int maxCards, int& focusedCardIdx) {
     int pruneCount = pruneRows * columns;
     if (pruneCount >= static_cast<int>(cards.size())) return;
     
-    float cardH = (columns == 1) ? 90.0f : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 54.0f);
+    float cardH = (columns == 1) ? 90.0f : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 80.0f);
     float rowHeight = cardH + padding;
     float removedHeight = pruneRows * rowHeight;
     

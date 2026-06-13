@@ -403,8 +403,10 @@ void MpvPlayer::resume() {
 void MpvPlayer::stop() {
     if (!mpv_) return;
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-    const char* cmd[] = {"stop", nullptr};
-    mpv_command_async(mpv_, 0, cmd);
+    const char* cmdStop[] = {"stop", nullptr};
+    mpv_command_async(mpv_, 0, cmdStop);
+    const char* cmdClear[] = {"playlist-clear", nullptr};
+    mpv_command_async(mpv_, 0, cmdClear);
 }
 void MpvPlayer::setVolume(int volume) {
     if (!mpv_) return;

@@ -132,8 +132,10 @@ void App::run() {
         
         processMainThreadQueue();
         
-        if (image_manager_ && image_manager_->update()) {
-            uiDirty_ = true;
+        if (state_.currentScreen != TubeState::Screen::Playback) {
+            if (image_manager_ && image_manager_->update()) {
+                uiDirty_ = true;
+            }
         }
         
         auto focusedCard = focus_manager_.getFocusedCard();
@@ -314,6 +316,28 @@ std::string App::streamCacheKey(const std::string& videoId, int maxHeight) const
     return videoId + "#" + std::to_string(maxHeight);
 }
 
+std::optional<std::string> App::getCachedStreamUrl(const std::string& key) {
+    auto it = stream_url_cache_.find(key);
+    if (it == stream_url_cache_.end()) return std::nullopt;
+    
+    auto timeIt = stream_url_cache_times_.find(key);
+    if (timeIt != stream_url_cache_times_.end()) {
+        auto age = std::chrono::duration_cast<std::chrono::minutes>(
+            std::chrono::steady_clock::now() - timeIt->second).count();
+        if (age >= 120) {
+            stream_url_cache_.erase(it);
+            stream_url_cache_times_.erase(timeIt);
+            return std::nullopt;
+        }
+    }
+    return it->second;
+}
+
+void App::setCachedStreamUrl(const std::string& key, const std::string& url) {
+    stream_url_cache_[key] = url;
+    stream_url_cache_times_[key] = std::chrono::steady_clock::now();
+}
+
 void App::stopBrowsePreviewState() {
     if (is_playing_preview_) {
         mpv_player_.stop();
@@ -331,6 +355,9 @@ void App::stopBrowsePreviewState() {
 void App::leavePlayback() {
     mpv_player_.stop();
     storyboard_.stop();
+    if (image_manager_) {
+        image_manager_->clearCache();
+    }
     state_.currentScreen = TubeState::Screen::Home;
     state_.showUi = true;
     last_playback_seconds_ = -1;
@@ -750,6 +777,9 @@ void App::playVideo(const YouTubeVideo& video) {
     addToHistory(video);
     stopBrowsePreviewState();
     storyboard_.stop();
+    if (image_manager_) {
+        image_manager_->clearCache();
+    }
     
     current_video_ = video;
     state_.isLoadingVideo = true;
@@ -758,32 +788,32 @@ void App::playVideo(const YouTubeVideo& video) {
     uiDirty_ = true;
 
     const std::string cacheKey = streamCacheKey(video.id, state_.maxQualityHeight);
-    auto cached = stream_url_cache_.find(cacheKey);
-    if (cached != stream_url_cache_.end() && !cached->second.empty()) {
+    auto cachedOpt = getCachedStreamUrl(cacheKey);
+    if (cachedOpt.has_value() && !cachedOpt.value().empty()) {
         state_.isLoadingVideo = false;
         state_.currentScreen = TubeState::Screen::Playback;
         mpv_player_.setMute(state_.muted);
         mpv_player_.setVolume(state_.volume);
         mpv_player_.setSpeed(state_.speed);
-        mpv_player_.play(cached->second);
+        mpv_player_.play(cachedOpt.value());
         mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
         state_.showUi = false;
         uiDirty_ = true;
 
         // Start storyboard extraction
         const std::string lowResCacheKey = streamCacheKey(video.id, 144);
-        auto lowResCached = stream_url_cache_.find(lowResCacheKey);
-        if (lowResCached != stream_url_cache_.end() && !lowResCached->second.empty()) {
-            storyboard_.start(lowResCached->second, video.duration_seconds);
+        auto lowResCachedOpt = getCachedStreamUrl(lowResCacheKey);
+        if (lowResCachedOpt.has_value() && !lowResCachedOpt.value().empty()) {
+            storyboard_.start(lowResCachedOpt.value(), video.duration_seconds);
         } else {
             youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success, const std::string& url) {
                 queueOnMainThread([this, video, success, url]() {
                     if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
                         if (success && !url.empty()) {
-                            stream_url_cache_[streamCacheKey(video.id, 144)] = url;
+                            setCachedStreamUrl(streamCacheKey(video.id, 144), url);
                             storyboard_.start(url, video.duration_seconds);
                         } else {
-                            stream_url_cache_[streamCacheKey(video.id, 144)] = ""; // Cache failure
+                            setCachedStreamUrl(streamCacheKey(video.id, 144), ""); // Cache failure
                         }
                     }
                 });
@@ -797,7 +827,7 @@ void App::playVideo(const YouTubeVideo& video) {
             if (!state_.isLoadingVideo || current_video_.id != video.id) return;
             state_.isLoadingVideo = false;
             if (success) {
-                stream_url_cache_[cacheKey] = url;
+                setCachedStreamUrl(cacheKey, url);
                 state_.currentScreen = TubeState::Screen::Playback;
                 mpv_player_.setMute(state_.muted);
                 mpv_player_.setVolume(state_.volume);
@@ -808,24 +838,25 @@ void App::playVideo(const YouTubeVideo& video) {
 
                 // Start storyboard extraction
                 const std::string lowResCacheKey = streamCacheKey(video.id, 144);
-                auto lowResCached = stream_url_cache_.find(lowResCacheKey);
-                if (lowResCached != stream_url_cache_.end() && !lowResCached->second.empty()) {
-                    storyboard_.start(lowResCached->second, video.duration_seconds);
+                auto lowResCachedOpt = getCachedStreamUrl(lowResCacheKey);
+                if (lowResCachedOpt.has_value() && !lowResCachedOpt.value().empty()) {
+                    storyboard_.start(lowResCachedOpt.value(), video.duration_seconds);
                 } else {
                     youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success2, const std::string& url2) {
                         queueOnMainThread([this, video, success2, url2]() {
                             if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
                                 if (success2 && !url2.empty()) {
-                                    stream_url_cache_[streamCacheKey(video.id, 144)] = url2;
+                                    setCachedStreamUrl(streamCacheKey(video.id, 144), url2);
                                     storyboard_.start(url2, video.duration_seconds);
                                 } else {
-                                    stream_url_cache_[streamCacheKey(video.id, 144)] = ""; // Cache failure
+                                    setCachedStreamUrl(streamCacheKey(video.id, 144), ""); // Cache failure
                                 }
                             }
                         });
                     }, true /* isPreview */);
                 }
             } else {
+                setCachedStreamUrl(cacheKey, ""); // Cache failure
                 loading_status_text_ = "Stream Resolve Failed — Press A to retry";
                 state_.isLoadingVideo = false;
             }
@@ -1800,7 +1831,7 @@ void App::updateHoverPreviews() {
     
     // 1. Kick off prefetch if focused for >= 0.25s
     if (focusedCard->focusedTime_ >= 0.25f) {
-        if (stream_url_cache_.find(cacheKey) == stream_url_cache_.end() &&
+        if (!getCachedStreamUrl(cacheKey).has_value() &&
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
             is_loading_preview_ = true;
@@ -1809,9 +1840,9 @@ void App::updateHoverPreviews() {
                     stream_prefetch_inflight_.erase(cacheKey);
                     is_loading_preview_ = false;
                     if (success && !url.empty()) {
-                        stream_url_cache_[cacheKey] = url;
+                        setCachedStreamUrl(cacheKey, url);
                     } else {
-                        stream_url_cache_[cacheKey] = ""; // Cache failure
+                        setCachedStreamUrl(cacheKey, ""); // Cache failure
                     }
                     uiDirty_ = true;
                 });
@@ -1824,8 +1855,8 @@ void App::updateHoverPreviews() {
         return;
     }
 
-    auto cached = stream_url_cache_.find(cacheKey);
-    if (cached != stream_url_cache_.end() && !cached->second.empty()) {
+    auto cachedOpt = getCachedStreamUrl(cacheKey);
+    if (cachedOpt.has_value() && !cachedOpt.value().empty()) {
         auto grid = activeGrid();
         if (!grid) return;
 

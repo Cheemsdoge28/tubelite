@@ -4,6 +4,7 @@
 #include <string>
 #include <mutex>
 #include <functional>
+#include <optional>
 #include "state.hpp"
 #include "mpv_player.hpp"
 #include "youtube_api.hpp"
@@ -59,6 +60,8 @@ private:
     bool isInputLocked() const;
     std::shared_ptr<ui::GridContainer> activeGrid() const;
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
+    std::optional<std::string> getCachedStreamUrl(const std::string& key);
+    void setCachedStreamUrl(const std::string& key, const std::string& url);
     void renderBrowseHeader(int width, int height, const std::string& title, float scrollY, bool searchScreen);
     void renderPlaybackOverlay(int width, int height);
     void renderBrowseLoadingState(int width, int height, const std::string& text);
@@ -104,6 +107,7 @@ private:
     bool is_playing_preview_{false};
     bool is_loading_preview_{false};
     std::unordered_map<std::string, std::string> stream_url_cache_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> stream_url_cache_times_;
     std::unordered_set<std::string> stream_prefetch_inflight_;
     
     int last_playback_seconds_{-1};

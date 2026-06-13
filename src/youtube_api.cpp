@@ -98,6 +98,44 @@ static std::string calculateUploadedAgo(const std::string& upload_date) {
     }
 }
 
+static std::string calculateUploadedAgoFromTimestamp(long long timestamp) {
+    if (timestamp <= 0) return "";
+    try {
+        std::time_t now = std::time(nullptr);
+        long long diff = now - timestamp;
+        if (diff < 0) diff = 0;
+        
+        long long minutes = diff / 60;
+        long long hours = minutes / 60;
+        long long days = hours / 24;
+        long long weeks = days / 7;
+        long long months = days / 30;
+        long long years = days / 365;
+        
+        if (years > 0) {
+            return std::to_string(years) + (years == 1 ? " year ago" : " years ago");
+        }
+        if (months > 0) {
+            return std::to_string(months) + (months == 1 ? " month ago" : " months ago");
+        }
+        if (weeks > 0) {
+            return std::to_string(weeks) + (weeks == 1 ? " week ago" : " weeks ago");
+        }
+        if (days > 0) {
+            return std::to_string(days) + (days == 1 ? " day ago" : " days ago");
+        }
+        if (hours > 0) {
+            return std::to_string(hours) + (hours == 1 ? " hour ago" : " hours ago");
+        }
+        if (minutes > 0) {
+            return std::to_string(minutes) + (minutes == 1 ? " minute ago" : " minutes ago");
+        }
+        return "today";
+    } catch (...) {
+        return "";
+    }
+}
+
 static YouTubeVideo parseVideoJson(const nlohmann::json& j) {
     YouTubeVideo video;
     video.id = j.value("id", "");
@@ -119,7 +157,16 @@ static YouTubeVideo parseVideoJson(const nlohmann::json& j) {
     }
 
     std::string upload_date = j.value("upload_date", "");
-    video.uploaded_ago_string = calculateUploadedAgo(upload_date);
+    if (!upload_date.empty()) {
+        video.uploaded_ago_string = calculateUploadedAgo(upload_date);
+    } else {
+        long long ts = j.value("timestamp", 0LL);
+        if (ts > 0) {
+            video.uploaded_ago_string = calculateUploadedAgoFromTimestamp(ts);
+        } else {
+            video.uploaded_ago_string = "";
+        }
+    }
     return video;
 }
 
