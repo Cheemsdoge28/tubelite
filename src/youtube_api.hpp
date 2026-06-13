@@ -31,4 +31,6 @@ public:
 private:
     std::string executeCommand(const std::string& cmd);
     static std::string sanitizeShellText(const std::string& value);
+    std::atomic<int> current_stream_request_id_{0};
+    std::atomic<int> current_search_request_id_{0};
 };

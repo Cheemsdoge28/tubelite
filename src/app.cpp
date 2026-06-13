@@ -174,10 +174,24 @@ void App::run() {
             last_fps_update_ = now;
         }
         
-        auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start);
-        if (elapsed < frameTarget) {
-            SDL_Delay(static_cast<Uint32>((frameTarget - elapsed).count()));
+        static float sleep_error_accum = 0.0f;
+        auto loop_end = steady_clock::now();
+        float work_time = duration<float>(loop_end - start).count();
+        float target_frame_time = 1.0f / 60.0f;
+        
+        float sleep_sec = target_frame_time - work_time + sleep_error_accum;
+        if (sleep_sec > 0.001f) {
+            auto sleep_start = steady_clock::now();
+            SDL_Delay(static_cast<Uint32>(sleep_sec * 1000.0f));
+            float actual_sleep = duration<float>(steady_clock::now() - sleep_start).count();
+            sleep_error_accum = sleep_sec - actual_sleep;
+        } else {
+            sleep_error_accum = sleep_sec;
         }
+        
+        // Clamp to prevent runaway accumulation during load stalls/crashes
+        if (sleep_error_accum < -0.05f) sleep_error_accum = -0.05f;
+        if (sleep_error_accum > 0.05f)  sleep_error_accum = 0.05f;
     }
 }
 
@@ -922,16 +936,43 @@ void App::renderFrame() {
         }
     }
 
-    bool shouldPresent = uiDirty_ || state_.isLoadingVideo || (state_.currentScreen == TubeState::Screen::Playback) || is_playing_preview_ || state_.isScrubbing;
+    bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing;
     if (!shouldPresent) return;
 
     if (state_.currentScreen == TubeState::Screen::Playback) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
-        SDL_Texture* playTex = mpv_player_.renderToTexture(renderer_, width, height);
+
+        int64_t vw = mpv_player_.getPropertyInt("video-params/w");
+        int64_t vh = mpv_player_.getPropertyInt("video-params/h");
+        int playW = width;
+        int playH = height;
+        SDL_Rect dstRect{0, 0, width, height};
+
+        if (vw > 0 && vh > 0) {
+            double aspect = static_cast<double>(vw) / vh;
+            double screenAspect = static_cast<double>(width) / height;
+            if (aspect > screenAspect) {
+                playW = width;
+                playH = static_cast<int>(width / aspect);
+                dstRect.w = width;
+                dstRect.h = playH;
+                dstRect.x = 0;
+                dstRect.y = (height - playH) / 2;
+            } else {
+                playW = static_cast<int>(height * aspect);
+                playH = height;
+                dstRect.w = playW;
+                dstRect.h = height;
+                dstRect.x = (width - playW) / 2;
+                dstRect.y = 0;
+            }
+        }
+
+        SDL_Texture* playTex = mpv_player_.renderToTexture(renderer_, playW, playH);
         if (playTex) {
-            SDL_RenderCopy(renderer_, playTex, nullptr, nullptr);
+            SDL_RenderCopy(renderer_, playTex, nullptr, &dstRect);
         }
     } else {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);

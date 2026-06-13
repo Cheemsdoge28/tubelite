@@ -52,8 +52,10 @@ static void appendLog(const std::string& title, const std::string& body) {
 }
 
 void YouTubeAPI::search(const std::string& query, int page, std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback) {
-    std::thread([this, query, page, callback]() {
+    int req_id = ++current_search_request_id_;
+    std::thread([this, query, page, callback, req_id]() {
         try {
+            if (req_id != current_search_request_id_) return;
             std::string safeQuery = sanitizeShellText(query);
             
             int startIdx = (page - 1) * 15 + 1;
@@ -89,6 +91,14 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(c
             char buffer[4096];
             std::string current_line;
             while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                if (req_id != current_search_request_id_) {
+#ifdef _WIN32
+                    _pclose(pipe);
+#else
+                    pclose(pipe);
+#endif
+                    return;
+                }
                 current_line += buffer;
                 size_t pos;
                 while ((pos = current_line.find('\n')) != std::string::npos) {
@@ -163,8 +173,10 @@ void YouTubeAPI::search(const std::string& query, int page, std::function<void(c
 }
 
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::function<void(bool success, const std::string& url)> callback) {
-    std::thread([this, video_id, max_height, callback]() {
+    int req_id = ++current_stream_request_id_;
+    std::thread([this, video_id, max_height, callback, req_id]() {
         try {
+            if (req_id != current_stream_request_id_) return;
             const std::string safeId = sanitizeShellText(video_id);
             const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
 
@@ -183,7 +195,9 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height, std::
 
             std::string url;
             for (const auto& cmd : commands) {
+                if (req_id != current_stream_request_id_) return;
                 const std::string output = executeCommand(cmd);
+                if (req_id != current_stream_request_id_) return;
                 appendLog(std::string("Command: ") + cmd, output);
                 size_t lineEnd = output.find_last_not_of("\r\n \t");
                 if (lineEnd == std::string::npos) continue;
