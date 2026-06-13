@@ -137,7 +137,7 @@ void App::run() {
             uiDirty_ = true;
         }
         
-        bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing;
+        bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText);
         if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
             active = true;
         }

@@ -105,6 +105,11 @@ private:
     std::chrono::steady_clock::time_point triggerCursorStartedAt_{};
     std::chrono::steady_clock::time_point triggerCursorNextAt_{};
 
+    mutable KeyboardOverlayLayout cached_layout_{};
+    mutable TubeState::KeyboardMode last_layout_mode_{static_cast<TubeState::KeyboardMode>(-1)};
+    mutable int last_layout_w_{0};
+    mutable int last_layout_h_{0};
+
     int repeatIntervalMs(std::chrono::steady_clock::time_point startedAt, int baseMs, int minMs) const;
     const std::vector<std::vector<KeyboardKey>>& keyboardLayout(const TubeState& state) const;
     KeyboardOverlayLayout buildLayout(const TubeState& state, int width, int height) const;

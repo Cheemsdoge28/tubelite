@@ -101,6 +101,10 @@ const std::vector<std::vector<KeyboardKey>>& KeyboardOverlay::keyboardLayout(con
 }
 
 KeyboardOverlayLayout KeyboardOverlay::buildLayout(const TubeState& state, int width, int height) const {
+    if (state.keyboardMode == last_layout_mode_ && width == last_layout_w_ && height == last_layout_h_) {
+        return cached_layout_;
+    }
+
     KeyboardOverlayLayout layoutInfo;
     const int outerMargin = 14;
     const int panelPadding = (width < 480) ? 8 : 10;
@@ -138,6 +142,11 @@ KeyboardOverlayLayout KeyboardOverlay::buildLayout(const TubeState& state, int w
         }
         y += rowHeight + rowGap;
     }
+
+    last_layout_mode_ = state.keyboardMode;
+    last_layout_w_ = width;
+    last_layout_h_ = height;
+    cached_layout_ = layoutInfo;
     return layoutInfo;
 }
 
