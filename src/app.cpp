@@ -783,7 +783,7 @@ void App::playVideo(const YouTubeVideo& video) {
                         }
                     }
                 });
-            });
+            }, true /* isPreview */);
         }
         return;
     }
@@ -817,7 +817,7 @@ void App::playVideo(const YouTubeVideo& video) {
                                 }
                             }
                         });
-                    });
+                    }, true /* isPreview */);
                 }
             } else {
                 loading_status_text_ = "Stream Resolve Failed — Press A to retry";
@@ -1579,12 +1579,12 @@ void App::loadHomeFeeds() {
     focus_manager_.setGrid(home_grid_);
     cached_trending_videos_.clear();
     
-    home_grid_->title = "Recommended";
-    home_feed_query_ = "https://www.youtube.com/";
+    home_grid_->title = "Trending";
+    home_feed_query_ = "trending";
     
     int reqPage = home_page_;
-    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage, now](const std::vector<YouTubeVideo>& results, bool finished) {
-        queueOnMainThread([this, reqPage, now, results, finished]() {
+    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqPage, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
             
             if (finished) {
@@ -1597,14 +1597,9 @@ void App::loadHomeFeeds() {
             }
             
             if (!results.empty()) {
+                homeLoadFailed_ = false;
                 bool isFirstCard = home_grid_->cards.empty();
                 for (const auto& v : results) {
-                    bool inHistory = false;
-                    for (const auto& hv : playback_history_) {
-                        if (hv.id == v.id) { inHistory = true; break; }
-                    }
-                    if (inHistory) continue;
-                    
                     auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
                     card->onClick = [this, v]() { playVideo(v); };
                     home_grid_->addCard(card);
@@ -1753,7 +1748,7 @@ void App::updateHoverPreviews() {
                     }
                     uiDirty_ = true;
                 });
-            });
+            }, true /* isPreview */);
         }
     }
 

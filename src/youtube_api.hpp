@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <optional>
+#include <sstream>
 #include "json.hpp"
 
 struct YouTubeVideo {
@@ -23,14 +24,22 @@ public:
     ~YouTubeAPI();
 
     // Async search with pagination. page is 1-indexed.
-    void search(const std::string& query, int page, std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback);
+    void search(const std::string& query, int page,
+        std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback);
 
     // Get direct playback URL for libmpv.
-    void getStreamUrl(const std::string& video_id, int max_height, std::function<void(bool success, const std::string& url)> callback);
+    // isPreview=true uses a separate request counter so preview prefetches
+    // don't cancel main playback resolutions and vice versa.
+    void getStreamUrl(const std::string& video_id, int max_height,
+        std::function<void(bool success, const std::string& url)> callback,
+        bool isPreview = false);
 
 private:
     std::string executeCommand(const std::string& cmd);
     static std::string sanitizeShellText(const std::string& value);
+
+    // Separate counters so preview and main stream requests don't interfere.
     std::atomic<int> current_stream_request_id_{0};
+    std::atomic<int> current_preview_request_id_{0};
     std::atomic<int> current_search_request_id_{0};
 };
