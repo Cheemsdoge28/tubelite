@@ -193,7 +193,7 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
         if (preview_tex_) {
             SDL_DestroyTexture(preview_tex_);
         }
-        preview_tex_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+        preview_tex_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
                                          SDL_TEXTUREACCESS_TARGET, w, h);
         preview_tex_w_ = w;
         preview_tex_h_ = h;

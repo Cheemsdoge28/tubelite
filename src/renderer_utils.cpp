@@ -170,8 +170,8 @@ SDL_Texture* g_solid_corner_texture = nullptr;
 static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
     FontAtlas atlas;
 
-    // cell_h: use line_skip so every glyph (including deep descenders) fits without clipping.
-    int cell_h  = TTF_FontLineSkip(font);
+    // cell_h: use line height + 8 padding so every glyph fits without clipping.
+    int cell_h  = TTF_FontHeight(font) + 8;
 
     // Measure the widest advance in the printable ASCII range.
     int max_adv = 0;
@@ -181,7 +181,7 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
         if (adv > max_adv) max_adv = adv;
     }
     // Also consider the rendered glyph pixel width (e.g. italic overhang).
-    int cell_w = max_adv + 4; // +4px safety margin
+    int cell_w = max_adv + 8; // +8px safety margin
 
     // Pack 96 printable ASCII chars (32..126) into a square-ish atlas.
     int cols = 16;
@@ -208,11 +208,38 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
 
         SDL_Surface* glyph_surf = TTF_RenderGlyph_Blended(font, ch, {255, 255, 255, 255});
         if (glyph_surf) {
-            // Clamp blit to stay within cell bounds.
-            int blit_w = std::min(glyph_surf->w, cell_w);
-            int blit_h = std::min(glyph_surf->h, cell_h);
-            SDL_Rect src_clip{0, 0, blit_w, blit_h};
-            SDL_Rect dst{col * cell_w, row * cell_h, blit_w, blit_h};
+            // Shift the glyph blit y-origin by offset_y = atlas.ascent - maxy
+            // and shift x-origin by 4 + minx
+            int dst_x = col * cell_w + 4 + minx;
+            int dst_y = row * cell_h + (atlas.ascent - maxy);
+
+            int src_x = 0;
+            int src_y = 0;
+            int blit_w = glyph_surf->w;
+            int blit_h = glyph_surf->h;
+
+            // Clip boundaries to stay strictly within the current cell
+            if (dst_x < col * cell_w) {
+                int diff = (col * cell_w) - dst_x;
+                src_x += diff;
+                dst_x += diff;
+                blit_w -= diff;
+            }
+            if (dst_x + blit_w > (col + 1) * cell_w) {
+                blit_w = ((col + 1) * cell_w) - dst_x;
+            }
+            if (dst_y < row * cell_h) {
+                int diff = (row * cell_h) - dst_y;
+                src_y += diff;
+                dst_y += diff;
+                blit_h -= diff;
+            }
+            if (dst_y + blit_h > (row + 1) * cell_h) {
+                blit_h = ((row + 1) * cell_h) - dst_y;
+            }
+
+            SDL_Rect src_clip{src_x, src_y, std::max(0, blit_w), std::max(0, blit_h)};
+            SDL_Rect dst{dst_x, dst_y, std::max(0, blit_w), std::max(0, blit_h)};
 
             SDL_BlendMode prev_mode;
             SDL_GetSurfaceBlendMode(glyph_surf, &prev_mode);
@@ -221,8 +248,8 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
             SDL_SetSurfaceBlendMode(glyph_surf, prev_mode);
 
             GlyphInfo& info = atlas.glyphs[ch];
-            // src_rect uses clamped size so we never read past cell boundary.
-            info.src_rect = {col * cell_w, row * cell_h, blit_w, blit_h};
+            // Store full cell coordinates
+            info.src_rect = {col * cell_w, row * cell_h, cell_w, cell_h};
             info.minx  = minx;
             info.maxx  = maxx;
             info.miny  = miny;
@@ -232,7 +259,7 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
             SDL_FreeSurface(glyph_surf);
         } else {
             GlyphInfo& info = atlas.glyphs[ch];
-            info.src_rect = {col * cell_w, row * cell_h, 0, 0};
+            info.src_rect = {col * cell_w, row * cell_h, cell_w, cell_h};
             info.minx = info.maxx = info.miny = info.maxy = 0;
             info.advance = advance > 0 ? advance : cell_w / 4;
         }
@@ -433,10 +460,9 @@ void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int
             unsigned char ch = text[i];
             if (ch >= 32 && ch < 127) {
                 const GlyphInfo& info = atlas->glyphs[ch];
-                if (info.src_rect.w > 0) {
-                    // Align the glyph's top to the shared font baseline
-                    int draw_y = y + (atlas->ascent - info.maxy);
-                    int draw_x = cursor_x + info.minx;
+                if (info.maxx > info.minx && info.maxy > info.miny) {
+                    int draw_x = cursor_x - 4;
+                    int draw_y = y;
                     SDL_Rect dst{draw_x, draw_y, info.src_rect.w, info.src_rect.h};
                     SDL_RenderCopy(renderer, atlas->texture, &info.src_rect, &dst);
                 }

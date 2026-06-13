@@ -27,13 +27,13 @@ struct ThumbAtlasEntry {
  */
 class ThumbnailAtlas {
 public:
-    static constexpr int SLOT_W    = 160;
-    static constexpr int SLOT_H    = 90;
+    static constexpr int SLOT_W    = 320;
+    static constexpr int SLOT_H    = 180;
     static constexpr int PAGE_COLS = 4;
     static constexpr int PAGE_ROWS = 4;
     static constexpr int PER_PAGE  = PAGE_COLS * PAGE_ROWS;  // 16 slots per page
-    static constexpr int PAGE_W    = PAGE_COLS * SLOT_W;     // 640 px
-    static constexpr int PAGE_H    = PAGE_ROWS * SLOT_H;     // 360 px
+    static constexpr int PAGE_W    = PAGE_COLS * SLOT_W;     // 1280 px
+    static constexpr int PAGE_H    = PAGE_ROWS * SLOT_H;     // 720 px
 
     explicit ThumbnailAtlas(SDL_Renderer* renderer, int max_pages = 3);
     ~ThumbnailAtlas();
