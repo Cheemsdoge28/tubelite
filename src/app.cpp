@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -379,18 +380,17 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
 
     // ── Title (left) ─────────────────────────────────────────────────────────
     int titleScale = searchScreen ? 2 : 3;
-    int titleW = searchScreen ? headerTitleW_Search_ : headerTitleW_Home_;
     int titleH = searchScreen ? headerTitleH_Search_ : headerTitleH_Home_;
     int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
     SDL_Color titleColor = searchScreen ? SDL_Color{255, 80, 80, 255} : SDL_Color{255, 52, 52, 255};
     drawTextShadow(renderer_, 16, titleY, title, titleScale, titleColor);
 
     if (!searchScreen) {
-        // ── "TRENDING NOW" sub-label (visible when expanded) ─────────────────
+        // ── "RECOMMENDED" sub-label (visible when expanded) ──────────────────
         if (t > 0.25f) {
             Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.25f) / 0.5f));
             drawText(renderer_, 18, titleY + titleH + 5,
-                     "TRENDING NOW", 1, {90, 90, 100, alpha});
+                     "RECOMMENDED", 1, {90, 90, 100, alpha});
         }
 
     } else {
@@ -1562,9 +1562,6 @@ void App::loadHomeFeeds() {
         home_grid_->cards.clear();
         for (const auto& v : cached_trending_videos_) {
             auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-            if (v.title.find("⏳") == 0) {
-                card->title = v.title;
-            }
             card->onClick = [this, v]() { playVideo(v); };
             home_grid_->addCard(card);
         }
@@ -1577,42 +1574,8 @@ void App::loadHomeFeeds() {
     focus_manager_.setGrid(home_grid_);
     cached_trending_videos_.clear();
     
-    int historyCount = 0;
-    std::string recommendationQuery = "";
-    
-    if (!playback_history_.empty()) {
-        for (auto it = playback_history_.rbegin(); it != playback_history_.rend(); ++it) {
-            if (historyCount++ >= 8) break;
-            auto v = *it;
-            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-            card->title = "⏳ " + v.title;
-            card->onClick = [this, v]() { playVideo(v); };
-            home_grid_->addCard(card);
-        }
-        
-        // Find up to 3 unique authors in history to build a mixed recommendation query
-        std::vector<std::string> uniqueAuthors;
-        for (auto it = playback_history_.rbegin(); it != playback_history_.rend(); ++it) {
-            if (!it->author.empty() && std::find(uniqueAuthors.begin(), uniqueAuthors.end(), it->author) == uniqueAuthors.end()) {
-                uniqueAuthors.push_back(it->author);
-                if (uniqueAuthors.size() >= 3) break;
-            }
-        }
-        
-        if (!uniqueAuthors.empty()) {
-            for (size_t i = 0; i < uniqueAuthors.size(); ++i) {
-                if (i > 0) recommendationQuery += " OR ";
-                recommendationQuery += "\"" + uniqueAuthors[i] + "\"";
-            }
-        }
-    }
-    
-    if (recommendationQuery.empty()) {
-        recommendationQuery = "lofi music OR science OR tech OR gaming OR news";
-    }
-    
-    home_grid_->title = playback_history_.empty() ? "Personal Feed" : "History & Recommendations";
-    home_feed_query_ = recommendationQuery;
+    home_grid_->title = "Recommended";
+    home_feed_query_ = "https://www.youtube.com/";
     
     int reqPage = home_page_;
     youtube_api_.search(home_feed_query_, reqPage, [this, reqPage, now](const std::vector<YouTubeVideo>& results, bool finished) {
