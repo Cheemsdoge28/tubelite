@@ -287,19 +287,48 @@ void YouTubeAPI::search(const std::string& query, int page,
 }
 
 static std::string extractSubtitleUrl(const json& j) {
+    // Helper lambda to find the best url in a language track list (preferring vtt/srt over json3)
+    auto findBestSubUrl = [](const json& track_list) -> std::string {
+        if (!track_list.is_array() || track_list.empty()) return "";
+        
+        // 1. First pass: look for vtt or srt
+        for (const auto& item : track_list) {
+            if (item.is_object()) {
+                std::string ext = item.value("ext", "");
+                if (ext == "vtt" || ext == "srt") {
+                    std::string url = item.value("url", "");
+                    if (!url.empty()) return url;
+                }
+            }
+        }
+        
+        // 2. Second pass: fallback to any format that is not json3 (e.g. ttml, srv1, srv2, srv3)
+        for (const auto& item : track_list) {
+            if (item.is_object()) {
+                std::string ext = item.value("ext", "");
+                if (ext != "json3") {
+                    std::string url = item.value("url", "");
+                    if (!url.empty()) return url;
+                }
+            }
+        }
+        
+        // 3. Third pass: last resort, return whatever is available
+        for (const auto& item : track_list) {
+            if (item.is_object()) {
+                std::string url = item.value("url", "");
+                if (!url.empty()) return url;
+            }
+        }
+        return "";
+    };
+
     // 1. Manual English subtitles
     if (j.contains("subtitles")) {
         const auto& subs = j["subtitles"];
         if (subs.is_object() && subs.contains("en")) {
-            const auto& en_subs = subs["en"];
-            if (en_subs.is_array() && !en_subs.empty()) {
-                for (const auto& item : en_subs) {
-                    if (item.is_object() && item.contains("url")) {
-                        std::string url = item.value("url", "");
-                        if (!url.empty()) return url;
-                    }
-                }
-            }
+            std::string url = findBestSubUrl(subs["en"]);
+            if (!url.empty()) return url;
         }
     }
 
@@ -308,14 +337,8 @@ static std::string extractSubtitleUrl(const json& j) {
         const auto& subs = j["subtitles"];
         if (subs.is_object()) {
             for (auto it = subs.begin(); it != subs.end(); ++it) {
-                if (it.value().is_array() && !it.value().empty()) {
-                    for (const auto& item : it.value()) {
-                        if (item.is_object() && item.contains("url")) {
-                            std::string url = item.value("url", "");
-                            if (!url.empty()) return url;
-                        }
-                    }
-                }
+                std::string url = findBestSubUrl(it.value());
+                if (!url.empty()) return url;
             }
         }
     }
@@ -324,15 +347,8 @@ static std::string extractSubtitleUrl(const json& j) {
     if (j.contains("automatic_captions")) {
         const auto& caps = j["automatic_captions"];
         if (caps.is_object() && caps.contains("en")) {
-            const auto& en_caps = caps["en"];
-            if (en_caps.is_array() && !en_caps.empty()) {
-                for (const auto& item : en_caps) {
-                    if (item.is_object() && item.contains("url")) {
-                        std::string url = item.value("url", "");
-                        if (!url.empty()) return url;
-                    }
-                }
-            }
+            std::string url = findBestSubUrl(caps["en"]);
+            if (!url.empty()) return url;
         }
     }
 
@@ -341,14 +357,8 @@ static std::string extractSubtitleUrl(const json& j) {
         const auto& caps = j["automatic_captions"];
         if (caps.is_object()) {
             for (auto it = caps.begin(); it != caps.end(); ++it) {
-                if (it.value().is_array() && !it.value().empty()) {
-                    for (const auto& item : it.value()) {
-                        if (item.is_object() && item.contains("url")) {
-                            std::string url = item.value("url", "");
-                            if (!url.empty()) return url;
-                        }
-                    }
-                }
+                std::string url = findBestSubUrl(it.value());
+                if (!url.empty()) return url;
             }
         }
     }
