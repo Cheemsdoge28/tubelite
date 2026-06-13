@@ -865,7 +865,10 @@ void App::renderFrame() {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
-        mpv_player_.render(width, height);  // blits video texture fullscreen
+        SDL_Texture* playTex = mpv_player_.renderToTexture(renderer_, width, height);
+        if (playTex) {
+            SDL_RenderCopy(renderer_, playTex, nullptr, nullptr);
+        }
     } else {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // #0f0f0f background

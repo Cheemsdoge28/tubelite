@@ -1,12 +1,9 @@
 #pragma once
+#include <SDL2/SDL.h>
 #include <string>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <GLES2/gl2.h>
-
-struct SDL_Window;
-struct SDL_Renderer;
-struct SDL_Texture;
 
 // MpvPlayer manages a libmpv instance and its GLES render context.
 //
