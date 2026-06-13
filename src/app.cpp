@@ -961,45 +961,96 @@ void App::renderFrame() {
     if (!shouldPresent) return;
 
     if (state_.currentScreen == TubeState::Screen::Playback) {
+        // ── Playback: mpv renders directly to the display framebuffer (FBO=0) ──
+        // Do NOT use renderToTexture here – redirecting mpv into a side texture
+        // requires re-entering the EGL context mid-frame which races with mpv's
+        // internal decode thread and causes segfaults on KMSDRM/RK3326.
+        //
+        // Sequence:
+        //   1. SDL draws the black background & UI overlay into its command buffer.
+        //   2. SDL_RenderFlush pushes those SDL commands to GL (they go to FBO=0).
+        //   3. mpv_player_.render() renders video into FBO=0 (behind everything).
+        //   4. SDL_RenderPresent swaps the buffer.
+        //
+        // Because mpv uses keepaspect + its own viewport, we just clear black and
+        // let mpv handle aspect-ratio letterboxing.
+
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
 
-        int64_t vw = mpv_player_.getPropertyInt("video-params/w");
-        int64_t vh = mpv_player_.getPropertyInt("video-params/h");
-        int playW = width;
-        int playH = height;
-        SDL_Rect dstRect{0, 0, width, height};
+        // Draw the UI overlay layers (HUD, loading spinner, overlays) into SDL's
+        // command buffer – they will be composited on top after mpv renders.
+        if (state_.showUi) {
+            renderPlaybackOverlay(width, height);
+        }
 
-        if (vw > 0 && vh > 0) {
-            double aspect = static_cast<double>(vw) / vh;
-            double screenAspect = static_cast<double>(width) / height;
-            if (aspect > screenAspect) {
-                playW = width;
-                playH = static_cast<int>(width / aspect);
-                dstRect.w = width;
-                dstRect.h = playH;
-                dstRect.x = 0;
-                dstRect.y = (height - playH) / 2;
-            } else {
-                playW = static_cast<int>(height * aspect);
-                playH = height;
-                dstRect.w = playW;
-                dstRect.h = height;
-                dstRect.x = (width - playW) / 2;
-                dstRect.y = 0;
+        if (state_.isLoadingVideo) {
+            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
+            SDL_Rect bg{0, 0, width, height};
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            SDL_RenderFillRect(renderer_, &bg);
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+
+            float time = SDL_GetTicks() / 1000.0f;
+            drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
+            drawTextCentered(renderer_, width / 2, height / 2 + 25, loading_status_text_, 2, {255, 255, 255, 255}, true);
+            uiDirty_ = true;
+        }
+
+        // Volume / speed overlays
+        {
+            auto now = std::chrono::steady_clock::now();
+            bool volumeActive = (now < volume_overlay_timeout_);
+            bool speedActive  = (now < speed_overlay_timeout_);
+
+            static bool lastVolumeActive = false;
+            static bool lastSpeedActive  = false;
+            if (volumeActive || speedActive || lastVolumeActive || lastSpeedActive) uiDirty_ = true;
+            lastVolumeActive = volumeActive;
+            lastSpeedActive  = speedActive;
+
+            if (volumeActive) {
+                int boxW = 200, boxH = 36;
+                int boxX = (width - boxW) / 2, boxY = 64;
+                SDL_Rect r{boxX, boxY, boxW, boxH};
+                fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
+                drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
+                char volBuf[32];
+                snprintf(volBuf, sizeof(volBuf), "Volume: %d%%", state_.volume);
+                drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, volBuf, 1, {255, 255, 255, 255}, true);
+            }
+            if (speedActive) {
+                int boxW = 200, boxH = 36;
+                int boxX = (width - boxW) / 2, boxY = 64;
+                SDL_Rect r{boxX, boxY, boxW, boxH};
+                fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
+                drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
+                char speedBuf[32];
+                snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", state_.speed);
+                drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, speedBuf, 1, {255, 255, 255, 255}, true);
             }
         }
 
-        SDL_Texture* playTex = mpv_player_.renderToTexture(renderer_, playW, playH);
-        if (playTex) {
-            SDL_RenderCopy(renderer_, playTex, nullptr, &dstRect);
-        }
-    } else {
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // #0f0f0f background
-        SDL_RenderClear(renderer_);
+        keyboard_.render(renderer_, state_, width, height, uiDirty_);
+
+        // Flush SDL commands to GL, then let mpv composite video underneath.
+        // mpv's render() will call SDL_RenderFlush itself before touching GL.
+        mpv_player_.render(width, height);
+
+        // After mpv renders to FBO=0, SDL_RenderPresent swaps the buffer.
+        SDL_RenderPresent(renderer_);
+        uiDirty_ = false;
+
+        auto render_end = std::chrono::steady_clock::now();
+        render_latency_ms_ = std::chrono::duration<float, std::milli>(render_end - render_start).count();
+        return; // skip the rest of the generic render path
     }
+
+    // ── Browse / Search screens ───────────────────────────────────────────────
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255);
+    SDL_RenderClear(renderer_);
 
     auto currentGrid = activeGrid();
     float scrollY = currentGrid ? currentGrid->scrollY : 0.0f;
@@ -1079,13 +1130,9 @@ void App::renderFrame() {
         uiDirty_ = true;
     }
 
-    // Playback HUD (progress, title, controls) or browse status bar
+    // Browse status bar
     if (state_.showUi) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            renderPlaybackOverlay(width, height);
-        } else {
-            status_.render(renderer_, state_, width, height, uiDirty_);
-        }
+        status_.render(renderer_, state_, width, height, uiDirty_);
     }
     
     // Loading overlay
