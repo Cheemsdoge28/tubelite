@@ -167,11 +167,6 @@ void MpvPlayer::render(int winWidth, int winHeight) {
     if (has_custom_geometry_) {
         rx = target_x_; ry = target_y_;
         rw = target_w_; rh = target_h_;
-        static int last_ry = -9999;
-        if (ry != last_ry) {
-            std::cerr << "[mpv GL] ry: " << ry << ", winHeight: " << winHeight << ", gl_y: " << (winHeight - ry - rh) << "\n";
-            last_ry = ry;
-        }
     } else {
         rx = 0; ry = 0; rw = winWidth; rh = winHeight;
     }

@@ -288,24 +288,6 @@ void App::renderBrowseHeader(int width, int /*height*/, const std::string& title
     drawTextShadow(renderer_, 16, titleY, title, titleScale, titleColor);
 
     if (!searchScreen) {
-        // ── Home: "Y  SEARCH" pill on the right ──────────────────────────────
-        const char* yLabel = "Y";
-        const char* srchLabel = "  SEARCH";
-        int yw = 0, yh = 0, sw = 0;
-        getTextSize(yLabel, 1, &yw, &yh);
-        getTextSize(srchLabel, 1, &sw, nullptr);
-        int pillW = yw + sw + 18;
-        int pillH = yh + 8;
-        int pillX = width - pillW - 12;
-        int pillY = (headerHeight - pillH) / 2;
-
-        SDL_Rect pill{pillX, pillY, pillW, pillH};
-        fillRoundedRect(renderer_, pill, 5, {28, 28, 32, 220});
-        drawRoundedRect(renderer_, pill, 5, {70, 70, 82, 180});
-        // "Y" in accent red, rest dim
-        drawText(renderer_, pillX + 9, pillY + 4, yLabel,   1, {255, 52, 52, 255});
-        drawText(renderer_, pillX + 9 + yw, pillY + 4, srchLabel, 1, {160, 160, 170, 255});
-
         // ── "TRENDING NOW" sub-label (visible when expanded) ─────────────────
         if (t > 0.25f) {
             Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.25f) / 0.5f));
@@ -758,10 +740,13 @@ void App::renderFrame() {
                 renderBrowseLoadingState(width, height, "Loading Trending...");
             }
         } else {
-            home_grid_->render(renderer_, 0.0f, 0.0f);
+            // Render mpv FIRST into FBO=0 (the region is already scissored to thumb area).
+            // SDL then draws the grid on top — the previewing card leaves a blank thumb hole
+            // so the video underneath shows through correctly.
             if (is_playing_preview_) {
                 mpv_player_.render(width, height);
             }
+            home_grid_->render(renderer_, 0.0f, 0.0f);
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         auto focusedCard = focus_manager_.getFocusedCard();
@@ -777,10 +762,11 @@ void App::renderFrame() {
                 drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, {150, 150, 150, 255});
             }
         } else {
-            search_grid_->render(renderer_, 0.0f, 0.0f);
+            // Same render order: mpv first, SDL grid on top.
             if (is_playing_preview_) {
                 mpv_player_.render(width, height);
             }
+            search_grid_->render(renderer_, 0.0f, 0.0f);
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
         renderBrowseHeader(width, height, "Search", scrollY, true);
@@ -1407,11 +1393,6 @@ void App::updateHoverPreviews() {
                 focusedCard->bounds.x >= grid->bounds.x &&
                 focusedCard->bounds.x + thumbW <= grid->bounds.x + grid->bounds.w;
 
-            static float last_screenY = -9999.0f;
-            if (std::abs(screenY - last_screenY) > 0.01f) {
-                std::cerr << "[app preview ongoing] cardY: " << focusedCard->bounds.y << ", scrollY: " << grid->scrollY << ", screenY: " << screenY << ", x: " << focusedCard->bounds.x << ", w: " << focusedCard->bounds.w << ", h: " << focusedCard->bounds.h << "\n";
-                last_screenY = screenY;
-            }
 
             if (!fullyVisible || screenY < 96.0f) {
                 stopBrowsePreviewState();
@@ -1461,7 +1442,6 @@ void App::updateHoverPreviews() {
             focusedCard->bounds.x >= grid->bounds.x &&
             focusedCard->bounds.x + thumbW <= grid->bounds.x + grid->bounds.w;
 
-        std::cerr << "[app preview start] cardY: " << focusedCard->bounds.y << ", scrollY: " << grid->scrollY << ", screenY: " << screenY << ", x: " << focusedCard->bounds.x << ", w: " << focusedCard->bounds.w << ", h: " << focusedCard->bounds.h << ", fullyVisible: " << fullyVisible << "\n";
 
         if (!fullyVisible || screenY < 96.0f) {
             return;

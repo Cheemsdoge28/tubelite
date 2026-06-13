@@ -28,8 +28,9 @@ struct FontAtlas {
     int tex_width = 0;
     int tex_height = 0;
     std::array<GlyphInfo, 128> glyphs;
-    int line_skip = 0;
-    int ascent = 0;
+    int line_skip  = 0;
+    int ascent     = 0;
+    int cap_height = 0; // ascent + |descent| — visual line height for centering
 };
 
 extern FontAtlas g_atlas_small;

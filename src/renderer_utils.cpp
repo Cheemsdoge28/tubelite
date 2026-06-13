@@ -169,60 +169,81 @@ SDL_Texture* g_solid_corner_texture = nullptr;
 
 static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
     FontAtlas atlas;
-    int slot_w = 32;
-    int slot_h = 32;
-    int cols = 16;
-    int rows = 8;
-    
-    SDL_Surface* atlas_surface = SDL_CreateRGBSurfaceWithFormat(0, cols * slot_w, rows * slot_h, 32, SDL_PIXELFORMAT_RGBA32);
-    if (!atlas_surface) return atlas;
-    
-    SDL_FillRect(atlas_surface, nullptr, 0x00000000);
-    
-    atlas.line_skip = TTF_FontLineSkip(font);
-    atlas.ascent = TTF_FontAscent(font);
-    
+
+    // Compute slot size from font metrics to prevent glyph overflow into adjacent rows.
+    int ascent  = TTF_FontAscent(font);
+    int descent = -TTF_FontDescent(font); // TTF descent is negative; flip to positive
+    int cell_h  = ascent + descent + 2;  // +2px padding
+
+    // Measure the widest glyph in the printable ASCII range.
+    int max_adv = 0;
     for (int ch = 32; ch < 127; ++ch) {
-        int col = (ch - 32) % cols;
-        int row = (ch - 32) / cols;
-        
+        int adv = 0;
+        TTF_GlyphMetrics(font, ch, nullptr, nullptr, nullptr, nullptr, &adv);
+        if (adv > max_adv) max_adv = adv;
+    }
+    int cell_w = max_adv + 2; // +2px padding
+
+    // Pack 96 printable ASCII chars (32..126) into a square-ish atlas.
+    int cols = 16;
+    int rows = 6;  // ceil(95 / 16) = 6
+
+    SDL_Surface* atlas_surface = SDL_CreateRGBSurfaceWithFormat(
+        0, cols * cell_w, rows * cell_h, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!atlas_surface) return atlas;
+
+    SDL_FillRect(atlas_surface, nullptr, 0x00000000);
+
+    atlas.line_skip = TTF_FontLineSkip(font);
+    atlas.ascent    = ascent;
+    // Store cap-height as the "visual" line height (ascent only, no external leading).
+    // getTextSize() returns this so vertical-centering math works correctly.
+    atlas.cap_height = ascent + descent;
+
+    for (int ch = 32; ch < 127; ++ch) {
+        int idx = ch - 32;
+        int col = idx % cols;
+        int row = idx / cols;
+
         int minx = 0, maxx = 0, miny = 0, maxy = 0, advance = 0;
         TTF_GlyphMetrics(font, ch, &minx, &maxx, &miny, &maxy, &advance);
-        
+
         SDL_Surface* glyph_surf = TTF_RenderGlyph_Blended(font, ch, {255, 255, 255, 255});
         if (glyph_surf) {
-            SDL_Rect dst{col * slot_w, row * slot_h, glyph_surf->w, glyph_surf->h};
-            
+            // Clamp blit to stay within cell bounds.
+            int blit_w = std::min(glyph_surf->w, cell_w);
+            int blit_h = std::min(glyph_surf->h, cell_h);
+            SDL_Rect src_clip{0, 0, blit_w, blit_h};
+            SDL_Rect dst{col * cell_w, row * cell_h, blit_w, blit_h};
+
             SDL_BlendMode prev_mode;
             SDL_GetSurfaceBlendMode(glyph_surf, &prev_mode);
             SDL_SetSurfaceBlendMode(glyph_surf, SDL_BLENDMODE_NONE);
-            SDL_BlitSurface(glyph_surf, nullptr, atlas_surface, &dst);
+            SDL_BlitSurface(glyph_surf, &src_clip, atlas_surface, &dst);
             SDL_SetSurfaceBlendMode(glyph_surf, prev_mode);
-            
+
             GlyphInfo& info = atlas.glyphs[ch];
-            info.src_rect = {col * slot_w, row * slot_h, glyph_surf->w, glyph_surf->h};
-            info.minx = minx;
-            info.maxx = maxx;
-            info.miny = miny;
-            info.maxy = maxy;
+            // src_rect uses clamped size so we never read past cell boundary.
+            info.src_rect = {col * cell_w, row * cell_h, blit_w, blit_h};
+            info.minx  = minx;
+            info.maxx  = maxx;
+            info.miny  = miny;
+            info.maxy  = maxy;
             info.advance = advance;
-            
+
             SDL_FreeSurface(glyph_surf);
         } else {
             GlyphInfo& info = atlas.glyphs[ch];
-            info.src_rect = {col * slot_w, row * slot_h, 0, 0};
-            info.minx = 0;
-            info.maxx = 0;
-            info.miny = 0;
-            info.maxy = 0;
-            info.advance = advance > 0 ? advance : slot_w / 4;
+            info.src_rect = {col * cell_w, row * cell_h, 0, 0};
+            info.minx = info.maxx = info.miny = info.maxy = 0;
+            info.advance = advance > 0 ? advance : cell_w / 4;
         }
     }
-    
-    atlas.texture = SDL_CreateTextureFromSurface(renderer, atlas_surface);
-    atlas.tex_width = atlas_surface->w;
+
+    atlas.texture    = SDL_CreateTextureFromSurface(renderer, atlas_surface);
+    atlas.tex_width  = atlas_surface->w;
     atlas.tex_height = atlas_surface->h;
-    
+
     SDL_FreeSurface(atlas_surface);
     return atlas;
 }
@@ -505,7 +526,9 @@ void getTextSize(const std::string& text, int scale, int* w, int* h) {
             }
         }
         if (w) *w = width;
-        if (h) *h = atlas->line_skip;
+        // Return cap_height (ascent + |descent|) instead of line_skip so callers
+        // can vertically-centre text without the extra external leading.
+        if (h) *h = (atlas->cap_height > 0) ? atlas->cap_height : atlas->line_skip;
         return;
     }
     

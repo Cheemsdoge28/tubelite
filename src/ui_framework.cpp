@@ -155,6 +155,12 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         layout_cached_ = true;
     }
     
+    int titleH = 0;
+    getTextSize("Ay", 2, nullptr, &titleH);  // cap_height for scale-2 font
+    int metaH = 0;
+    getTextSize("Ay", 1, nullptr, &metaH);   // cap_height for scale-1 font
+    const int lineGap = 5;
+
     if (titleW_ > maxPixelW) {
         if (focused && focusedTime_ > 1.5f) {
             int maxScroll = titleW_ - maxPixelW + 20;
@@ -168,7 +174,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
                 }
             }
             
-            SDL_Rect textClip{textX, textY, maxPixelW, 30};
+            SDL_Rect textClip{textX, textY, maxPixelW, titleH + 4};
             SDL_Rect oldClip;
             SDL_RenderGetClipRect(renderer, &oldClip);
             SDL_bool hasOldClip = SDL_RenderIsClipEnabled(renderer);
@@ -195,19 +201,21 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         drawText(renderer, textX, textY, video.title, 2, {240, 240, 240, 255});
     }
     
-    drawText(renderer, textX, textY + 25, truncated_meta_, 1, {150, 150, 150, 255});
+    // Meta line: offset by measured title height + small gap
+    drawText(renderer, textX, textY + titleH + lineGap, truncated_meta_, 1, {150, 150, 150, 255});
     
-    if (!video.duration_string.empty()) {
+    if (!video.duration_string.empty() && !is_previewing) {
         int durW = 0, durH = 0;
         getTextSize(video.duration_string, 1, &durW, &durH);
         int pillW = durW + 8;
         int pillH = durH + 4;
         int pillX = cardRect.x + thumbW - pillW - 6;
         int pillY = cardRect.y + thumbH - pillH - 6;
+        int textPillY = pillY + (pillH - durH) / 2;
         
         SDL_Rect pillRect{pillX, pillY, pillW, pillH};
         fillRoundedRect(renderer, pillRect, 3, {0, 0, 0, 180});
-        drawText(renderer, pillX + 4, pillY + 2, video.duration_string, 1, {255, 255, 255, 255});
+        drawText(renderer, pillX + 4, textPillY, video.duration_string, 1, {255, 255, 255, 255});
     }
 
     // maskRoundedCorners paints background-colour pixels into the corners; when
