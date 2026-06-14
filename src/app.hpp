@@ -30,6 +30,7 @@ public:
 
     bool initialize();
     void run();
+    static void getSystemMemoryAndStorage(double& ram_used_mb, double& storage_free_gb, double& storage_total_gb);
 
 private:
     void shutdown();

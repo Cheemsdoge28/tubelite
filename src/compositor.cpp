@@ -330,7 +330,7 @@ void Compositor::render(App* app, int width, int height) {
         static uint32_t last_sys_poll = 0;
         uint32_t now_ticks = SDL_GetTicks();
         if (now_ticks - last_sys_poll >= 1000) {
-            getSystemMemoryAndStorage(cached_ram, cached_storage_free, cached_storage_total);
+            App::getSystemMemoryAndStorage(cached_ram, cached_storage_free, cached_storage_total);
             last_sys_poll = now_ticks;
         }
         std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", cached_ram);

@@ -479,22 +479,9 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
 
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
 
-    // Bind the texture to retrieve its OpenGL texture ID
-    float texw = 0.0f, texh = 0.0f;
-    SDL_GL_BindTexture(preview_tex_, &texw, &texh);
-
-    GLint texture_id = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture_id);
-
-    SDL_GL_UnbindTexture(preview_tex_);
-
-    if (preview_fbo_ == 0) {
-        glGenFramebuffers(1, &preview_fbo_);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, preview_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_id, 0);
-
     // Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
+    GLint last_framebuffer = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &last_framebuffer);
     GLint last_program = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
     GLint last_array_buffer = 0;
@@ -516,6 +503,21 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     GLint last_scissor_box[4];
     glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
 
+    // Bind the texture to retrieve its OpenGL texture ID
+    float texw = 0.0f, texh = 0.0f;
+    SDL_GL_BindTexture(preview_tex_, &texw, &texh);
+
+    GLint texture_id = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture_id);
+
+    SDL_GL_UnbindTexture(preview_tex_);
+
+    if (preview_fbo_ == 0) {
+        glGenFramebuffers(1, &preview_fbo_);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, preview_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_id, 0);
+
     glViewport(0, 0, w, h);
     glDisable(GL_SCISSOR_TEST);
 
@@ -534,6 +536,7 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     mpv_render_context_render(mpv_gl_, rparams);
 
     // Restore saved GLES2 state
+    glBindFramebuffer(GL_FRAMEBUFFER, last_framebuffer);
     glUseProgram(last_program);
     glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);

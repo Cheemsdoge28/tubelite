@@ -6,6 +6,7 @@
 void drawGlyph(SDL_Renderer* renderer, int x, int y, char ch, int scale, SDL_Color color);
 void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color);
 void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color);
+void drawTextCentered(SDL_Renderer* renderer, int centerX, int y, const std::string& text, int scale, SDL_Color color, bool shadow = false);
 std::string utf8Truncate(const std::string& text, size_t maxCodepoints, bool ellipsis = false);
 std::string utf8Slice(const std::string& text, size_t startCodepoint, size_t maxCodepoints);
 size_t utf8Length(const std::string& text);

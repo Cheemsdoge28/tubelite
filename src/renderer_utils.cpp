@@ -462,6 +462,17 @@ void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& tex
     drawText(renderer, x, y, text, scale, color);
 }
 
+void drawTextCentered(SDL_Renderer* renderer, int centerX, int y, const std::string& text, int scale, SDL_Color color, bool shadow) {
+    int w = 0, h = 0;
+    getTextSize(text, scale, &w, &h);
+    int x = centerX - w / 2;
+    if (shadow) {
+        drawTextShadow(renderer, x, y, text, scale, color);
+    } else {
+        drawText(renderer, x, y, text, scale, color);
+    }
+}
+
 void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     struct Point2D { float x; float y; };

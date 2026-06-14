@@ -28,7 +28,7 @@ static std::string getAppDataPath(const std::string& filename) {
 #endif
 }
 
-static void getSystemMemoryAndStorage(double& ram_used_mb, double& storage_free_gb, double& storage_total_gb) {
+void App::getSystemMemoryAndStorage(double& ram_used_mb, double& storage_free_gb, double& storage_total_gb) {
     ram_used_mb = 0.0;
     storage_free_gb = 0.0;
     storage_total_gb = 0.0;
@@ -72,16 +72,6 @@ static void getSystemMemoryAndStorage(double& ram_used_mb, double& storage_free_
 // static void logInfo(const std::string& msg) { std::cout << "[INFO] " << msg << std::endl; }
 static void logError(const std::string& msg) { std::cerr << "[ERROR] " << msg << std::endl; }
 
-static void drawTextCentered(SDL_Renderer* renderer, int centerX, int y, const std::string& text, int scale, SDL_Color color, bool shadow = false) {
-    int w = 0, h = 0;
-    getTextSize(text, scale, &w, &h);
-    int x = centerX - w / 2;
-    if (shadow) {
-        drawTextShadow(renderer, x, y, text, scale, color);
-    } else {
-        drawText(renderer, x, y, text, scale, color);
-    }
-}
 
 App::~App() { shutdown(); }
 
