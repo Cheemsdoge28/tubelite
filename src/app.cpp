@@ -367,7 +367,6 @@ void App::stopBrowsePreviewState() {
     if (is_playing_preview_) {
         mpv_player_.stop();
         mpv_player_.setMute(state_.muted);
-        mpv_player_.destroyPreviewTexture();
     }
     if (preview_card_) {
         preview_card_->is_previewing = false;

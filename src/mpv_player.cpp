@@ -176,11 +176,6 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
 
 
 void MpvPlayer::shutdown() {
-    if (preview_tex_) {
-        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-        SDL_DestroyTexture(preview_tex_);
-        preview_tex_ = nullptr;
-    }
     if (mpv_gl_) {
         restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
         mpv_render_context_free(mpv_gl_);
@@ -301,31 +296,17 @@ void MpvPlayer::render(int winWidth, int winHeight) {
     glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
 }
 
-SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
-    if (!mpv_gl_) return nullptr;
+void MpvPlayer::renderViewport(int winWidth, int winHeight, int x, int y, int w, int h) {
+    if (!mpv_gl_) return;
+    if (winWidth <= 0 || winHeight <= 0 || w <= 0 || h <= 0) return;
 
-    if (!preview_tex_ || preview_tex_w_ != w || preview_tex_h_ != h) {
-        if (preview_tex_) {
-            restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-            SDL_DestroyTexture(preview_tex_);
-        }
-        preview_tex_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
-                                         SDL_TEXTUREACCESS_TARGET, w, h);
-        preview_tex_w_ = w;
-        preview_tex_h_ = h;
-    }
+    // 1. Flush any pending SDL draw commands first while SDL's EGL context/surface is current.
+    SDL_RenderFlush(renderer_);
 
-    if (!preview_tex_) return nullptr;
-
-    SDL_Texture* old_target = SDL_GetRenderTarget(renderer);
-    SDL_SetRenderTarget(renderer, preview_tex_);
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-    SDL_RenderFlush(renderer);
-
+    // 2. Restore EGL context for mpv
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
 
-    // Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
+    // 3. Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
     GLint last_program = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
     GLint last_array_buffer = 0;
@@ -347,16 +328,20 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     GLint last_scissor_box[4];
     glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
 
-    GLint fbo_id = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo_id);
+    // OpenGL coordinate system starts from bottom-left corner of the window.
+    // Screen coordinates (x, y) start from top-left.
+    glViewport(x, winHeight - y - h, w, h);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x, winHeight - y - h, w, h);
 
+    // Render mpv into FBO=0 (directly to window framebuffer)
     mpv_opengl_fbo fbo{};
-    fbo.fbo = fbo_id;
+    fbo.fbo = 0;
     fbo.w   = w;
     fbo.h   = h;
     fbo.internal_format = 0;
 
-    int flip_y = 0; // standard EGL texture alignment inside SDL
+    int flip_y = 1; // Direct rendering to FBO=0 requires flip_y=1
     mpv_render_param rparams[] = {
         {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
         {MPV_RENDER_PARAM_FLIP_Y,     &flip_y},
@@ -364,7 +349,7 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     };
     mpv_render_context_render(mpv_gl_, rparams);
 
-    // Restore saved GLES2 state
+    // 4. Restore saved GLES2 state
     glUseProgram(last_program);
     glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);
@@ -378,19 +363,6 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
     glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
-
-    SDL_SetRenderTarget(renderer, old_target);
-    return preview_tex_;
-}
-
-void MpvPlayer::destroyPreviewTexture() {
-    if (preview_tex_) {
-        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-        SDL_DestroyTexture(preview_tex_);
-        preview_tex_ = nullptr;
-    }
-    preview_tex_w_ = 0;
-    preview_tex_h_ = 0;
 }
 
 // ── Playback controls ─────────────────────────────────────────────────────────
