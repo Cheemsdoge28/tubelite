@@ -117,7 +117,27 @@ bool App::initialize() {
     search_grid_->columns = 2;
     search_grid_->bounds = {0, 100, 640, 332};
     search_grid_->onScrolledToBottom = [this]() { loadMoreSearchResults(); };
-    
+    compositor_ = std::make_unique<Compositor>(renderer_);
+
+    state_manager_.setTransitionCallback([this](TubeState::Screen oldScreen, TubeState::Screen newScreen, bool oldMiniplayer, bool newMiniplayer) {
+        bool stoppedPlayback = (oldScreen == TubeState::Screen::Playback && newScreen != TubeState::Screen::Playback) || (oldMiniplayer && !newMiniplayer);
+        if (stoppedPlayback) {
+            mpv_player_.stop();
+            storyboard_.stop();
+            if (image_manager_) {
+                image_manager_->clearCache();
+            }
+        }
+        
+        if (newScreen == TubeState::Screen::Search) {
+            focus_manager_.setGrid(search_grid_);
+        } else if (newScreen == TubeState::Screen::Home) {
+            focus_manager_.setGrid(home_grid_);
+        }
+        
+        uiDirty_ = true;
+    });
+
     if (!mpv_player_.initialize(window_, renderer_)) {
         logError("MPV init failed");
         return false;
@@ -381,20 +401,9 @@ void App::stopBrowsePreviewState() {
 }
 
 void App::leavePlayback() {
-    mpv_player_.stop();
-    storyboard_.stop();
-    if (image_manager_) {
-        image_manager_->clearCache();
-    }
-    state_.currentScreen = previousBrowseScreen_;
-    if (state_.currentScreen == TubeState::Screen::Search) {
-        focus_manager_.setGrid(search_grid_);
-    } else {
-        focus_manager_.setGrid(home_grid_);
-    }
+    state_manager_.stopPlayback();
     state_.showUi = true;
     last_playback_seconds_ = -1;
-    uiDirty_ = true;
 }
 
 void App::showPlaybackToast(const std::string& text, bool withProgress) {
@@ -818,7 +827,7 @@ void App::activateSelectedKey() {
 
 void App::doSearch(const std::string& query) {
     stopBrowsePreviewState();
-    state_.currentScreen = TubeState::Screen::Search;
+    state_manager_.transitionTo(TubeState::Screen::Search);
     state_.isSearching = true;
     state_.isLoadingVideo = false;
     uiDirty_ = true;
@@ -865,13 +874,9 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     // If a different video is loading, cancel it and start the new one
     state_.isLoadingVideo = false;
     
-    if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
-        previousBrowseScreen_ = state_.currentScreen;
-    }
-    
     bool keepMiniplayer = state_.miniplayerActive && !forceFullscreen;
     if (!keepMiniplayer) {
-        state_.miniplayerActive = false;
+        state_manager_.setMiniplayerActive(false);
     }
     
     addToHistory(video);
@@ -893,11 +898,11 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     if (cachedOpt.has_value() && !cachedOpt.value().empty()) {
         state_.isLoadingVideo = false;
         if (keepMiniplayer) {
-            state_.currentScreen = previousBrowseScreen_;
-            state_.miniplayerActive = true;
+            state_manager_.transitionTo(state_manager_.getPreviousBrowseScreen());
+            state_manager_.setMiniplayerActive(true);
             state_.showUi = true;
         } else {
-            state_.currentScreen = TubeState::Screen::Playback;
+            state_manager_.transitionTo(TubeState::Screen::Playback);
             state_.showUi = false;
         }
         mpv_player_.setMute(state_.muted);
@@ -955,11 +960,11 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
             if (success) {
                 setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
                 if (keepMiniplayer) {
-                    state_.currentScreen = previousBrowseScreen_;
-                    state_.miniplayerActive = true;
+                    state_manager_.transitionTo(state_manager_.getPreviousBrowseScreen());
+                    state_manager_.setMiniplayerActive(true);
                     state_.showUi = true;
                 } else {
-                    state_.currentScreen = TubeState::Screen::Playback;
+                    state_manager_.transitionTo(TubeState::Screen::Playback);
                     state_.showUi = false;
                 }
                 mpv_player_.setMute(state_.muted);
@@ -1121,387 +1126,17 @@ void App::renderFrame() {
     
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
-
-    if (state_.currentScreen == TubeState::Screen::Playback) {
-        auto now = std::chrono::steady_clock::now();
-        bool shouldShow = (now < playback_ui_timeout_) || !mpv_player_.isPlaying() || state_.isScrubbing;
-        if (state_.showUi != shouldShow) {
-            state_.showUi = shouldShow;
-            uiDirty_ = true;
-        }
-    }
-
-    if (state_.currentScreen == TubeState::Screen::Playback && state_.showUi) {
-        int cur_seconds = static_cast<int>(mpv_player_.getPlaybackTime());
-        if (cur_seconds != last_playback_seconds_) {
-            last_playback_seconds_ = cur_seconds;
-            uiDirty_ = true;
-        }
-    }
-
     bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing;
     if (!shouldPresent) return;
 
-    if (state_.currentScreen == TubeState::Screen::Playback) {
-        // ── Playback: mpv renders directly to the display framebuffer (FBO=0) ──
-        // Do NOT use renderToTexture here – redirecting mpv into a side texture
-        // requires re-entering the EGL context mid-frame which races with mpv's
-        // internal decode thread and causes segfaults on KMSDRM/RK3326.
-        //
-        // Sequence:
-        //   1. SDL draws the black background & UI overlay into its command buffer.
-        //   2. SDL_RenderFlush pushes those SDL commands to GL (they go to FBO=0).
-        //   3. mpv_player_.render() renders video into FBO=0 (behind everything).
-        //   4. SDL_RenderPresent swaps the buffer.
-        //
-        // Because mpv uses keepaspect + its own viewport, we just clear black and
-        // let mpv handle aspect-ratio letterboxing.
+    compositor_->render(this, width, height);
 
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
-        SDL_RenderClear(renderer_);
-
-        // Render the video frame first (directly to the display framebuffer FBO=0)
-        mpv_player_.render(width, height);
-
-        // Draw the UI overlay layers (HUD, loading spinner, overlays) on top of the video
-        if (state_.showUi) {
-            renderPlaybackOverlay(width, height);
-        }
-
-        if (state_.isLoadingVideo) {
-            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-            SDL_Rect bg{0, 0, width, height};
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            SDL_RenderFillRect(renderer_, &bg);
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-
-            float time = SDL_GetTicks() / 1000.0f;
-            drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
-            drawTextCentered(renderer_, width / 2, height / 2 + 25, loading_status_text_, 2, {255, 255, 255, 255}, true);
-            uiDirty_ = true;
-        }
-
-        // Volume / speed overlays
-        {
-            auto now = std::chrono::steady_clock::now();
-            bool volumeActive = (now < volume_overlay_timeout_);
-            bool speedActive  = (now < speed_overlay_timeout_);
-
-            static bool lastVolumeActivePlayback = false;
-            static bool lastSpeedActivePlayback  = false;
-            if (volumeActive || speedActive || lastVolumeActivePlayback || lastSpeedActivePlayback) uiDirty_ = true;
-            lastVolumeActivePlayback = volumeActive;
-            lastSpeedActivePlayback  = speedActive;
-
-            if (volumeActive) {
-                int boxW = 200, boxH = 36;
-                int boxX = (width - boxW) / 2, boxY = 64;
-                SDL_Rect r{boxX, boxY, boxW, boxH};
-                fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-                drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
-                char volBuf[32];
-                snprintf(volBuf, sizeof(volBuf), "Volume: %d%%", state_.volume);
-                drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, volBuf, 1, {255, 255, 255, 255}, true);
-            }
-            if (speedActive) {
-                int boxW = 200, boxH = 36;
-                int boxX = (width - boxW) / 2, boxY = 64;
-                SDL_Rect r{boxX, boxY, boxW, boxH};
-                fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-                drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
-                char speedBuf[32];
-                snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", state_.speed);
-                drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, speedBuf, 1, {255, 255, 255, 255}, true);
-            }
-        }
-
-        keyboard_.render(renderer_, state_, width, height, uiDirty_);
-
-        SDL_RenderPresent(renderer_);
-        uiDirty_ = false;
-
-        auto render_end = std::chrono::steady_clock::now();
-        render_latency_ms_ = std::chrono::duration<float, std::milli>(render_end - render_start).count();
-        return; // skip the rest of the generic render path
-    }
-
-    // ── Browse / Search screens ───────────────────────────────────────────────
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255);
-    SDL_RenderClear(renderer_);
-
-    auto currentGrid = activeGrid();
-    float scrollY = currentGrid ? currentGrid->scrollY : 0.0f;
-
-    if (state_.currentScreen == TubeState::Screen::Home) {
-        if (home_grid_->cards.empty()) {
-            if (homeLoadFailed_) {
-                drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load feed.", 2, {255, 100, 100, 255});
-                drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
-            } else {
-                renderBrowseLoadingState(width, height, "Loading Feed...");
-            }
-        } else {
-            home_grid_->render(renderer_, 0.0f, 0.0f);
-            if (is_playing_preview_ && preview_card_) {
-                float screenY = preview_card_->bounds.y - scrollY;
-                bool horizontal = (preview_card_->bounds.w > 400);
-                int thumbW = horizontal ? 160 : static_cast<int>(preview_card_->bounds.w);
-                int thumbH = horizontal ? 90 : static_cast<int>(preview_card_->bounds.w * (9.0f / 16.0f));
-                SDL_Rect thumbDst{
-                    static_cast<int>(preview_card_->bounds.x),
-                    static_cast<int>(screenY),
-                    thumbW,
-                    thumbH
-                };
-                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
-                if (previewTex) {
-                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
-                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
-                }
-            }
-            focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
-        }
-        auto focusedCard = focus_manager_.getFocusedCard();
-        (void)focusedCard;
-        renderBrowseHeader(width, height, "TubeLite", scrollY, false);
-    } else if (state_.currentScreen == TubeState::Screen::Search) {
-        if (state_.isSearching && search_grid_->cards.empty()) {
-            renderBrowseLoadingState(width, height, "Searching...");
-        } else if (search_grid_->cards.empty()) {
-            if (current_search_query_.empty()) {
-                drawTextCentered(renderer_, width / 2, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
-            } else {
-                drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, {150, 150, 150, 255});
-            }
-        } else {
-            search_grid_->render(renderer_, 0.0f, 0.0f);
-            if (is_playing_preview_ && preview_card_) {
-                float screenY = preview_card_->bounds.y - scrollY;
-                bool horizontal = (preview_card_->bounds.w > 400);
-                int thumbW = horizontal ? 160 : static_cast<int>(preview_card_->bounds.w);
-                int thumbH = horizontal ? 90 : static_cast<int>(preview_card_->bounds.w * (9.0f / 16.0f));
-                SDL_Rect thumbDst{
-                    static_cast<int>(preview_card_->bounds.x),
-                    static_cast<int>(screenY),
-                    thumbW,
-                    thumbH
-                };
-                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
-                if (previewTex) {
-                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
-                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
-                }
-            }
-            focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
-        }
-        renderBrowseHeader(width, height, "Search", scrollY, true);
-    }
-
-    if (state_.miniplayerActive) {
-        int mX = width - 250;
-        int mY = height - 193;
-        int mW = 240;
-        int mH = 135;
-        
-        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
-        SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, mW, mH);
-        if (previewTex) {
-            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
-        }
-        
-        // Draw a 2px red accent border around the miniplayer
-        SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
-        SDL_Rect border2{mX - 2, mY - 2, mW + 4, mH + 4};
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-        SDL_RenderDrawRect(renderer_, &border1);
-        SDL_RenderDrawRect(renderer_, &border2);
-        
-        if (!mpv_player_.isPlaying()) {
-            int centerX = mX + mW / 2;
-            int centerY = mY + mH / 2;
-            SDL_Rect pauseBg{ centerX - 15, centerY - 15, 30, 30 };
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            fillRoundedRect(renderer_, pauseBg, 15, {0, 0, 0, 150});
-            
-            SDL_Rect pauseLeft{ centerX - 5, centerY - 8, 3, 16 };
-            SDL_Rect pauseRight{ centerX + 2, centerY - 8, 3, 16 };
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
-            SDL_RenderFillRect(renderer_, &pauseLeft);
-            SDL_RenderFillRect(renderer_, &pauseRight);
-        }
-        
-        // Hints: START: Play/Pause  B: Close
-        std::string hint1 = "START: Play/Pause";
-        std::string hint2 = "B: Close";
-        int w1 = 0, h1 = 0;
-        int w2 = 0, h2 = 0;
-        getTextSize(hint1, 1, &w1, &h1);
-        getTextSize(hint2, 1, &w2, &h2);
-        int textW = std::max(w1, w2);
-        int textH = h1 + h2 + 2;
-        int plateW = textW + 8;
-        int plateH = textH + 6;
-        
-        SDL_Rect plate{ mX + 4, mY + mH - plateH - 4, plateW, plateH };
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-        SDL_RenderFillRect(renderer_, &plate);
-        
-        drawText(renderer_, mX + 8, mY + mH - plateH - 1, hint1, 1, {255, 255, 255, 255});
-        drawText(renderer_, mX + 8, mY + mH - 14, hint2, 1, {255, 255, 255, 255});
-    }
-
-    // Render header-level spinner if searching and grid is not empty
-    if (state_.isSearching && activeGrid() && !activeGrid()->cards.empty()) {
-        const int expandedHeight = 84;
-        const int collapsedHeight = 58;
-        const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
-        float time = SDL_GetTicks() / 1000.0f;
-        drawSpinner(renderer_, width - 30, headerHeight / 2, 10, time);
-        uiDirty_ = true;
-    }
-
-    // Browse status bar
-    if (state_.showUi) {
-        status_.render(renderer_, state_, width, height, uiDirty_);
-    }
-    
-    // Loading overlay
-    if (state_.isLoadingVideo) {
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-        SDL_Rect bg{0, 0, width, height};
-        SDL_RenderFillRect(renderer_, &bg);
-        
-        float time = SDL_GetTicks() / 1000.0f;
-        drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
-        
-        drawTextCentered(renderer_, width / 2, height / 2 + 25, loading_status_text_, 2, {255, 255, 255, 255}, true);
-        uiDirty_ = true;
-    }
-    
-    // Draw custom volume/speed overlays
-    {
-        auto now = std::chrono::steady_clock::now();
-        bool volumeActive = (now < volume_overlay_timeout_);
-        bool speedActive = (now < speed_overlay_timeout_);
-        
-        static bool lastVolumeActive = false;
-        static bool lastSpeedActive = false;
-        if (volumeActive || speedActive || lastVolumeActive || lastSpeedActive) {
-            uiDirty_ = true;
-        }
-        lastVolumeActive = volumeActive;
-        lastSpeedActive = speedActive;
-
-        if (volumeActive) {
-            int boxW = 200;
-            int boxH = 36;
-            int boxX = (width - boxW) / 2;
-            int boxY = 64;
-            
-            SDL_Rect r{boxX, boxY, boxW, boxH};
-            fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-            drawRoundedRect(renderer_, r, 6, {255, 48, 48, 255});
-            
-            std::string volText = "Volume: " + std::to_string(state_.volume) + "%";
-            if (state_.muted) volText = "Mute: ON";
-            
-            int barW = 160;
-            int barH = 6;
-            int barX = boxX + 20;
-            int barY = boxY + 24;
-            SDL_Rect barBg{barX, barY, barW, barH};
-            SDL_SetRenderDrawColor(renderer_, 60, 60, 60, 255);
-            SDL_RenderFillRect(renderer_, &barBg);
-            
-            if (!state_.muted) {
-                int fillW = static_cast<int>(barW * (state_.volume / 100.0f));
-                SDL_Rect barFill{barX, barY, fillW, barH};
-                SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-                SDL_RenderFillRect(renderer_, &barFill);
-            }
-            
-            drawTextCentered(renderer_, boxX + boxW / 2, boxY + 4, volText, 1, {255, 255, 255, 255}, true);
-        } else if (speedActive) {
-            int boxW = 160;
-            int boxH = 32;
-            int boxX = (width - boxW) / 2;
-            int boxY = 64;
-            
-            SDL_Rect r{boxX, boxY, boxW, boxH};
-            fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-            drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
-            
-            char speedBuf[32];
-            snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", state_.speed);
-            drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, speedBuf, 1, {255, 255, 255, 255}, true);
-        }
-    }
-
-    keyboard_.render(renderer_, state_, width, height, uiDirty_);
-
-    // Draw telemetry overlay if enabled
-    if (state_.showDebugOverlay) {
-        int panelW = 240;
-        int panelH = 110;
-        int panelX = width - panelW - 10;
-        int panelY = 60; // below top bar/header
-
-        SDL_Rect rect{panelX, panelY, panelW, panelH};
-        fillRoundedRect(renderer_, rect, 6, {0, 0, 0, 200});
-        drawRoundedRect(renderer_, rect, 6, {150, 150, 150, 255});
-
-        char buf[256];
-        int textY = panelY + 8;
-
-        std::snprintf(buf, sizeof(buf), "FPS: %.1f", current_fps_);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-        textY += 16;
-
-        std::snprintf(buf, sizeof(buf), "Render Latency: %.2f ms", render_latency_ms_);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-        textY += 16;
-
-        int64_t vo_drops = mpv_player_.getPropertyInt("vo-drop-frame-count");
-        int64_t dec_drops = mpv_player_.getPropertyInt("decoder-frame-drop-count");
-        std::snprintf(buf, sizeof(buf), "Drops: VO %lld / Dec %lld", (long long)vo_drops, (long long)dec_drops);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-        textY += 16;
-
-        size_t q_size = 0;
-        {
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            q_size = main_thread_queue_.size();
-        }
-        std::snprintf(buf, sizeof(buf), "Queue Size: %zu", q_size);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-        textY += 16;
-
-        // Throttle to 1 Hz to avoid hammering /proc and statvfs at 60 fps
-        static double cached_ram = 0.0, cached_storage_free = 0.0, cached_storage_total = 0.0;
-        static uint32_t last_sys_poll = 0;
-        uint32_t now_ticks = SDL_GetTicks();
-        if (now_ticks - last_sys_poll >= 1000) {
-            getSystemMemoryAndStorage(cached_ram, cached_storage_free, cached_storage_total);
-            last_sys_poll = now_ticks;
-        }
-        std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", cached_ram);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-        textY += 16;
-
-        std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", cached_storage_free, cached_storage_total);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-    }
-
-    SDL_RenderPresent(renderer_);
     uiDirty_ = false;
 
     auto render_end = std::chrono::steady_clock::now();
     render_latency_ms_ = std::chrono::duration<float, std::milli>(render_end - render_start).count();
 }
+
 
 void App::handleEvent(SDL_Event& event) {
     if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -1549,17 +1184,8 @@ void App::toggleMiniplayer() {
     }
     lastToggleTime = now;
 
-    if (state_.currentScreen == TubeState::Screen::Playback) {
-        state_.currentScreen = previousBrowseScreen_;
-        state_.miniplayerActive = true;
-        state_.showUi = true;
-        uiDirty_ = true;
-    } else if (state_.miniplayerActive) {
-        state_.currentScreen = TubeState::Screen::Playback;
-        state_.miniplayerActive = false;
-        state_.showUi = false;
-        uiDirty_ = true;
-    }
+    state_manager_.toggleMiniplayer();
+    uiDirty_ = true;
 }
 
 void App::handleKey(SDL_Keycode key) {
@@ -1581,15 +1207,7 @@ void App::handleKey(SDL_Keycode key) {
         if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
-        } else if (state_.miniplayerActive) {
-            mpv_player_.stop();
-            storyboard_.stop();
-            if (image_manager_) {
-                image_manager_->clearCache();
-            }
-            state_.miniplayerActive = false;
-            uiDirty_ = true;
-        } else if (state_.currentScreen == TubeState::Screen::Playback) {
+        } else if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
             leavePlayback();
         } else {
             state_.running = false;
@@ -1767,22 +1385,13 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_B) {
-        if (state_.miniplayerActive) {
-            mpv_player_.stop();
-            storyboard_.stop();
-            if (image_manager_) {
-                image_manager_->clearCache();
-            }
-            state_.miniplayerActive = false;
-            uiDirty_ = true;
+        if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
+            leavePlayback();
         } else if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
-        } else if (state_.currentScreen == TubeState::Screen::Playback) {
-            leavePlayback();
         } else if (state_.currentScreen == TubeState::Screen::Search) {
-            state_.currentScreen = TubeState::Screen::Home;
-            focus_manager_.setGrid(home_grid_);
+            state_manager_.transitionTo(TubeState::Screen::Home);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_X) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -2297,7 +1906,7 @@ bool App::loadHomeCache() {
 }
 
 void App::handleVideoEnded() {
-    std::shared_ptr<ui::GridContainer> grid = (previousBrowseScreen_ == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
     bool playedNext = false;
     
     if (grid && !grid->cards.empty()) {

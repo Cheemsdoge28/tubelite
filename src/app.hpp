@@ -14,6 +14,8 @@
 #include "image_manager.hpp"
 #include "thumbnail_atlas.hpp"
 #include "ui_framework.hpp"
+#include "state_manager.hpp"
+#include "compositor.hpp"
 #include <memory>
 #include <thread>
 #include <chrono>
@@ -21,8 +23,9 @@
 #include <unordered_set>
 
 class App {
+    friend class Compositor;
 public:
-    App() = default;
+    App() : state_manager_(state_) {}
     ~App();
 
     bool initialize();
@@ -84,7 +87,8 @@ private:
     bool lastKeyboardCursorVisible_{true};
     bool homeLoadFailed_{false};
     Uint32 play_flash_start_time_{0};
-    TubeState::Screen previousBrowseScreen_{TubeState::Screen::Home};
+    StateManager state_manager_;
+    std::unique_ptr<Compositor> compositor_;
 
     YouTubeVideo current_video_;
 

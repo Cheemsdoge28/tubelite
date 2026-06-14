@@ -15,6 +15,7 @@ public:
     void transitionTo(TubeState::Screen nextScreen);
     void setMiniplayerActive(bool active);
     void stopPlayback();
+    void toggleMiniplayer();
 
     TubeState::Screen getPreviousBrowseScreen() const { return previousBrowseScreen_; }
     void setPreviousBrowseScreen(TubeState::Screen screen) { previousBrowseScreen_ = screen; }
