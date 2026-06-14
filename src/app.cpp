@@ -1541,6 +1541,27 @@ void App::handleEvent(SDL_Event& event) {
     }
 }
 
+void App::toggleMiniplayer() {
+    static Uint32 lastToggleTime = 0;
+    Uint32 now = SDL_GetTicks();
+    if (now - lastToggleTime < 250) {
+        return;
+    }
+    lastToggleTime = now;
+
+    if (state_.currentScreen == TubeState::Screen::Playback) {
+        state_.currentScreen = previousBrowseScreen_;
+        state_.miniplayerActive = true;
+        state_.showUi = true;
+        uiDirty_ = true;
+    } else if (state_.miniplayerActive) {
+        state_.currentScreen = TubeState::Screen::Playback;
+        state_.miniplayerActive = false;
+        state_.showUi = false;
+        uiDirty_ = true;
+    }
+}
+
 void App::handleKey(SDL_Keycode key) {
     if (state_.inputMode == TubeState::InputMode::SearchText) {
         if (key == SDLK_RETURN)    activateKeyboardGo();
@@ -1576,17 +1597,7 @@ void App::handleKey(SDL_Keycode key) {
         break;
     case SDLK_TAB:
     case SDLK_BACKSPACE:
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            state_.currentScreen = previousBrowseScreen_;
-            state_.miniplayerActive = true;
-            state_.showUi = true;
-            uiDirty_ = true;
-        } else if (state_.miniplayerActive) {
-            state_.currentScreen = TubeState::Screen::Playback;
-            state_.miniplayerActive = false;
-            state_.showUi = false;
-            uiDirty_ = true;
-        }
+        toggleMiniplayer();
         break;
     case SDLK_p:
     case SDLK_SPACE:
@@ -1828,17 +1839,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             uiDirty_ = true;
         }
     } else if (button == SDL_CONTROLLER_BUTTON_BACK) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            state_.currentScreen = previousBrowseScreen_;
-            state_.miniplayerActive = true;
-            state_.showUi = true;
-            uiDirty_ = true;
-        } else if (state_.miniplayerActive) {
-            state_.currentScreen = TubeState::Screen::Playback;
-            state_.miniplayerActive = false;
-            state_.showUi = false;
-            uiDirty_ = true;
-        }
+        toggleMiniplayer();
     }
 }
 
