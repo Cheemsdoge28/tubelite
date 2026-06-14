@@ -383,7 +383,12 @@ void App::leavePlayback() {
     if (image_manager_) {
         image_manager_->clearCache();
     }
-    state_.currentScreen = TubeState::Screen::Home;
+    state_.currentScreen = previousBrowseScreen_;
+    if (state_.currentScreen == TubeState::Screen::Search) {
+        focus_manager_.setGrid(search_grid_);
+    } else {
+        focus_manager_.setGrid(home_grid_);
+    }
     state_.showUi = true;
     last_playback_seconds_ = -1;
     uiDirty_ = true;

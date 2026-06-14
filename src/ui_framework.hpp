@@ -6,6 +6,8 @@
 #include <functional>
 #include "youtube_api.hpp"
 #include "image_manager.hpp"
+#include <unordered_map>
+
 
 namespace ui {
 
@@ -92,6 +94,8 @@ private:
     int focusedCardIdx_ = 0;
     Rect currentFocusRing_{0,0,0,0};
     Rect targetFocusRing_{0,0,0,0};
+    
+    std::unordered_map<GridContainer*, int> gridFocusIndices_;
     
     void updateTargetFocus();
 };

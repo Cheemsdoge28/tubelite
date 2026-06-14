@@ -3,7 +3,10 @@
 #include <cmath>
 #include <cstring>
 #include <dlfcn.h>
+#include <filesystem>
+#include <vector>
 #include <SDL2/SDL.h>
+
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -137,6 +140,26 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "vd-lavc-fast",           "yes");
     mpv_set_option_string(mpv_, "tls-verify",             "no");
     mpv_set_option_string(mpv_, "ytdl-raw-options",       "no-check-certificate=");
+
+    // Use included Atkinson Hyperlegible font for subtitles
+    std::vector<std::string> fontDirs = {
+        "res/fonts",
+        "../res/fonts",
+        "/roms/tools/tubelite/res/fonts",
+    };
+    std::string foundFontDir = "";
+    for (const auto& d : fontDirs) {
+        if (std::filesystem::exists(d)) {
+            foundFontDir = d;
+            break;
+        }
+    }
+    if (!foundFontDir.empty()) {
+        mpv_set_option_string(mpv_, "sub-fonts-dir", foundFontDir.c_str());
+    }
+    mpv_set_option_string(mpv_, "sub-font", "Atkinson Hyperlegible");
+    mpv_set_option_string(mpv_, "sub-ass-override", "force");
+
 
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }

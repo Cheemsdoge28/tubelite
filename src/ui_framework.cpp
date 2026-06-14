@@ -324,10 +324,29 @@ void GridContainer::render(SDL_Renderer* renderer, float offsetX, float offsetY)
 }
 
 void FocusManager::setGrid(std::shared_ptr<GridContainer> grid) {
+    if (grid_) {
+        gridFocusIndices_[grid_.get()] = focusedCardIdx_;
+        for (auto& c : grid_->cards) {
+            c->focused = false;
+        }
+    }
+    
     grid_ = grid;
-    focusedCardIdx_ = 0;
-    updateTargetFocus();
-    currentFocusRing_ = targetFocusRing_;
+    
+    if (grid_) {
+        auto it = gridFocusIndices_.find(grid_.get());
+        if (it != gridFocusIndices_.end()) {
+            focusedCardIdx_ = it->second;
+        } else {
+            focusedCardIdx_ = 0;
+        }
+        updateTargetFocus();
+        currentFocusRing_ = targetFocusRing_;
+    } else {
+        focusedCardIdx_ = 0;
+        currentFocusRing_ = {0, 0, 0, 0};
+        targetFocusRing_ = {0, 0, 0, 0};
+    }
 }
 
 void FocusManager::updateTargetFocus() {
