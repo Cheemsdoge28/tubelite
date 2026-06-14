@@ -120,6 +120,26 @@ bool App::initialize() {
             }
         }
         
+        // Stop storyboard extraction during miniplayer to avoid RK3326 resource contention
+        if (newMiniplayer && !oldMiniplayer) {
+            storyboard_.stop();
+        }
+        
+        // Resume/restart storyboard extraction if returning to fullscreen playback from miniplayer
+        if (oldMiniplayer && !newMiniplayer && newScreen == TubeState::Screen::Playback) {
+            const std::string cacheKey = streamCacheKey(current_video_.id, state_.maxQualityHeight);
+            auto cachedOpt = getCachedStreamUrl(cacheKey);
+            if (cachedOpt.has_value() && !cachedOpt.value().empty()) {
+                std::string cached_val = cachedOpt.value();
+                std::string stream_url = cached_val;
+                size_t pipe_pos = cached_val.find('|');
+                if (pipe_pos != std::string::npos) {
+                    stream_url = cached_val.substr(0, pipe_pos);
+                }
+                storyboard_.start(stream_url, current_video_.duration_seconds);
+            }
+        }
+        
         if (newScreen == TubeState::Screen::Search) {
             focus_manager_.setGrid(search_grid_);
         } else if (newScreen == TubeState::Screen::Home) {

@@ -151,6 +151,14 @@ void Compositor::render(App* app, int width, int height) {
         int mH = 135;
         
         SDL_Rect miniplayerBounds{mX, mY, mW, mH};
+        
+        // Clear the background region under the miniplayer to solid black
+        // to prevent grid cards and thumbnails from bleeding through.
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
+        SDL_RenderFillRect(renderer_, &miniplayerBounds);
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mH);
         if (previewTex) {
             SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
