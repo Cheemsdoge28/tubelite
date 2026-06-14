@@ -52,7 +52,7 @@ private:
     void activateSelectedKey();
 
     void doSearch(const std::string& query);
-    void playVideo(const YouTubeVideo& video);
+    void playVideo(const YouTubeVideo& video, bool forceFullscreen = true);
     void stopBrowsePreviewState();
     void leavePlayback();
     void showPlaybackToast(const std::string& text, bool withProgress = false);

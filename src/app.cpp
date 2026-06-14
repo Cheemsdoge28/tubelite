@@ -858,7 +858,7 @@ void App::doSearch(const std::string& query) {
     });
 }
 
-void App::playVideo(const YouTubeVideo& video) {
+void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) return;
     // If same video is already loading, do not restart it
     if (state_.isLoadingVideo && current_video_.id == video.id) return;
@@ -869,7 +869,7 @@ void App::playVideo(const YouTubeVideo& video) {
         previousBrowseScreen_ = state_.currentScreen;
     }
     
-    bool keepMiniplayer = state_.miniplayerActive;
+    bool keepMiniplayer = state_.miniplayerActive && !forceFullscreen;
     if (!keepMiniplayer) {
         state_.miniplayerActive = false;
     }
@@ -1255,8 +1255,11 @@ void App::renderFrame() {
                     thumbW,
                     thumbH
                 };
-                mpv_player_.renderViewport(width, height, thumbDst.x, thumbDst.y, thumbDst.w, thumbDst.h);
-                maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
+                if (previewTex) {
+                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
+                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                }
             }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
@@ -1285,8 +1288,11 @@ void App::renderFrame() {
                     thumbW,
                     thumbH
                 };
-                mpv_player_.renderViewport(width, height, thumbDst.x, thumbDst.y, thumbDst.w, thumbDst.h);
-                maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
+                if (previewTex) {
+                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
+                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                }
             }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
@@ -1299,7 +1305,11 @@ void App::renderFrame() {
         int mW = 240;
         int mH = 135;
         
-        mpv_player_.renderViewport(width, height, mX, mY, mW, mH);
+        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
+        SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, mW, mH);
+        if (previewTex) {
+            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
+        }
         
         // Draw a 2px red accent border around the miniplayer
         SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
@@ -1509,10 +1519,18 @@ void App::handleEvent(SDL_Event& event) {
     case SDL_CONTROLLERDEVICEREMOVED: closeController(); openController(); break;
     case SDL_CONTROLLERBUTTONDOWN: handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), true); break;
     case SDL_CONTROLLERBUTTONUP: handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), false); break;
-    case SDL_JOYHATMOTION: handleJoyHat(event.jhat.value); break;
-    case SDL_JOYAXISMOTION: handleJoyAxis(event.jaxis); break;
-    case SDL_JOYBUTTONDOWN: handleJoyButton(event.jbutton.button, event.jbutton.which, true); break;
-    case SDL_JOYBUTTONUP: handleJoyButton(event.jbutton.button, event.jbutton.which, false); break;
+    case SDL_JOYHATMOTION:
+        if (controller_ == nullptr) handleJoyHat(event.jhat.value);
+        break;
+    case SDL_JOYAXISMOTION:
+        if (controller_ == nullptr) handleJoyAxis(event.jaxis);
+        break;
+    case SDL_JOYBUTTONDOWN:
+        if (controller_ == nullptr) handleJoyButton(event.jbutton.button, event.jbutton.which, true);
+        break;
+    case SDL_JOYBUTTONUP:
+        if (controller_ == nullptr) handleJoyButton(event.jbutton.button, event.jbutton.which, false);
+        break;
     case SDL_CONTROLLERAXISMOTION: handleControllerAxis(event.caxis); break;
     case SDL_TEXTINPUT:
         if (state_.inputMode == TubeState::InputMode::SearchText) {
@@ -2287,7 +2305,7 @@ void App::handleVideoEnded() {
                 if (i + 1 < grid->cards.size()) {
                     auto nextVideo = grid->cards[i + 1]->video;
                     focus_manager_.setFocusedIndex(i + 1);
-                    playVideo(nextVideo);
+                    playVideo(nextVideo, !state_.miniplayerActive);
                     playedNext = true;
                 }
                 break;
