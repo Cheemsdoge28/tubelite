@@ -155,6 +155,14 @@ void App::run() {
             uiDirty_ = true;
         }
         
+        if (play_flash_start_time_ > 0) {
+            if (SDL_GetTicks() - play_flash_start_time_ < 400) {
+                uiDirty_ = true;
+            } else {
+                play_flash_start_time_ = 0;
+            }
+        }
+        
         bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo;
         if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
             active = true;
@@ -509,15 +517,68 @@ void App::renderPlaybackOverlay(int width, int height) {
     }
 
     // ── Centre pause/play icon ─────────────────────────────────────────────────
-    if (!playing || state_.isScrubbing) {
-        int iconSize = 40;
+    bool showPlayFlash = false;
+    float flashProgress = 0.0f;
+    Uint32 ticks = SDL_GetTicks();
+    if (play_flash_start_time_ > 0) {
+        Uint32 diff = ticks - play_flash_start_time_;
+        if (diff < 400) {
+            showPlayFlash = true;
+            flashProgress = (float)diff / 400.0f;
+        } else {
+            play_flash_start_time_ = 0;
+        }
+    }
+
+    if (!playing || state_.isScrubbing || showPlayFlash) {
+        int baseIconSize = 40;
+        int iconSize = baseIconSize;
+        Uint8 bgAlpha = 120;
+        Uint8 iconAlpha = 200;
+
+        bool drawPlay = showPlayFlash;
+
+        if (showPlayFlash) {
+            iconSize = static_cast<int>(baseIconSize * (1.0f + flashProgress * 0.8f));
+            bgAlpha = static_cast<Uint8>(120 * (1.0f - flashProgress));
+            iconAlpha = static_cast<Uint8>(200 * (1.0f - flashProgress));
+        }
+
         int iconX = (width - iconSize) / 2;
         int iconY = (height - iconSize) / 2;
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 100);
+        
         SDL_Rect iconBg{iconX - 8, iconY - 8, iconSize + 16, iconSize + 16};
-        fillRoundedRect(renderer_, iconBg, 24, {0, 0, 0, 120});
-        drawTextCentered(renderer_, width / 2, iconY + 8, state_.isScrubbing ? "||" : "||",
-                         3, {255, 255, 255, 200});
+        fillRoundedRect(renderer_, iconBg, iconBg.w / 2, {0, 0, 0, bgAlpha});
+
+        int centerX = width / 2;
+        int centerY = height / 2;
+
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+        if (drawPlay) {
+            SDL_Color color{255, 255, 255, iconAlpha};
+            SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+            int halfSize = iconSize / 2;
+            int startX = centerX - halfSize + 4;
+            int endX = centerX + halfSize;
+            int sizeX = endX - startX;
+            for (int x = startX; x <= endX; ++x) {
+                float t = (sizeX > 0) ? (float)(x - startX) / sizeX : 0.0f;
+                int h = static_cast<int>(halfSize * (1.0f - t));
+                SDL_RenderDrawLine(renderer_, x, centerY - h, x, centerY + h);
+            }
+        } else {
+            SDL_Color color{255, 255, 255, iconAlpha};
+            SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+            int barW = iconSize / 3;
+            int barH = iconSize;
+            int gap = iconSize / 3;
+            SDL_Rect leftBar{centerX - barW - gap / 2, centerY - barH / 2, barW, barH};
+            SDL_Rect rightBar{centerX + gap / 2, centerY - barH / 2, barW, barH};
+            SDL_RenderFillRect(renderer_, &leftBar);
+            SDL_RenderFillRect(renderer_, &rightBar);
+        }
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
     }
 
     // ── Bottom Panel ──────────────────────────────────────────────────────────
@@ -574,42 +635,17 @@ void App::renderPlaybackOverlay(int width, int height) {
 
     // Scrub preview thumbnail above playhead
     if (state_.isScrubbing) {
-        SDL_Texture* sbTex = storyboard_.getTexture(renderer_, displayTime);
-        int previewW = 160, previewH = 90;
         int dotX = mg + static_cast<int>(pbW * frac);
-        int previewX = std::max(mg, std::min(width - mg - previewW, dotX - previewW / 2));
-        int previewY = pbY - previewH - 18;
-
-        // Shadow frame
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 220);
-        SDL_Rect shadow{previewX - 3, previewY - 3, previewW + 6, previewH + 6};
-        SDL_RenderFillRect(renderer_, &shadow);
-        // Red accent border
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-        SDL_RenderDrawRect(renderer_, &shadow);
-
-        if (sbTex) {
-            SDL_Rect dst{previewX, previewY, previewW, previewH};
-            SDL_RenderCopy(renderer_, sbTex, nullptr, &dst);
-        } else {
-            SDL_SetRenderDrawColor(renderer_, 26, 26, 30, 255);
-            SDL_Rect dst{previewX, previewY, previewW, previewH};
-            SDL_RenderFillRect(renderer_, &dst);
-            drawTextCentered(renderer_, previewX + previewW / 2, previewY + previewH / 2 - 8,
-                             fmtTime(displayTime), 2, {200, 200, 210, 255});
-            // trigger keyframe seek for preview
-            static double last_kf_seek = -999.0;
-            if (std::abs(displayTime - last_kf_seek) > 1.0) {
-                mpv_player_.seekAbsoluteKeyframes(displayTime);
-                last_kf_seek = displayTime;
-            }
-        }
-
-        // Timestamp under preview
         std::string timeStr = fmtTime(displayTime);
-        int tw = 0, th = 0; getTextSize(timeStr, 1, &tw, &th);
-        SDL_Rect tsBg{previewX + (previewW - tw) / 2 - 4, previewY + previewH + 3, tw + 8, th + 4};
-        fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 190});
+        int tw = 0, th = 0;
+        getTextSize(timeStr, 1, &tw, &th);
+        int previewW = tw + 8;
+        int previewH = th + 4;
+        int previewX = std::max(mg, std::min(width - mg - previewW, dotX - previewW / 2));
+        int previewY = pbY - previewH - 12;
+
+        SDL_Rect tsBg{previewX, previewY, previewW, previewH};
+        fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
         drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
     }
 
@@ -834,14 +870,14 @@ void App::playVideo(const YouTubeVideo& video) {
             }
             storyboard_.start(low_res_url, video.duration_seconds);
         } else {
-            youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success, const std::string& url, const std::string& subtitle_url) {
+            youtube_api_.getStreamUrl(video.id, 360, [this, video](bool success, const std::string& url, const std::string& subtitle_url) {
                 queueOnMainThread([this, video, success, url, subtitle_url]() {
                     if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
                         if (success && !url.empty()) {
-                            setCachedStreamUrl(streamCacheKey(video.id, 144), url + "|" + subtitle_url);
+                            setCachedStreamUrl(streamCacheKey(video.id, 360), url + "|" + subtitle_url);
                             storyboard_.start(url, video.duration_seconds);
                         } else {
-                            setCachedStreamUrl(streamCacheKey(video.id, 144), ""); // Cache failure
+                            setCachedStreamUrl(streamCacheKey(video.id, 360), ""); // Cache failure
                         }
                     }
                 });
@@ -865,7 +901,7 @@ void App::playVideo(const YouTubeVideo& video) {
                 state_.showUi = false;
 
                 // Start storyboard extraction
-                const std::string lowResCacheKey = streamCacheKey(video.id, 144);
+                const std::string lowResCacheKey = streamCacheKey(video.id, 360);
                 auto lowResCachedOpt = getCachedStreamUrl(lowResCacheKey);
                 if (lowResCachedOpt.has_value() && !lowResCachedOpt.value().empty()) {
                     std::string low_res_cached = lowResCachedOpt.value();
@@ -876,14 +912,14 @@ void App::playVideo(const YouTubeVideo& video) {
                     }
                     storyboard_.start(low_res_url, video.duration_seconds);
                 } else {
-                    youtube_api_.getStreamUrl(video.id, 144, [this, video](bool success2, const std::string& url2, const std::string& subtitle_url2) {
+                    youtube_api_.getStreamUrl(video.id, 360, [this, video](bool success2, const std::string& url2, const std::string& subtitle_url2) {
                         queueOnMainThread([this, video, success2, url2, subtitle_url2]() {
                             if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
                                 if (success2 && !url2.empty()) {
-                                    setCachedStreamUrl(streamCacheKey(video.id, 144), url2 + "|" + subtitle_url2);
+                                    setCachedStreamUrl(streamCacheKey(video.id, 360), url2 + "|" + subtitle_url2);
                                     storyboard_.start(url2, video.duration_seconds);
                                 } else {
-                                    setCachedStreamUrl(streamCacheKey(video.id, 144), ""); // Cache failure
+                                    setCachedStreamUrl(streamCacheKey(video.id, 360), ""); // Cache failure
                                 }
                             }
                         });
@@ -992,6 +1028,7 @@ void App::updateSticks(float dt) {
             if (state_.isScrubbing) {
                 mpv_player_.seekAbsoluteKeyframes(state_.scrubTargetTime);
                 mpv_player_.resume();
+                play_flash_start_time_ = SDL_GetTicks();
                 state_.isScrubbing = false;
                 scrub_hold_time_ = 0.0f;
                 uiDirty_ = true;
@@ -1471,6 +1508,7 @@ void App::handleKey(SDL_Keycode key) {
                 showPlaybackToast("Paused");
             } else {
                 mpv_player_.resume();
+                play_flash_start_time_ = SDL_GetTicks();
                 showPlaybackToast("Playing");
             }
         }
@@ -1536,6 +1574,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 showPlaybackToast("Paused");
             } else {
                 mpv_player_.resume();
+                play_flash_start_time_ = SDL_GetTicks();
                 showPlaybackToast("Playing");
             }
         }
@@ -1867,7 +1906,7 @@ void App::updateHoverPreviews() {
         return;
     }
 
-    const std::string cacheKey = streamCacheKey(focusedCard->video.id, 144);
+    const std::string cacheKey = streamCacheKey(focusedCard->video.id, 360);
     
     // 1. Kick off prefetch if focused for >= 0.25s
     if (focusedCard->focusedTime_ >= 0.25f) {
@@ -1875,7 +1914,7 @@ void App::updateHoverPreviews() {
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
             is_loading_preview_ = true;
-            youtube_api_.getStreamUrl(focusedCard->video.id, 144, [this, focusedCard, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+            youtube_api_.getStreamUrl(focusedCard->video.id, 360, [this, focusedCard, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
                 queueOnMainThread([this, focusedCard, cacheKey, success, url, subtitle_url]() {
                     stream_prefetch_inflight_.erase(cacheKey);
                     is_loading_preview_ = false;

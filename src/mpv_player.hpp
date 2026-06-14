@@ -77,4 +77,6 @@ private:
     SDL_Texture* preview_tex_{nullptr};
     int          preview_tex_w_{0};
     int          preview_tex_h_{0};
+
+    std::string pending_subtitle_url_;
 };

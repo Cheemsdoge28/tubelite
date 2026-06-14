@@ -322,47 +322,54 @@ static std::string extractSubtitleUrl(const json& j) {
         return "";
     };
 
+    std::string url = "";
+
     // 1. Manual English subtitles
     if (j.contains("subtitles")) {
         const auto& subs = j["subtitles"];
         if (subs.is_object() && subs.contains("en")) {
-            std::string url = findBestSubUrl(subs["en"]);
-            if (!url.empty()) return url;
+            url = findBestSubUrl(subs["en"]);
         }
     }
 
     // 2. Any other manual subtitles
-    if (j.contains("subtitles")) {
+    if (url.empty() && j.contains("subtitles")) {
         const auto& subs = j["subtitles"];
         if (subs.is_object()) {
             for (auto it = subs.begin(); it != subs.end(); ++it) {
-                std::string url = findBestSubUrl(it.value());
-                if (!url.empty()) return url;
+                url = findBestSubUrl(it.value());
+                if (!url.empty()) break;
             }
         }
     }
 
     // 3. Automatic English captions
-    if (j.contains("automatic_captions")) {
+    if (url.empty() && j.contains("automatic_captions")) {
         const auto& caps = j["automatic_captions"];
         if (caps.is_object() && caps.contains("en")) {
-            std::string url = findBestSubUrl(caps["en"]);
-            if (!url.empty()) return url;
+            url = findBestSubUrl(caps["en"]);
         }
     }
 
     // 4. Any other automatic captions
-    if (j.contains("automatic_captions")) {
+    if (url.empty() && j.contains("automatic_captions")) {
         const auto& caps = j["automatic_captions"];
         if (caps.is_object()) {
             for (auto it = caps.begin(); it != caps.end(); ++it) {
-                std::string url = findBestSubUrl(it.value());
-                if (!url.empty()) return url;
+                url = findBestSubUrl(it.value());
+                if (!url.empty()) break;
             }
         }
     }
 
-    return "";
+    if (!url.empty()) {
+        size_t pos = url.find("fmt=json3");
+        if (pos != std::string::npos) {
+            url.replace(pos, 9, "fmt=vtt");
+        }
+    }
+
+    return url;
 }
 
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,

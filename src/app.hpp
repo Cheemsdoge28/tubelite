@@ -82,6 +82,7 @@ private:
     bool uiDirty_{true};
     bool lastKeyboardCursorVisible_{true};
     bool homeLoadFailed_{false};
+    Uint32 play_flash_start_time_{0};
 
     YouTubeVideo current_video_;
 
