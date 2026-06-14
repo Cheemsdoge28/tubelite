@@ -1226,11 +1226,8 @@ void App::renderFrame() {
                     thumbW,
                     thumbH
                 };
-                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
-                if (previewTex) {
-                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
-                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
-                }
+                mpv_player_.renderViewport(width, height, thumbDst.x, thumbDst.y, thumbDst.w, thumbDst.h);
+                maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
             }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
@@ -1259,11 +1256,8 @@ void App::renderFrame() {
                     thumbW,
                     thumbH
                 };
-                SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
-                if (previewTex) {
-                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
-                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
-                }
+                mpv_player_.renderViewport(width, height, thumbDst.x, thumbDst.y, thumbDst.w, thumbDst.h);
+                maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
             }
             focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
@@ -1276,11 +1270,7 @@ void App::renderFrame() {
         int mW = 240;
         int mH = 135;
         
-        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
-        SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, mW, mH);
-        if (previewTex) {
-            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
-        }
+        mpv_player_.renderViewport(width, height, mX, mY, mW, mH);
         
         // Draw a 2px red accent border around the miniplayer
         SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
