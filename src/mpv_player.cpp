@@ -553,7 +553,6 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
         restore_egl_context(old_display, old_draw, old_read, old_context);
     }
 
-    SDL_SetRenderTarget(renderer, old_target);
     return preview_tex_;
 }
 
