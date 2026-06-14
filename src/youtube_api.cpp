@@ -403,8 +403,9 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             const std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-playlist --no-call-home --no-check-formats "
+                "--youtube-skip-dash-manifest "
                 "--cache-dir \"build/cache\" "
-                "--extractor-args \"youtube:player_client=android,web;skip=dash,hls\" "
+                "--extractor-args \"youtube:player_client=android;skip=dash,hls\" "
                 "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1";
 
             std::string url;

@@ -917,30 +917,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
         uiDirty_ = true;
 
         // Start storyboard extraction
-        const std::string lowResCacheKey = streamCacheKey(video.id, 144);
-        auto lowResCachedOpt = getCachedStreamUrl(lowResCacheKey);
-        if (lowResCachedOpt.has_value() && !lowResCachedOpt.value().empty()) {
-            std::string low_res_cached = lowResCachedOpt.value();
-            std::string low_res_url = low_res_cached;
-            size_t p_pos = low_res_cached.find('|');
-            if (p_pos != std::string::npos) {
-                low_res_url = low_res_cached.substr(0, p_pos);
-            }
-            storyboard_.start(low_res_url, video.duration_seconds);
-        } else {
-            youtube_api_.getStreamUrl(video.id, 360, [this, video](bool success, const std::string& url, const std::string& subtitle_url) {
-                queueOnMainThread([this, video, success, url, subtitle_url]() {
-                    if ((state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) && current_video_.id == video.id) {
-                        if (success && !url.empty()) {
-                            setCachedStreamUrl(streamCacheKey(video.id, 360), url + "|" + subtitle_url);
-                            storyboard_.start(url, video.duration_seconds);
-                        } else {
-                            setCachedStreamUrl(streamCacheKey(video.id, 360), ""); // Cache failure
-                        }
-                    }
-                });
-            }, true /* isPreview */);
-        }
+        storyboard_.start(stream_url, video.duration_seconds);
         return;
     }
 
@@ -965,30 +942,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                 mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
 
                 // Start storyboard extraction
-                const std::string lowResCacheKey = streamCacheKey(video.id, 360);
-                auto lowResCachedOpt = getCachedStreamUrl(lowResCacheKey);
-                if (lowResCachedOpt.has_value() && !lowResCachedOpt.value().empty()) {
-                    std::string low_res_cached = lowResCachedOpt.value();
-                    std::string low_res_url = low_res_cached;
-                    size_t p_pos = low_res_cached.find('|');
-                    if (p_pos != std::string::npos) {
-                        low_res_url = low_res_cached.substr(0, p_pos);
-                    }
-                    storyboard_.start(low_res_url, video.duration_seconds);
-                } else {
-                    youtube_api_.getStreamUrl(video.id, 360, [this, video](bool success2, const std::string& url2, const std::string& subtitle_url2) {
-                        queueOnMainThread([this, video, success2, url2, subtitle_url2]() {
-                            if ((state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) && current_video_.id == video.id) {
-                                if (success2 && !url2.empty()) {
-                                    setCachedStreamUrl(streamCacheKey(video.id, 360), url2 + "|" + subtitle_url2);
-                                    storyboard_.start(url2, video.duration_seconds);
-                                } else {
-                                    setCachedStreamUrl(streamCacheKey(video.id, 360), ""); // Cache failure
-                                }
-                            }
-                        });
-                    }, true /* isPreview */);
-                }
+                storyboard_.start(url, video.duration_seconds);
             } else {
                 setCachedStreamUrl(cacheKey, ""); // Cache failure
                 loading_status_text_ = "Stream Resolve Failed — Press A to retry";
@@ -1699,7 +1653,7 @@ void App::updateHoverPreviews() {
         return;
     }
 
-    const std::string cacheKey = streamCacheKey(focusedCard->video.id, 360);
+    const std::string cacheKey = streamCacheKey(focusedCard->video.id, state_.maxQualityHeight);
     
     // 1. Kick off prefetch if focused for >= 0.25s
     if (focusedCard->focusedTime_ >= 0.25f) {
@@ -1707,7 +1661,7 @@ void App::updateHoverPreviews() {
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
             is_loading_preview_ = true;
-            youtube_api_.getStreamUrl(focusedCard->video.id, 360, [this, focusedCard, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, focusedCard, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
                 queueOnMainThread([this, focusedCard, cacheKey, success, url, subtitle_url]() {
                     stream_prefetch_inflight_.erase(cacheKey);
                     is_loading_preview_ = false;

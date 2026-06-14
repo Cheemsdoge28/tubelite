@@ -250,7 +250,10 @@ bool MpvPlayer::update() {
 
         restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
         uint64_t flags = mpv_render_context_update(mpv_gl_);
-        if (flags & MPV_RENDER_UPDATE_FRAME) needs_redraw = true;
+        if (flags & MPV_RENDER_UPDATE_FRAME) {
+            needs_redraw = true;
+            has_new_frame_ = true;
+        }
 
         if (old_display && old_context) {
             restore_egl_context(old_display, old_draw, old_read, old_context);
@@ -465,6 +468,7 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
         old_context = egl_get_current_context();
     }
 
+    bool texture_just_recreated = false;
     if (!preview_tex_ || preview_tex_w_ != w || preview_tex_h_ != h) {
         if (preview_tex_) {
             restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
@@ -474,9 +478,16 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
                                          SDL_TEXTUREACCESS_TARGET, w, h);
         preview_tex_w_ = w;
         preview_tex_h_ = h;
+        texture_just_recreated = true;
     }
 
     if (!preview_tex_) return nullptr;
+
+    if (!has_new_frame_ && !texture_just_recreated) {
+        return preview_tex_;
+    }
+
+    has_new_frame_ = false;
 
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
 
@@ -580,6 +591,7 @@ void MpvPlayer::destroyPreviewTexture() {
 void MpvPlayer::play(const std::string& url, const std::string& subtitle_url) {
     if (!mpv_) return;
     file_ended_ = false;
+    has_new_frame_ = true;
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     pending_subtitle_url_ = subtitle_url;
     const char* cmd[] = {"loadfile", url.c_str(), nullptr};
@@ -609,18 +621,21 @@ void MpvPlayer::setVolume(int volume) {
 }
 void MpvPlayer::seek(int seconds) {
     if (!mpv_) return;
+    has_new_frame_ = true;
     std::string s = std::to_string(seconds);
     const char* cmd[] = {"seek", s.c_str(), "relative", nullptr};
     mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::seekAbsoluteKeyframes(double seconds) {
     if (!mpv_) return;
+    has_new_frame_ = true;
     std::string s = std::to_string(seconds);
     const char* cmd[] = {"seek", s.c_str(), "absolute", "keyframes", nullptr};
     mpv_command_async(mpv_, 0, cmd);
 }
 void MpvPlayer::seekAbsoluteExact(double seconds) {
     if (!mpv_) return;
+    has_new_frame_ = true;
     std::string s = std::to_string(seconds);
     const char* cmd[] = {"seek", s.c_str(), "absolute", "exact", nullptr};
     mpv_command_async(mpv_, 0, cmd);
