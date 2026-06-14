@@ -259,6 +259,24 @@ void YouTubeAPI::search(const std::string& query, int page,
                     if (line.empty()) continue;
                     try {
                         auto j = json::parse(line);
+                        
+                        // Debug log to check keys on handheld
+                        static bool searchLogged = false;
+                        if (!searchLogged) {
+                            std::string logMsg = "Keys: ";
+                            for (auto it = j.begin(); it != j.end(); ++it) {
+                                std::string valType = "null";
+                                if (!it.value().is_null()) {
+                                    if (it.value().is_string()) valType = "string: " + it.value().get<std::string>();
+                                    else if (it.value().is_number()) valType = "number";
+                                    else valType = "other";
+                                }
+                                logMsg += it.key() + " (" + valType + "), ";
+                            }
+                            appendLog("Search Entry Debug Log", logMsg);
+                            searchLogged = true;
+                        }
+
                         YouTubeVideo video = parseVideoJson(j);
                         if (!video.id.empty()) callback({video}, false);
                     } catch (...) {}
