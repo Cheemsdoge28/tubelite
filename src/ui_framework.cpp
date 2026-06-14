@@ -454,4 +454,11 @@ void FocusManager::pruneGridIfNeeded(int maxCards) {
     updateTargetFocus();
 }
 
+void FocusManager::setFocusedIndex(int index) {
+    if (!grid_ || grid_->cards.empty()) return;
+    focusedCardIdx_ = std::clamp(index, 0, static_cast<int>(grid_->cards.size()) - 1);
+    updateTargetFocus();
+    currentFocusRing_ = targetFocusRing_;
+}
+
 } // namespace ui

@@ -152,4 +152,5 @@ private:
     void loadMoreHomeFeeds();
     void loadMoreSearchResults();
     void updateHoverPreviews();
+    void handleVideoEnded();
 };

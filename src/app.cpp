@@ -192,6 +192,9 @@ void App::run() {
         if (mpv_player_.update()) {
             uiDirty_ = true;
         }
+        if (mpv_player_.checkAndClearEnded()) {
+            handleVideoEnded();
+        }
         focus_manager_.update(dt);
         renderFrame();
         
@@ -827,7 +830,7 @@ void App::doSearch(const std::string& query) {
 }
 
 void App::playVideo(const YouTubeVideo& video) {
-    if (state_.currentScreen == TubeState::Screen::Playback) return;
+    if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) return;
     // If same video is already loading, do not restart it
     if (state_.isLoadingVideo && current_video_.id == video.id) return;
     // If a different video is loading, cancel it and start the new one
@@ -836,7 +839,11 @@ void App::playVideo(const YouTubeVideo& video) {
     if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
         previousBrowseScreen_ = state_.currentScreen;
     }
-    state_.miniplayerActive = false;
+    
+    bool keepMiniplayer = state_.miniplayerActive;
+    if (!keepMiniplayer) {
+        state_.miniplayerActive = false;
+    }
     
     addToHistory(video);
     stopBrowsePreviewState();
@@ -856,7 +863,14 @@ void App::playVideo(const YouTubeVideo& video) {
     auto cachedOpt = getCachedStreamUrl(cacheKey);
     if (cachedOpt.has_value() && !cachedOpt.value().empty()) {
         state_.isLoadingVideo = false;
-        state_.currentScreen = TubeState::Screen::Playback;
+        if (keepMiniplayer) {
+            state_.currentScreen = previousBrowseScreen_;
+            state_.miniplayerActive = true;
+            state_.showUi = true;
+        } else {
+            state_.currentScreen = TubeState::Screen::Playback;
+            state_.showUi = false;
+        }
         mpv_player_.setMute(state_.muted);
         mpv_player_.setVolume(state_.volume);
         mpv_player_.setSpeed(state_.speed);
@@ -872,7 +886,9 @@ void App::playVideo(const YouTubeVideo& video) {
 
         mpv_player_.play(stream_url, subtitle_url);
         mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
-        state_.showUi = false;
+        if (!keepMiniplayer) {
+            state_.showUi = false;
+        }
         uiDirty_ = true;
 
         // Start storyboard extraction
@@ -889,7 +905,7 @@ void App::playVideo(const YouTubeVideo& video) {
         } else {
             youtube_api_.getStreamUrl(video.id, 360, [this, video](bool success, const std::string& url, const std::string& subtitle_url) {
                 queueOnMainThread([this, video, success, url, subtitle_url]() {
-                    if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
+                    if ((state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) && current_video_.id == video.id) {
                         if (success && !url.empty()) {
                             setCachedStreamUrl(streamCacheKey(video.id, 360), url + "|" + subtitle_url);
                             storyboard_.start(url, video.duration_seconds);
@@ -903,19 +919,25 @@ void App::playVideo(const YouTubeVideo& video) {
         return;
     }
 
-    youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight, [this, video, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
-        queueOnMainThread([this, video, cacheKey, success, url, subtitle_url]() {
+    youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight, [this, video, cacheKey, keepMiniplayer](bool success, const std::string& url, const std::string& subtitle_url) {
+        queueOnMainThread([this, video, cacheKey, success, url, subtitle_url, keepMiniplayer]() {
             if (!state_.isLoadingVideo || current_video_.id != video.id) return;
             state_.isLoadingVideo = false;
             if (success) {
                 setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
-                state_.currentScreen = TubeState::Screen::Playback;
+                if (keepMiniplayer) {
+                    state_.currentScreen = previousBrowseScreen_;
+                    state_.miniplayerActive = true;
+                    state_.showUi = true;
+                } else {
+                    state_.currentScreen = TubeState::Screen::Playback;
+                    state_.showUi = false;
+                }
                 mpv_player_.setMute(state_.muted);
                 mpv_player_.setVolume(state_.volume);
                 mpv_player_.setSpeed(state_.speed);
                 mpv_player_.play(url, subtitle_url);
                 mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
-                state_.showUi = false;
 
                 // Start storyboard extraction
                 const std::string lowResCacheKey = streamCacheKey(video.id, 360);
@@ -931,7 +953,7 @@ void App::playVideo(const YouTubeVideo& video) {
                 } else {
                     youtube_api_.getStreamUrl(video.id, 360, [this, video](bool success2, const std::string& url2, const std::string& subtitle_url2) {
                         queueOnMainThread([this, video, success2, url2, subtitle_url2]() {
-                            if (state_.currentScreen == TubeState::Screen::Playback && current_video_.id == video.id) {
+                            if ((state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) && current_video_.id == video.id) {
                                 if (success2 && !url2.empty()) {
                                     setCachedStreamUrl(streamCacheKey(video.id, 360), url2 + "|" + subtitle_url2);
                                     storyboard_.start(url2, video.duration_seconds);
@@ -2233,6 +2255,31 @@ bool App::loadHomeCache() {
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+void App::handleVideoEnded() {
+    std::shared_ptr<ui::GridContainer> grid = (previousBrowseScreen_ == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    bool playedNext = false;
+    
+    if (grid && !grid->cards.empty()) {
+        for (size_t i = 0; i < grid->cards.size(); ++i) {
+            if (grid->cards[i]->video.id == current_video_.id) {
+                if (i + 1 < grid->cards.size()) {
+                    auto nextVideo = grid->cards[i + 1]->video;
+                    focus_manager_.setFocusedIndex(i + 1);
+                    playVideo(nextVideo);
+                    playedNext = true;
+                }
+                break;
+            }
+        }
+    }
+    
+    if (!playedNext) {
+        mpv_player_.seekAbsoluteKeyframes(0.0);
+        mpv_player_.pause();
+        uiDirty_ = true;
     }
 }
 

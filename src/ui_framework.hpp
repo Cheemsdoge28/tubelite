@@ -88,6 +88,7 @@ public:
     std::shared_ptr<VideoCard> getFocusedCard() const;
     void clickFocused();
     void pruneGridIfNeeded(int maxCards);
+    void setFocusedIndex(int index);
 
 private:
     std::shared_ptr<GridContainer> grid_;

@@ -236,6 +236,13 @@ bool MpvPlayer::update() {
             }
         }
 
+        if (ev->event_id == MPV_EVENT_END_FILE) {
+            auto* end_file = static_cast<mpv_event_end_file*>(ev->data);
+            if (end_file && end_file->reason == MPV_END_FILE_REASON_EOF) {
+                file_ended_ = true;
+            }
+        }
+
         if (ev->event_id == MPV_EVENT_PROPERTY_CHANGE) {
             auto* prop = static_cast<mpv_event_property*>(ev->data);
             if (!prop || !prop->name) continue;
@@ -523,6 +530,7 @@ void MpvPlayer::destroyPreviewTexture() {
 
 void MpvPlayer::play(const std::string& url, const std::string& subtitle_url) {
     if (!mpv_) return;
+    file_ended_ = false;
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     pending_subtitle_url_ = subtitle_url;
     const char* cmd[] = {"loadfile", url.c_str(), nullptr};
@@ -701,4 +709,10 @@ std::string MpvPlayer::getAudioTrackName() {
         }
     }
     return "Track " + a;
+}
+
+bool MpvPlayer::checkAndClearEnded() {
+    bool ended = file_ended_;
+    file_ended_ = false;
+    return ended;
 }

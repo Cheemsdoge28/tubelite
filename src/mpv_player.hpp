@@ -59,6 +59,8 @@ public:
     double getPlaybackTime() const { return playback_time_; }
     double getDuration()     const { return duration_; }
     int64_t getPropertyInt(const std::string& name) const;
+    bool checkAndClearEnded();
+
 
 private:
     mpv_handle*         mpv_       = nullptr;
@@ -80,4 +82,6 @@ private:
     int          preview_tex_h_{0};
 
     std::string pending_subtitle_url_;
+    bool file_ended_ = false;
+
 };
