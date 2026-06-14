@@ -399,56 +399,41 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                 "/best[height<=" + std::to_string(max_height) + "]"
                 "/best";
 
-            const std::vector<std::string> commands = {
-                // 1st: android client – most reliable muxed source
+            const std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-playlist "
-                "--extractor-args \"youtube:player_client=android;skip=dash,hls\" "
-                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1",
-
-                // 2nd: ios client fallback
-                "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
-                "--no-check-certificate --force-ipv4 --no-playlist "
-                "--extractor-args \"youtube:player_client=ios;skip=dash,hls\" "
-                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1",
-
-                // 3rd: web client, no format restriction – last resort
-                "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
-                "--no-check-certificate --force-ipv4 --no-playlist "
-                "--dump-json \"" + watchUrl + "\" 2>&1"
-            };
+                "--extractor-args \"youtube:player_client=android,ios,web;skip=dash,hls\" "
+                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1";
 
             std::string url;
             std::string subtitle_url;
-            for (const auto& cmd : commands) {
-                if (req_id != id_counter2) { callback(false, "", ""); return; }
 
+            if (req_id == id_counter2) {
                 const std::string output = executeCommand(cmd);
 
-                if (req_id != id_counter2) { callback(false, "", ""); return; }
-
-                std::istringstream iss(output);
-                std::string line;
-                while (std::getline(iss, line)) {
-                    if (!line.empty() && line.back() == '\r') line.pop_back();
-                    if (line.empty()) continue;
-                    try {
-                        auto j = json::parse(line);
-                        if (j.is_object() && j.contains("url")) {
-                            url = safeGet<std::string>(j, "url", "");
-                            subtitle_url = extractSubtitleUrl(j);
-                            if (!url.empty()) break;
+                if (req_id == id_counter2) {
+                    std::istringstream iss(output);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        if (line.empty()) continue;
+                        try {
+                            auto j = json::parse(line);
+                            if (j.is_object() && j.contains("url")) {
+                                url = safeGet<std::string>(j, "url", "");
+                                subtitle_url = extractSubtitleUrl(j);
+                                if (!url.empty()) break;
+                            }
+                        } catch (...) {
+                            // ignore
                         }
-                    } catch (...) {
-                        // ignore
                     }
                 }
+            }
 
-                if (!url.empty()) {
-                    appendLog("Selected URL", url);
-                    appendLog("Selected Subtitle URL", subtitle_url);
-                    break;
-                }
+            if (!url.empty()) {
+                appendLog("Selected URL", url);
+                appendLog("Selected Subtitle URL", subtitle_url);
             }
 
             if (url.empty()) {
