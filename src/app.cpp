@@ -155,7 +155,7 @@ void App::run() {
             uiDirty_ = true;
         }
         
-        bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText);
+        bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo;
         if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
             active = true;
         }
@@ -1083,11 +1083,11 @@ void App::renderFrame() {
             bool volumeActive = (now < volume_overlay_timeout_);
             bool speedActive  = (now < speed_overlay_timeout_);
 
-            static bool lastVolumeActive = false;
-            static bool lastSpeedActive  = false;
-            if (volumeActive || speedActive || lastVolumeActive || lastSpeedActive) uiDirty_ = true;
-            lastVolumeActive = volumeActive;
-            lastSpeedActive  = speedActive;
+            static bool lastVolumeActivePlayback = false;
+            static bool lastSpeedActivePlayback  = false;
+            if (volumeActive || speedActive || lastVolumeActivePlayback || lastSpeedActivePlayback) uiDirty_ = true;
+            lastVolumeActivePlayback = volumeActive;
+            lastSpeedActivePlayback  = speedActive;
 
             if (volumeActive) {
                 int boxW = 200, boxH = 36;
@@ -1320,13 +1320,19 @@ void App::renderFrame() {
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
         textY += 16;
 
-        double ram_used = 0.0, storage_free = 0.0, storage_total = 0.0;
-        getSystemMemoryAndStorage(ram_used, storage_free, storage_total);
-        std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", ram_used);
+        // Throttle to 1 Hz to avoid hammering /proc and statvfs at 60 fps
+        static double cached_ram = 0.0, cached_storage_free = 0.0, cached_storage_total = 0.0;
+        static uint32_t last_sys_poll = 0;
+        uint32_t now_ticks = SDL_GetTicks();
+        if (now_ticks - last_sys_poll >= 1000) {
+            getSystemMemoryAndStorage(cached_ram, cached_storage_free, cached_storage_total);
+            last_sys_poll = now_ticks;
+        }
+        std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", cached_ram);
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
         textY += 16;
 
-        std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", storage_free, storage_total);
+        std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", cached_storage_free, cached_storage_total);
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
     }
 

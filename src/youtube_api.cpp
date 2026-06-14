@@ -220,14 +220,13 @@ void YouTubeAPI::search(const std::string& query, int page,
                 searchTerm = "trending";
             }
 
-            std::string logPath = getLogPath();
             std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-check-formats "
                 "--extractor-arg \"youtubetab:approximate_date\" "
                 "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + searchTerm +
                 "\" --playlist-start " + std::to_string(startIdx) +
-                " --playlist-end "   + std::to_string(endIdx) + " 2>> \"" + logPath + "\"";
+                " --playlist-end "   + std::to_string(endIdx) + " 2>/dev/null";
 
 #ifdef _WIN32
             FILE* pipe = _popen(cmd.c_str(), "r");
@@ -259,24 +258,6 @@ void YouTubeAPI::search(const std::string& query, int page,
                     if (line.empty()) continue;
                     try {
                         auto j = json::parse(line);
-                        
-                        // Debug log to check keys on handheld
-                        static bool searchLogged = false;
-                        if (!searchLogged) {
-                            std::string logMsg = "Keys: ";
-                            for (auto it = j.begin(); it != j.end(); ++it) {
-                                std::string valType = "null";
-                                if (!it.value().is_null()) {
-                                    if (it.value().is_string()) valType = "string: " + it.value().get<std::string>();
-                                    else if (it.value().is_number()) valType = "number";
-                                    else valType = "other";
-                                }
-                                logMsg += it.key() + " (" + valType + "), ";
-                            }
-                            appendLog("Search Entry Debug Log", logMsg);
-                            searchLogged = true;
-                        }
-
                         YouTubeVideo video = parseVideoJson(j);
                         if (!video.id.empty()) callback({video}, false);
                     } catch (...) {}
@@ -438,8 +419,6 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                 const std::string output = executeCommand(cmd);
 
                 if (req_id != id_counter2) { callback(false, "", ""); return; }
-
-                appendLog(std::string("getStreamUrl cmd"), output);
 
                 std::istringstream iss(output);
                 std::string line;

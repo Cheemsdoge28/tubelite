@@ -39,7 +39,6 @@ extern FontAtlas g_atlas_large;
 
 bool initFonts(SDL_Renderer* renderer);
 void cleanupFonts();
-void clearTextCache();
 
 void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);
 void maskRoundedCornersTop(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);

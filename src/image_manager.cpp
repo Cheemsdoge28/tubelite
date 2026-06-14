@@ -153,8 +153,9 @@ void ImageManager::workerThread() {
 #endif
 
         std::vector<unsigned char> buffer;
+        buffer.reserve(128 * 1024); // hqdefault.jpg is typically 20-60 KB
         if (pipe) {
-            unsigned char temp[4096];
+            unsigned char temp[8192];
             while (true) {
                 size_t n = fread(temp, 1, sizeof(temp), pipe);
                 if (n == 0) break;

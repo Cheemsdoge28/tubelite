@@ -19,12 +19,27 @@ void StoryboardManager::start(const std::string& stream_url, int duration_second
     extract_thread_ = std::thread(&StoryboardManager::runExtraction, this, stream_url, duration_seconds);
 }
 
+static std::string getTmpDir() {
+#ifdef _WIN32
+    return "build/tmp";
+#else
+    if (std::filesystem::exists("/roms/tools/tubelite")) {
+        return "/roms/tools/tubelite/build/tmp";
+    }
+    return "build/tmp";
+#endif
+}
+
 void StoryboardManager::stop() {
     cancel_extract_ = true;
 #ifdef _WIN32
     std::system("taskkill /F /IM ffmpeg.exe >NUL 2>&1");
 #else
-    std::system("pkill -9 -f ffmpeg >/dev/null 2>&1");
+    // Kill only the ffmpeg instance that is writing to our unique tmp directory.
+    // Using the specific output path avoids killing unrelated ffmpeg processes on the device.
+    std::string tmpDir = getTmpDir();
+    std::string killCmd = "pkill -9 -f \"" + tmpDir + "/preview_\" >/dev/null 2>&1";
+    std::system(killCmd.c_str());
 #endif
 
     if (extract_thread_.joinable()) {
@@ -48,16 +63,7 @@ void StoryboardManager::clearFrames() {
     frames_.clear();
 }
 
-static std::string getTmpDir() {
-#ifdef _WIN32
-    return "build/tmp";
-#else
-    if (std::filesystem::exists("/roms/tools/tubelite")) {
-        return "/roms/tools/tubelite/build/tmp";
-    }
-    return "build/tmp";
-#endif
-}
+
 
 void StoryboardManager::runExtraction(std::string stream_url, int duration_seconds) {
     if (duration_seconds <= 0) return;

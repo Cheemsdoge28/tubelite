@@ -3,7 +3,6 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <map>
 
 #ifdef _WIN32
 #include <SDL_ttf.h>
@@ -385,53 +384,8 @@ bool initFonts(SDL_Renderer* renderer) {
     return true;
 }
 
-struct TextCacheKey {
-    std::string text;
-    int scale;
-    uint32_t color_rgba;
-
-    bool operator<(const TextCacheKey& o) const {
-        if (scale != o.scale) return scale < o.scale;
-        if (color_rgba != o.color_rgba) return color_rgba < o.color_rgba;
-        return text < o.text;
-    }
-};
-
-struct CachedText {
-    SDL_Texture* texture;
-    int w;
-    int h;
-    uint32_t last_used;
-};
-
-static std::map<TextCacheKey, CachedText> g_text_cache;
-static uint32_t g_last_prune_time = 0;
-
-void pruneTextCache(uint32_t now) {
-    g_last_prune_time = now;
-    for (auto it = g_text_cache.begin(); it != g_text_cache.end(); ) {
-        if (now - it->second.last_used > 5000) {
-            if (it->second.texture) {
-                SDL_DestroyTexture(it->second.texture);
-            }
-            it = g_text_cache.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-void clearTextCache() {
-    for (auto& pair : g_text_cache) {
-        if (pair.second.texture) {
-            SDL_DestroyTexture(pair.second.texture);
-        }
-    }
-    g_text_cache.clear();
-}
 
 void cleanupFonts() {
-    clearTextCache();
     if (g_atlas_small.texture)  { SDL_DestroyTexture(g_atlas_small.texture);  g_atlas_small.texture = nullptr; }
     if (g_atlas_medium.texture) { SDL_DestroyTexture(g_atlas_medium.texture); g_atlas_medium.texture = nullptr; }
     if (g_atlas_large.texture)  { SDL_DestroyTexture(g_atlas_large.texture);  g_atlas_large.texture = nullptr; }
