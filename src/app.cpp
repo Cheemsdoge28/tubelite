@@ -650,16 +650,45 @@ void App::renderPlaybackOverlay(int width, int height) {
     if (state_.isScrubbing) {
         int dotX = mg + static_cast<int>(pbW * frac);
         std::string timeStr = fmtTime(displayTime);
-        int tw = 0, th = 0;
-        getTextSize(timeStr, 1, &tw, &th);
-        int previewW = tw + 8;
-        int previewH = th + 4;
-        int previewX = std::max(mg, std::min(width - mg - previewW, dotX - previewW / 2));
-        int previewY = pbY - previewH - 12;
 
-        SDL_Rect tsBg{previewX, previewY, previewW, previewH};
-        fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
-        drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+        SDL_Texture* sbTex = storyboard_.getTexture(renderer_, displayTime);
+        if (sbTex) {
+            int thumbW = 160;
+            int thumbH = 90;
+            int previewX = std::max(mg, std::min(width - mg - thumbW, dotX - thumbW / 2));
+            int previewY = pbY - thumbH - 24;
+
+            SDL_Rect thumbRect{previewX, previewY, thumbW, thumbH};
+            SDL_RenderCopy(renderer_, sbTex, nullptr, &thumbRect);
+            
+            // Draw a subtle border around the thumbnail
+            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 180);
+            SDL_RenderDrawRect(renderer_, &thumbRect);
+
+            // Timestamp pill overlay at the bottom of the thumbnail
+            int tw = 0, th = 0;
+            getTextSize(timeStr, 1, &tw, &th);
+            int pillW = tw + 8;
+            int pillH = th + 4;
+            int pillX = thumbRect.x + (thumbW - pillW) / 2;
+            int pillY = thumbRect.y + thumbH - pillH - 4;
+
+            SDL_Rect tsBg{pillX, pillY, pillW, pillH};
+            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
+            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+        } else {
+            // Fallback: only timestamp pill if storyboard frames are not yet loaded
+            int tw = 0, th = 0;
+            getTextSize(timeStr, 1, &tw, &th);
+            int previewW = tw + 8;
+            int previewH = th + 4;
+            int previewX = std::max(mg, std::min(width - mg - previewW, dotX - previewW / 2));
+            int previewY = pbY - previewH - 12;
+
+            SDL_Rect tsBg{previewX, previewY, previewW, previewH};
+            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
+            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+        }
     }
 
     // Timestamps
