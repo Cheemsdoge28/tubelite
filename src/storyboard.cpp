@@ -80,18 +80,18 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
     // Dynamic interval to target ~100 frames
     int interval = std::max(1, duration_seconds / 100);
 
-    char cmd[2048];
+    char cmd[8192];
 #ifdef _WIN32
-    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 \"%s/preview_%%03d.jpg\" >NUL 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -vframes 120 -q:v 6 \"%s/preview_%%03d.jpg\" >NUL 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
 #else
-    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -q:v 6 \"%s/preview_%%03d.jpg\" >/dev/null 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -vframes 120 -q:v 6 \"%s/preview_%%03d.jpg\" >/dev/null 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
 #endif
 
     int res = std::system(cmd);
     (void)res;
 
     for (int i = 1; !cancel_extract_; ++i) {
-        char filename[512];
+        char filename[1024];
         std::snprintf(filename, sizeof(filename), "%s/preview_%03d.jpg", tmpDir.c_str(), i);
 
         if (!std::filesystem::exists(filename)) {
@@ -101,26 +101,28 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
         int w = 0, h = 0, channels = 0;
         unsigned char* data = stbi_load(filename, &w, &h, &channels, 3);
         if (data) {
-            std::vector<uint16_t> pixels(w * h);
-            for (int p = 0; p < w * h; ++p) {
-                uint8_t r = data[p * 3 + 0];
-                uint8_t g = data[p * 3 + 1];
-                uint8_t b = data[p * 3 + 2];
-                uint16_t r5 = (r >> 3) & 0x1F;
-                uint16_t g6 = (g >> 2) & 0x3F;
-                uint16_t b5 = (b >> 3) & 0x1F;
-                pixels[p] = (r5 << 11) | (g6 << 5) | b5;
+            if (w > 0 && h > 0 && w <= 2048 && h <= 2048) {
+                std::vector<uint16_t> pixels(w * h);
+                for (int p = 0; p < w * h; ++p) {
+                    uint8_t r = data[p * 3 + 0];
+                    uint8_t g = data[p * 3 + 1];
+                    uint8_t b = data[p * 3 + 2];
+                    uint16_t r5 = (r >> 3) & 0x1F;
+                    uint16_t g6 = (g >> 2) & 0x3F;
+                    uint16_t b5 = (b >> 3) & 0x1F;
+                    pixels[p] = (r5 << 11) | (g6 << 5) | b5;
+                }
+
+                StoryboardFrame frame;
+                frame.timestamp = (i - 0.5) * interval;
+                frame.pixels = std::move(pixels);
+
+                std::lock_guard<std::mutex> lock(mutex_);
+                width_ = w;
+                height_ = h;
+                frames_.push_back(std::move(frame));
             }
             stbi_image_free(data);
-
-            StoryboardFrame frame;
-            frame.timestamp = (i - 0.5) * interval;
-            frame.pixels = std::move(pixels);
-
-            std::lock_guard<std::mutex> lock(mutex_);
-            width_ = w;
-            height_ = h;
-            frames_.push_back(std::move(frame));
         }
 
         std::filesystem::remove(filename, ec);
@@ -158,14 +160,16 @@ SDL_Texture* StoryboardManager::getTexture(SDL_Renderer* renderer, double second
         int pitch = 0;
         if (SDL_LockTexture(texture_, nullptr, &pixels, &pitch) == 0) {
             const auto& frame_pixels = frames_[best_idx].pixels;
-            uint8_t* dst = static_cast<uint8_t*>(pixels);
-            const uint8_t* src = reinterpret_cast<const uint8_t*>(frame_pixels.data());
-            int row_size = width_ * 2;
-            for (int y = 0; y < height_; ++y) {
-                std::memcpy(dst + y * pitch, src + y * row_size, row_size);
+            if (frame_pixels.size() == static_cast<size_t>(width_ * height_)) {
+                uint8_t* dst = static_cast<uint8_t*>(pixels);
+                const uint8_t* src = reinterpret_cast<const uint8_t*>(frame_pixels.data());
+                int row_size = width_ * 2;
+                for (int y = 0; y < height_; ++y) {
+                    std::memcpy(dst + y * pitch, src + y * row_size, row_size);
+                }
+                last_texture_frame_idx_ = best_idx;
             }
             SDL_UnlockTexture(texture_);
-            last_texture_frame_idx_ = best_idx;
         }
     }
 

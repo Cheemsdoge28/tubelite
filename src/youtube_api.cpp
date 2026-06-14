@@ -222,7 +222,8 @@ void YouTubeAPI::search(const std::string& query, int page,
 
             std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
-                "--no-check-certificate --force-ipv4 --no-check-formats "
+                "--no-check-certificate --force-ipv4 --no-check-formats --no-call-home "
+                "--cache-dir \"build/cache\" "
                 "--extractor-arg \"youtubetab:approximate_date\" "
                 "--flat-playlist --dump-json \"ytsearch" + std::to_string(endIdx) + ":" + searchTerm +
                 "\" --playlist-start " + std::to_string(startIdx) +
@@ -401,8 +402,9 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
 
             const std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
-                "--no-check-certificate --force-ipv4 --no-playlist "
-                "--extractor-args \"youtube:player_client=android,ios,web;skip=dash,hls\" "
+                "--no-check-certificate --force-ipv4 --no-playlist --no-call-home "
+                "--cache-dir \"build/cache\" "
+                "--extractor-args \"youtube:player_client=android;skip=dash,hls\" "
                 "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1";
 
             std::string url;
