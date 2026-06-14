@@ -219,9 +219,41 @@ bool MpvPlayer::update() {
     bool needs_redraw = false;
 
     if (mpv_gl_) {
+        void* old_display = nullptr;
+        void* old_draw = nullptr;
+        void* old_read = nullptr;
+        void* old_context = nullptr;
+
+        static auto egl_get_current_display = []() -> PFN_eglGetCurrentDisplay {
+            void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+            if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+            return lib ? reinterpret_cast<PFN_eglGetCurrentDisplay>(dlsym(lib, "eglGetCurrentDisplay")) : nullptr;
+        }();
+        static auto egl_get_current_surface = []() -> PFN_eglGetCurrentSurface {
+            void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+            if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+            return lib ? reinterpret_cast<PFN_eglGetCurrentSurface>(dlsym(lib, "eglGetCurrentSurface")) : nullptr;
+        }();
+        static auto egl_get_current_context = []() -> PFN_eglGetCurrentContext {
+            void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
+            if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+            return lib ? reinterpret_cast<PFN_eglGetCurrentContext>(dlsym(lib, "eglGetCurrentContext")) : nullptr;
+        }();
+
+        if (egl_get_current_display && egl_get_current_surface && egl_get_current_context) {
+            old_display = egl_get_current_display();
+            old_draw    = egl_get_current_surface(EGL_DRAW);
+            old_read    = egl_get_current_surface(EGL_READ);
+            old_context = egl_get_current_context();
+        }
+
         restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
         uint64_t flags = mpv_render_context_update(mpv_gl_);
         if (flags & MPV_RENDER_UPDATE_FRAME) needs_redraw = true;
+
+        if (old_display && old_context) {
+            restore_egl_context(old_display, old_draw, old_read, old_context);
+        }
     }
 
     while (true) {
@@ -445,13 +477,22 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
 
     if (!preview_tex_) return nullptr;
 
-    SDL_Texture* old_target = SDL_GetRenderTarget(renderer);
-    SDL_SetRenderTarget(renderer, preview_tex_);
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-    SDL_RenderFlush(renderer);
-
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
+
+    // Bind the texture to retrieve its OpenGL texture ID
+    float texw = 0.0f, texh = 0.0f;
+    SDL_GL_BindTexture(preview_tex_, &texw, &texh);
+
+    GLint texture_id = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture_id);
+
+    SDL_GL_UnbindTexture(preview_tex_);
+
+    if (preview_fbo_ == 0) {
+        glGenFramebuffers(1, &preview_fbo_);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, preview_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_id, 0);
 
     // Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
     GLint last_program = 0;
@@ -475,14 +516,14 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     GLint last_scissor_box[4];
     glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
 
-    GLint fbo_id = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo_id);
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
 
     mpv_opengl_fbo fbo{};
-    fbo.fbo = fbo_id;
+    fbo.fbo = preview_fbo_;
     fbo.w   = w;
     fbo.h   = h;
-    fbo.internal_format = 0;
+    fbo.internal_format = GL_RGBA;
 
     int flip_y = 0; // standard EGL texture alignment inside SDL
     mpv_render_param rparams[] = {
@@ -521,6 +562,11 @@ void MpvPlayer::destroyPreviewTexture() {
         restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
         SDL_DestroyTexture(preview_tex_);
         preview_tex_ = nullptr;
+    }
+    if (preview_fbo_) {
+        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
+        glDeleteFramebuffers(1, &preview_fbo_);
+        preview_fbo_ = 0;
     }
     preview_tex_w_ = 0;
     preview_tex_h_ = 0;

@@ -274,32 +274,7 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
 }
 
 static void initCornerMask(SDL_Renderer* renderer) {
-    int r = 8;
-    int size = r * 2;
-    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
-    if (!surf) return;
-    
-    SDL_FillRect(surf, nullptr, 0x00000000);
-    
-    uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
-    uint32_t mask_color = SDL_MapRGBA(surf->format, 15, 15, 15, 255);
-    
-    for (int y = 0; y < size; ++y) {
-        for (int x = 0; x < size; ++x) {
-            double dx = x - (r - 0.5);
-            double dy = y - (r - 0.5);
-            if (dx * dx + dy * dy > r * r) {
-                pixels[y * size + x] = mask_color;
-            }
-        }
-    }
-    
-    g_corner_mask_texture = SDL_CreateTextureFromSurface(renderer, surf);
-    SDL_FreeSurface(surf);
-}
-
-static void initSolidCorner(SDL_Renderer* renderer) {
-    int r = 8;
+    int r = 64;
     int size = r * 2;
     SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
     if (!surf) return;
@@ -313,13 +288,52 @@ static void initSolidCorner(SDL_Renderer* renderer) {
         for (int x = 0; x < size; ++x) {
             double dx = x - (r - 0.5);
             double dy = y - (r - 0.5);
-            if (dx * dx + dy * dy <= r * r) {
+            double dist = std::sqrt(dx * dx + dy * dy);
+            if (dist > r + 0.5) {
                 pixels[y * size + x] = white;
+            } else if (dist >= r - 0.5) {
+                double alpha = (dist - (r - 0.5)); // 0.0 to 1.0 transition
+                uint8_t a = static_cast<uint8_t>(alpha * 255.0);
+                pixels[y * size + x] = SDL_MapRGBA(surf->format, 255, 255, 255, a);
             }
         }
     }
     
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+    g_corner_mask_texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    SDL_FreeSurface(surf);
+}
+
+static void initSolidCorner(SDL_Renderer* renderer) {
+    int r = 64;
+    int size = r * 2;
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) return;
+    
+    SDL_FillRect(surf, nullptr, 0x00000000);
+    
+    uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
+    uint32_t white = SDL_MapRGBA(surf->format, 255, 255, 255, 255);
+    
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            double dx = x - (r - 0.5);
+            double dy = y - (r - 0.5);
+            double dist = std::sqrt(dx * dx + dy * dy);
+            if (dist <= r - 0.5) {
+                pixels[y * size + x] = white;
+            } else if (dist < r + 0.5) {
+                double alpha = (r + 0.5 - dist); // 0.0 to 1.0 transition
+                uint8_t a = static_cast<uint8_t>(alpha * 255.0);
+                pixels[y * size + x] = SDL_MapRGBA(surf->format, 255, 255, 255, a);
+            }
+        }
+    }
+    
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
     g_solid_corner_texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_FreeSurface(surf);
 }
 
@@ -526,7 +540,7 @@ void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
     SDL_SetTextureColorMod(g_solid_corner_texture, color.r, color.g, color.b);
     SDL_SetTextureAlphaMod(g_solid_corner_texture, color.a);
     
-    int r_base = 8;
+    int r_base = 64;
     int r = radius;
     SDL_Rect middleRect{rect.x + r, rect.y, rect.w - 2 * r, rect.h};
     SDL_Rect sideRect{rect.x, rect.y + r, rect.w, rect.h - 2 * r};
@@ -562,7 +576,7 @@ void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius
     SDL_SetTextureAlphaMod(g_corner_mask_texture, color.a);
     SDL_SetTextureBlendMode(g_corner_mask_texture, SDL_BLENDMODE_BLEND);
     
-    int r_base = 8;
+    int r_base = 64;
     int r = radius;
     
     SDL_Rect srcTL{0, 0, r_base, r_base};
@@ -589,7 +603,7 @@ void maskRoundedCornersTop(SDL_Renderer* renderer, const SDL_Rect& rect, int rad
     SDL_SetTextureAlphaMod(g_corner_mask_texture, color.a);
     SDL_SetTextureBlendMode(g_corner_mask_texture, SDL_BLENDMODE_BLEND);
     
-    int r_base = 8;
+    int r_base = 64;
     int r = radius;
     
     SDL_Rect srcTL{0, 0, r_base, r_base};
