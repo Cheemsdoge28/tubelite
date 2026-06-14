@@ -110,7 +110,8 @@ bool App::initialize() {
     compositor_ = std::make_unique<Compositor>(renderer_);
 
     state_manager_.setTransitionCallback([this](TubeState::Screen oldScreen, TubeState::Screen newScreen, bool oldMiniplayer, bool newMiniplayer) {
-        bool stoppedPlayback = (oldScreen == TubeState::Screen::Playback && newScreen != TubeState::Screen::Playback) || (oldMiniplayer && !newMiniplayer);
+        bool stoppedPlayback = (oldScreen == TubeState::Screen::Playback && newScreen != TubeState::Screen::Playback && !newMiniplayer) ||
+                               (oldMiniplayer && !newMiniplayer && newScreen != TubeState::Screen::Playback);
         if (stoppedPlayback) {
             mpv_player_.stop();
             storyboard_.stop();

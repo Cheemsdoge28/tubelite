@@ -121,7 +121,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_ = mpv_create();
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
-    mpv_set_option_string(mpv_, "hwdec",                  "auto-copy");
+    mpv_set_option_string(mpv_, "hwdec",                  "rkmpp,auto");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
@@ -134,8 +134,9 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "sub-auto",               "fuzzy");
     mpv_set_option_string(mpv_, "cache",                  "yes");
     mpv_set_option_string(mpv_, "network-timeout",        "5");
-    mpv_set_option_string(mpv_, "demuxer-max-bytes",      "16MiB");
-    mpv_set_option_string(mpv_, "vd-lavc-threads",        "2");
+    mpv_set_option_string(mpv_, "demuxer-max-bytes",      "50MiB");
+    mpv_set_option_string(mpv_, "demuxer-readahead-secs", "20");
+    mpv_set_option_string(mpv_, "vd-lavc-threads",        "4");
     mpv_set_option_string(mpv_, "vd-lavc-skiploopfilter", "nonkey");
     mpv_set_option_string(mpv_, "vd-lavc-fast",           "yes");
     mpv_set_option_string(mpv_, "tls-verify",             "no");
