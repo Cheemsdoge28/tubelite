@@ -45,6 +45,8 @@ public:
     std::string getAudioTrackName();
     void setMute(bool mute);
     void renderViewport(int winWidth, int winHeight, int x, int y, int w, int h);
+    SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
+    void destroyPreviewTexture();
     void setSpeed(double speed);
     void adjustSpeed(double delta);
     double getSpeed() const;
@@ -72,6 +74,10 @@ private:
     bool   is_playing_   = false;
     double playback_time_ = 0.0;
     double duration_      = 0.0;
+
+    SDL_Texture* preview_tex_{nullptr};
+    int          preview_tex_w_{0};
+    int          preview_tex_h_{0};
 
     std::string pending_subtitle_url_;
 };
