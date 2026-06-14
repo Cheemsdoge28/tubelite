@@ -118,7 +118,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_ = mpv_create();
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
-    mpv_set_option_string(mpv_, "hwdec",                  "no");
+    mpv_set_option_string(mpv_, "hwdec",                  "auto-copy");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
