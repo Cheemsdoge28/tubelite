@@ -1243,6 +1243,61 @@ void App::renderFrame() {
         renderBrowseHeader(width, height, "Search", scrollY, true);
     }
 
+    if (state_.miniplayerActive) {
+        int mX = width - 250;
+        int mY = height - 193;
+        int mW = 240;
+        int mH = 135;
+        
+        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
+        SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, mW, mH);
+        if (previewTex) {
+            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
+        }
+        
+        // Draw a 2px red accent border around the miniplayer
+        SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
+        SDL_Rect border2{mX - 2, mY - 2, mW + 4, mH + 4};
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_RenderDrawRect(renderer_, &border1);
+        SDL_RenderDrawRect(renderer_, &border2);
+        
+        if (!mpv_player_.isPlaying()) {
+            int centerX = mX + mW / 2;
+            int centerY = mY + mH / 2;
+            SDL_Rect pauseBg{ centerX - 15, centerY - 15, 30, 30 };
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            fillRoundedRect(renderer_, pauseBg, 15, {0, 0, 0, 150});
+            
+            SDL_Rect pauseLeft{ centerX - 5, centerY - 8, 3, 16 };
+            SDL_Rect pauseRight{ centerX + 2, centerY - 8, 3, 16 };
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+            SDL_RenderFillRect(renderer_, &pauseLeft);
+            SDL_RenderFillRect(renderer_, &pauseRight);
+        }
+        
+        // Hints: START: Play/Pause  B: Close
+        std::string hint1 = "START: Play/Pause";
+        std::string hint2 = "B: Close";
+        int w1 = 0, h1 = 0;
+        int w2 = 0, h2 = 0;
+        getTextSize(hint1, 1, &w1, &h1);
+        getTextSize(hint2, 1, &w2, &h2);
+        int textW = std::max(w1, w2);
+        int textH = h1 + h2 + 2;
+        int plateW = textW + 8;
+        int plateH = textH + 6;
+        
+        SDL_Rect plate{ mX + 4, mY + mH - plateH - 4, plateW, plateH };
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
+        SDL_RenderFillRect(renderer_, &plate);
+        
+        drawText(renderer_, mX + 8, mY + mH - plateH - 1, hint1, 1, {255, 255, 255, 255});
+        drawText(renderer_, mX + 8, mY + mH - 14, hint2, 1, {255, 255, 255, 255});
+    }
+
     // Render header-level spinner if searching and grid is not empty
     if (state_.isSearching && activeGrid() && !activeGrid()->cards.empty()) {
         const int expandedHeight = 84;
@@ -1383,61 +1438,6 @@ void App::renderFrame() {
 
         std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", cached_storage_free, cached_storage_total);
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
-    }
-
-    if (state_.miniplayerActive) {
-        int mX = width - 170;
-        int mY = height - 148;
-        int mW = 160;
-        int mH = 90;
-        
-        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
-        SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, mW, mH);
-        if (previewTex) {
-            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
-        }
-        
-        // Draw a 2px red accent border around the miniplayer
-        SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
-        SDL_Rect border2{mX - 2, mY - 2, mW + 4, mH + 4};
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-        SDL_RenderDrawRect(renderer_, &border1);
-        SDL_RenderDrawRect(renderer_, &border2);
-        
-        if (!mpv_player_.isPlaying()) {
-            int centerX = mX + mW / 2;
-            int centerY = mY + mH / 2;
-            SDL_Rect pauseBg{ centerX - 15, centerY - 15, 30, 30 };
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            fillRoundedRect(renderer_, pauseBg, 15, {0, 0, 0, 150});
-            
-            SDL_Rect pauseLeft{ centerX - 5, centerY - 8, 3, 16 };
-            SDL_Rect pauseRight{ centerX + 2, centerY - 8, 3, 16 };
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
-            SDL_RenderFillRect(renderer_, &pauseLeft);
-            SDL_RenderFillRect(renderer_, &pauseRight);
-        }
-        
-        // Hints: START: Play/Pause  B: Close
-        std::string hint1 = "START: Play/Pause";
-        std::string hint2 = "B: Close";
-        int w1 = 0, h1 = 0;
-        int w2 = 0, h2 = 0;
-        getTextSize(hint1, 1, &w1, &h1);
-        getTextSize(hint2, 1, &w2, &h2);
-        int textW = std::max(w1, w2);
-        int textH = h1 + h2 + 2;
-        int plateW = textW + 8;
-        int plateH = textH + 6;
-        
-        SDL_Rect plate{ mX + 4, mY + mH - plateH - 4, plateW, plateH };
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-        SDL_RenderFillRect(renderer_, &plate);
-        
-        drawText(renderer_, mX + 8, mY + mH - plateH - 1, hint1, 1, {255, 255, 255, 255});
-        drawText(renderer_, mX + 8, mY + mH - 14, hint2, 1, {255, 255, 255, 255});
     }
 
     SDL_RenderPresent(renderer_);

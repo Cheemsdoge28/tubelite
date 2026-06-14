@@ -550,57 +550,9 @@ void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
     SDL_RenderCopy(renderer, g_solid_corner_texture, &srcBR, &dstBR);
 }
 
-void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
-    if (radius <= 0) {
-        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-        SDL_RenderDrawRect(renderer, &rect);
-        return;
-    }
-    
+void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int /*radius*/, SDL_Color color) {
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    
-    int right = rect.x + rect.w - 1;
-    int bottom = rect.y + rect.h - 1;
-    
-    SDL_RenderDrawLine(renderer, rect.x + radius, rect.y, right - radius, rect.y);
-    SDL_RenderDrawLine(renderer, rect.x + radius, bottom, right - radius, bottom);
-    SDL_RenderDrawLine(renderer, rect.x, rect.y + radius, rect.x, bottom - radius);
-    SDL_RenderDrawLine(renderer, right, rect.y + radius, right, bottom - radius);
-    
-    int x = 0;
-    int y = radius;
-    int d = 3 - 2 * radius;
-    
-    auto drawPoints = [&](int cx, int cy, int corner) {
-        if (corner == 0) {
-            SDL_RenderDrawPoint(renderer, cx - x, cy - y);
-            SDL_RenderDrawPoint(renderer, cx - y, cy - x);
-        } else if (corner == 1) {
-            SDL_RenderDrawPoint(renderer, cx + x, cy - y);
-            SDL_RenderDrawPoint(renderer, cx + y, cy - x);
-        } else if (corner == 2) {
-            SDL_RenderDrawPoint(renderer, cx - x, cy + y);
-            SDL_RenderDrawPoint(renderer, cx - y, cy + x);
-        } else if (corner == 3) {
-            SDL_RenderDrawPoint(renderer, cx + x, cy + y);
-            SDL_RenderDrawPoint(renderer, cx + y, cy + x);
-        }
-    };
-    
-    while (y >= x) {
-        drawPoints(rect.x + radius, rect.y + radius, 0);
-        drawPoints(right - radius, rect.y + radius, 1);
-        drawPoints(rect.x + radius, bottom - radius, 2);
-        drawPoints(right - radius, bottom - radius, 3);
-        
-        x++;
-        if (d > 0) {
-            y--;
-            d = d + 4 * (x - y) + 10;
-        } else {
-            d = d + 4 * x + 6;
-        }
-    }
+    SDL_RenderDrawRect(renderer, &rect);
 }
 
 void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
