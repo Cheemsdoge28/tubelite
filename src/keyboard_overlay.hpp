@@ -33,6 +33,7 @@ public:
 
     void destroyTexture();
     void render(SDL_Renderer* renderer, const TubeState& state, int width, int height, bool& uiDirty);
+    void preload(SDL_Renderer* renderer, const TubeState& state, int width, int height);
     
     void toggleMode(TubeState& state, bool& uiDirty);
     void ensureSelectionValid(TubeState& state, int width, int height);

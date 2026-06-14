@@ -308,7 +308,6 @@ bool KeyboardOverlay::updateSelectionFromDpad(TubeState& state, int width, int h
 
 void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int width, int height, bool& uiDirty) {
     if (state.inputMode != TubeState::InputMode::SearchText) {
-        if (texture_) { destroyTexture(); kb_dirty_ = true; }
         return;
     }
 
@@ -436,4 +435,11 @@ std::string KeyboardOverlay::transformTypedText(const TubeState& state, const ch
         }
     }
     return transformed;
+}
+
+void KeyboardOverlay::preload(SDL_Renderer* renderer, const TubeState& state, int width, int height) {
+    TubeState tempState = state;
+    tempState.inputMode = TubeState::InputMode::SearchText;
+    bool tempUiDirty = false;
+    render(renderer, tempState, width, height, tempUiDirty);
 }

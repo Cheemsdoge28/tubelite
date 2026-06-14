@@ -125,6 +125,11 @@ bool App::initialize() {
     loadHistory();
     loadHomeFeeds();
     SDL_StartTextInput();
+
+    int width = 0, height = 0;
+    SDL_GetWindowSize(window_, &width, &height);
+    keyboard_.preload(renderer_, state_, width, height);
+
     return true;
 }
 
@@ -680,6 +685,7 @@ void App::renderPlaybackOverlay(int width, int height) {
     std::vector<HintItem> activeHints = {
         {"A", red, playing ? "PAUSE" : "PLAY"},
         {"B", yellow, "EXIT"},
+        {"SELECT", textColor, "MINIPLAYER"},
         {"Y", green, "SUBS"},
         {"X", blue, "STATS"},
         {"L1/R1", textColor, "SPEED"},
@@ -822,8 +828,14 @@ void App::playVideo(const YouTubeVideo& video) {
     // If a different video is loading, cancel it and start the new one
     state_.isLoadingVideo = false;
     
+    if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+        previousBrowseScreen_ = state_.currentScreen;
+    }
+    state_.miniplayerActive = false;
+    
     addToHistory(video);
     stopBrowsePreviewState();
+    mpv_player_.stop();
     storyboard_.stop();
     if (image_manager_) {
         image_manager_->clearCache();
@@ -1373,6 +1385,61 @@ void App::renderFrame() {
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
     }
 
+    if (state_.miniplayerActive) {
+        int mX = width - 170;
+        int mY = height - 148;
+        int mW = 160;
+        int mH = 90;
+        
+        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
+        SDL_Texture* previewTex = mpv_player_.renderToTexture(renderer_, mW, mH);
+        if (previewTex) {
+            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
+        }
+        
+        // Draw a 2px red accent border around the miniplayer
+        SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
+        SDL_Rect border2{mX - 2, mY - 2, mW + 4, mH + 4};
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_RenderDrawRect(renderer_, &border1);
+        SDL_RenderDrawRect(renderer_, &border2);
+        
+        if (!mpv_player_.isPlaying()) {
+            int centerX = mX + mW / 2;
+            int centerY = mY + mH / 2;
+            SDL_Rect pauseBg{ centerX - 15, centerY - 15, 30, 30 };
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            fillRoundedRect(renderer_, pauseBg, 15, {0, 0, 0, 150});
+            
+            SDL_Rect pauseLeft{ centerX - 5, centerY - 8, 3, 16 };
+            SDL_Rect pauseRight{ centerX + 2, centerY - 8, 3, 16 };
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+            SDL_RenderFillRect(renderer_, &pauseLeft);
+            SDL_RenderFillRect(renderer_, &pauseRight);
+        }
+        
+        // Hints: START: Play/Pause  B: Close
+        std::string hint1 = "START: Play/Pause";
+        std::string hint2 = "B: Close";
+        int w1 = 0, h1 = 0;
+        int w2 = 0, h2 = 0;
+        getTextSize(hint1, 1, &w1, &h1);
+        getTextSize(hint2, 1, &w2, &h2);
+        int textW = std::max(w1, w2);
+        int textH = h1 + h2 + 2;
+        int plateW = textW + 8;
+        int plateH = textH + 6;
+        
+        SDL_Rect plate{ mX + 4, mY + mH - plateH - 4, plateW, plateH };
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
+        SDL_RenderFillRect(renderer_, &plate);
+        
+        drawText(renderer_, mX + 8, mY + mH - plateH - 1, hint1, 1, {255, 255, 255, 255});
+        drawText(renderer_, mX + 8, mY + mH - 14, hint2, 1, {255, 255, 255, 255});
+    }
+
     SDL_RenderPresent(renderer_);
     uiDirty_ = false;
 
@@ -1429,10 +1496,45 @@ void App::handleKey(SDL_Keycode key) {
         if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
+        } else if (state_.miniplayerActive) {
+            mpv_player_.stop();
+            storyboard_.stop();
+            if (image_manager_) {
+                image_manager_->clearCache();
+            }
+            state_.miniplayerActive = false;
+            uiDirty_ = true;
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
             leavePlayback();
         } else {
             state_.running = false;
+        }
+        break;
+    case SDLK_TAB:
+    case SDLK_BACKSPACE:
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            state_.currentScreen = previousBrowseScreen_;
+            state_.miniplayerActive = true;
+            state_.showUi = true;
+            uiDirty_ = true;
+        } else if (state_.miniplayerActive) {
+            state_.currentScreen = TubeState::Screen::Playback;
+            state_.miniplayerActive = false;
+            state_.showUi = false;
+            uiDirty_ = true;
+        }
+        break;
+    case SDLK_p:
+    case SDLK_SPACE:
+        if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
+            if (mpv_player_.isPlaying()) {
+                mpv_player_.pause();
+                showPlaybackToast("Paused");
+            } else {
+                mpv_player_.resume();
+                showPlaybackToast("Playing");
+            }
+            uiDirty_ = true;
         }
         break;
     case SDLK_y:
@@ -1565,6 +1667,17 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         } else {
             openKeyboard();
         }
+    } else if (button == SDL_CONTROLLER_BUTTON_START) {
+        if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
+            if (mpv_player_.isPlaying()) {
+                mpv_player_.pause();
+                showPlaybackToast("Paused");
+            } else {
+                mpv_player_.resume();
+                showPlaybackToast("Playing");
+            }
+            uiDirty_ = true;
+        }
     } else if (button == SDL_CONTROLLER_BUTTON_A) {
         if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.clickFocused();
@@ -1579,7 +1692,15 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_B) {
-        if (state_.isLoadingVideo) {
+        if (state_.miniplayerActive) {
+            mpv_player_.stop();
+            storyboard_.stop();
+            if (image_manager_) {
+                image_manager_->clearCache();
+            }
+            state_.miniplayerActive = false;
+            uiDirty_ = true;
+        } else if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
         } else if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -1644,8 +1765,15 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         }
     } else if (button == SDL_CONTROLLER_BUTTON_BACK) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleStatsOverlay();
-            showPlaybackToast("Stats Overlay");
+            state_.currentScreen = previousBrowseScreen_;
+            state_.miniplayerActive = true;
+            state_.showUi = true;
+            uiDirty_ = true;
+        } else if (state_.miniplayerActive) {
+            state_.currentScreen = TubeState::Screen::Playback;
+            state_.miniplayerActive = false;
+            state_.showUi = false;
+            uiDirty_ = true;
         }
     }
 }
@@ -1866,7 +1994,7 @@ void App::loadMoreSearchResults() {
 // Legacy presentation queue methods removed.
 
 void App::updateHoverPreviews() {
-    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo || state_.inputMode == TubeState::InputMode::SearchText) {
+    if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo || state_.inputMode == TubeState::InputMode::SearchText || state_.miniplayerActive) {
         stopBrowsePreviewState();
         return;
     }

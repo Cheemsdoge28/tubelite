@@ -25,6 +25,7 @@ struct TubeState {
     bool isScrubbing{false};
     double scrubTargetTime{0.0};
     bool showDebugOverlay{false};
+    bool miniplayerActive{false};
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};

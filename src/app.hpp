@@ -83,6 +83,7 @@ private:
     bool lastKeyboardCursorVisible_{true};
     bool homeLoadFailed_{false};
     Uint32 play_flash_start_time_{0};
+    TubeState::Screen previousBrowseScreen_{TubeState::Screen::Home};
 
     YouTubeVideo current_video_;
 

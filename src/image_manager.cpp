@@ -144,7 +144,7 @@ void ImageManager::workerThread() {
         }
         
         std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
-        std::string dl = "curl -s -L \"" + url + "\"";
+        std::string dl = "curl -k -s -L \"" + url + "\"";
         
 #ifdef _WIN32
         FILE* pipe = _popen(dl.c_str(), "rb");
