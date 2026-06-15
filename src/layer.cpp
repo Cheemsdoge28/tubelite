@@ -57,6 +57,7 @@ bool Layer::init(SDL_Renderer* renderer, int w, int h, const SDL_Rect& dstRect) 
         std::cerr << "[Layer] Failed to create SDL target texture: " << SDL_GetError() << "\n";
         return false;
     }
+    SDL_SetTextureBlendMode(texture_, SDL_BLENDMODE_BLEND);
     return true;
 }
 

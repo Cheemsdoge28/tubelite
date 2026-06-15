@@ -131,6 +131,12 @@ void Compositor::render(App* app, int width, int height) {
         
         SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
         
+        // Clear the screen area underneath first to avoid card thumbnail bleed/flicker
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
+        SDL_RenderFillRect(renderer_, &miniplayerBounds);
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
         // Ensure the miniplayer layer is initialized
         if (!miniplayer_layer_.getTexture() || miniplayer_layer_.getWidth() != mW + 4 || miniplayer_layer_.getHeight() != mH + 4) {
             miniplayer_layer_.init(renderer_, mW + 4, mH + 4, miniplayerBounds);
