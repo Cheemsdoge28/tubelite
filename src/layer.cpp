@@ -147,14 +147,9 @@ void Layer::renderGLES(SDL_Renderer* renderer, void* egl_display, void* egl_draw
                        std::function<void(unsigned int fbo)> glesRenderCallback) {
     if (!texture_) return;
 
-    // 1. Save caller EGL & GLES state
-    saveEGLContext();
-    saveGLESState();
-
-    // 2. Bind mpv's EGL context
-    local_restore_egl_context(egl_display, egl_draw, egl_read, egl_context);
-
-    // 3. Bind the SDL texture to extract its GL texture ID
+    // ── Phase 1: Context-Safe Texture Extraction ─────────────────────────────
+    // Bind/unbind SDL texture to extract its GL texture ID while the SDL EGL context
+    // is guaranteed to be current on this thread.
     float texw = 0.0f, texh = 0.0f;
     SDL_GL_BindTexture(texture_, &texw, &texh);
 
@@ -163,23 +158,38 @@ void Layer::renderGLES(SDL_Renderer* renderer, void* egl_display, void* egl_draw
 
     SDL_GL_UnbindTexture(texture_);
 
-    // 4. Create and bind our offscreen frame buffer
+    // ── Phase 2: Save State ──────────────────────────────────────────────────
+    // Save current GLES and EGL context states in the source context first.
+    saveEGLContext();
+    saveGLESState();
+
+    // ── Phase 3: Switch Context and Render ───────────────────────────────────
+    // Make target (mpv) EGL context current.
+    local_restore_egl_context(egl_display, egl_draw, egl_read, egl_context);
+
+    // Create and bind target FBO in the current EGL context.
     if (fbo_ == 0) {
         glGenFramebuffers(1, &fbo_);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_id, 0);
 
-    // 5. Setup GLES settings for libmpv rendering
+    // Setup viewport/scissor local coordinates for rendering
     glViewport(0, 0, w_, h_);
     glDisable(GL_SCISSOR_TEST);
 
-    // 6. Draw GLES graphics
+    // Render GLES graphics
     glesRenderCallback(fbo_);
 
-    // 7. Restore saved GLES & EGL state
-    restoreGLESState();
+    // Unbind FBO from current context to avoid leaks/state pollution
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // ── Phase 4: Restore Context and State ───────────────────────────────────
+    // Critical: Switch EGL context back to SDL's context FIRST.
     restoreEGLContext();
+
+    // Now restore GLES state in SDL's context where the states belong.
+    restoreGLESState();
 }
 
 void Layer::present(SDL_Renderer* renderer, int opacity) {

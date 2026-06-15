@@ -225,6 +225,12 @@ void App::run() {
         }
         if (mpv_player_.checkAndClearEnded()) {
             handleVideoEnded();
+        } else if (mpv_player_.isPlaying()) {
+            double pos = mpv_player_.getPlaybackTime();
+            double dur = mpv_player_.getDuration();
+            if (dur > 0.0 && (dur - pos <= 45.0 || pos / dur >= 0.75)) {
+                prefetchNextVideo();
+            }
         }
         focus_manager_.update(dt);
         renderFrame();
@@ -548,6 +554,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     state_.isLoadingVideo = true;
     loading_status_text_ = "Resolving Stream...";
     last_playback_seconds_ = -1;
+    prefetched_next_video_id_.clear();
     uiDirty_ = true;
 
     const std::string cacheKey = streamCacheKey(video.id, state_.maxQualityHeight);
@@ -1320,25 +1327,59 @@ void App::updateHoverPreviews() {
     }
 
     const std::string cacheKey = streamCacheKey(focusedCard->video.id, state_.maxQualityHeight);
-    
-    // 1. Kick off prefetch if focused for >= 0.25s
-    if (focusedCard->focusedTime_ >= 0.25f) {
-        if (!getCachedStreamUrl(cacheKey).has_value() &&
-            stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
-            stream_prefetch_inflight_.insert(cacheKey);
-            is_loading_preview_ = true;
-            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, focusedCard, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
-                queueOnMainThread([this, focusedCard, cacheKey, success, url, subtitle_url]() {
-                    stream_prefetch_inflight_.erase(cacheKey);
-                    is_loading_preview_ = false;
-                    if (success && !url.empty()) {
-                        setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
-                    } else {
-                        setCachedStreamUrl(cacheKey, ""); // Cache failure
+    auto grid = activeGrid();
+    if (grid && focusedCard->focusedTime_ >= 0.10f) {
+        int focusedIdx = -1;
+        for (size_t i = 0; i < grid->cards.size(); ++i) {
+            if (grid->cards[i] == focusedCard) {
+                focusedIdx = static_cast<int>(i);
+                break;
+            }
+        }
+
+        if (focusedIdx != -1) {
+            // A. Prefetch focused card
+            if (!getCachedStreamUrl(cacheKey).has_value() &&
+                stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
+                stream_prefetch_inflight_.insert(cacheKey);
+                is_loading_preview_ = true;
+                youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+                    queueOnMainThread([this, cacheKey, success, url, subtitle_url]() {
+                        stream_prefetch_inflight_.erase(cacheKey);
+                        is_loading_preview_ = false;
+                        if (success && !url.empty()) {
+                            setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
+                        } else {
+                            setCachedStreamUrl(cacheKey, ""); // Cache failure
+                        }
+                        uiDirty_ = true;
+                    });
+                }, true /* isPreview */, focusedCard->video.id);
+            }
+
+            // B. Prefetch next two adjacent cards if focused for >= 0.15s
+            if (focusedCard->focusedTime_ >= 0.15f) {
+                for (int nextIdx = focusedIdx + 1; nextIdx <= focusedIdx + 2; ++nextIdx) {
+                    if (nextIdx < static_cast<int>(grid->cards.size())) {
+                        auto nextCard = grid->cards[nextIdx];
+                        const std::string nextCacheKey = streamCacheKey(nextCard->video.id, state_.maxQualityHeight);
+                        if (!getCachedStreamUrl(nextCacheKey).has_value() &&
+                            stream_prefetch_inflight_.find(nextCacheKey) == stream_prefetch_inflight_.end()) {
+                            stream_prefetch_inflight_.insert(nextCacheKey);
+                            youtube_api_.getStreamUrl(nextCard->video.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+                                queueOnMainThread([this, nextCacheKey, success, url, subtitle_url]() {
+                                    stream_prefetch_inflight_.erase(nextCacheKey);
+                                    if (success && !url.empty()) {
+                                        setCachedStreamUrl(nextCacheKey, url + "|" + subtitle_url);
+                                    } else {
+                                        setCachedStreamUrl(nextCacheKey, "");
+                                    }
+                                });
+                            }, true /* isPreview */, focusedCard->video.id);
+                        }
                     }
-                    uiDirty_ = true;
-                });
-            }, true /* isPreview */);
+                }
+            }
         }
     }
 
@@ -1539,5 +1580,47 @@ void App::handleVideoEnded() {
         mpv_player_.pause();
         uiDirty_ = true;
     }
+}
+
+void App::prefetchNextVideo() {
+    if (prefetched_next_video_id_ == current_video_.id) return;
+    
+    // Find the next video in the active grid
+    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    if (!grid || grid->cards.empty()) return;
+    
+    YouTubeVideo nextVideo;
+    bool foundCurrent = false;
+    for (size_t i = 0; i < grid->cards.size(); ++i) {
+        if (grid->cards[i]->video.id == current_video_.id) {
+            if (i + 1 < grid->cards.size()) {
+                nextVideo = grid->cards[i + 1]->video;
+                foundCurrent = true;
+            }
+            break;
+        }
+    }
+    
+    if (!foundCurrent) return;
+    
+    // Mark as prefetched so we don't spam requests
+    prefetched_next_video_id_ = current_video_.id;
+    
+    const std::string nextCacheKey = streamCacheKey(nextVideo.id, state_.maxQualityHeight);
+    if (getCachedStreamUrl(nextCacheKey).has_value()) {
+        // Already cached!
+        return;
+    }
+    
+    // Start background prefetch request (using isPreview=true so it doesn't cancel main playback requests)
+    std::cerr << "[prefetch] Prefetching next video stream URL: " << nextVideo.title << "\n";
+    youtube_api_.getStreamUrl(nextVideo.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+        queueOnMainThread([this, nextCacheKey, success, url, subtitle_url]() {
+            if (success && !url.empty()) {
+                setCachedStreamUrl(nextCacheKey, url + "|" + subtitle_url);
+                std::cerr << "[prefetch] Next video stream URL cached successfully.\n";
+            }
+        });
+    }, true /* isPreview */, "autoplay_" + current_video_.id);
 }
 

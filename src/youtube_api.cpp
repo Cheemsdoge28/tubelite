@@ -375,19 +375,35 @@ static std::string extractSubtitleUrl(const json& j) {
 
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     std::function<void(bool success, const std::string& url, const std::string& subtitle_url)> callback,
-    bool isPreview) {
+    bool isPreview,
+    const std::string& parent_focus_id) {
 
-    // Use separate counters so preview prefetches and main playback
-    // do NOT cancel each other.
-    std::atomic<int>& id_counter = isPreview ? current_preview_request_id_
-                                              : current_stream_request_id_;
-    int req_id = ++id_counter;
+    int req_id = 0;
+    if (isPreview) {
+        if (!parent_focus_id.empty()) {
+            std::lock_guard<std::mutex> lock(preview_mutex_);
+            current_preview_focus_id_ = parent_focus_id;
+        }
+    } else {
+        req_id = ++current_stream_request_id_;
+    }
 
-    std::thread([this, video_id, max_height, callback, req_id, isPreview]() {
-        std::atomic<int>& id_counter2 = isPreview ? current_preview_request_id_
-                                                   : current_stream_request_id_;
+    std::thread([this, video_id, max_height, callback, req_id, isPreview, parent_focus_id]() {
         try {
-            if (req_id != id_counter2) { callback(false, "", ""); return; }
+            if (isPreview) {
+                if (!parent_focus_id.empty()) {
+                    std::lock_guard<std::mutex> lock(preview_mutex_);
+                    if (current_preview_focus_id_ != parent_focus_id) {
+                        callback(false, "", "");
+                        return;
+                    }
+                }
+            } else {
+                if (req_id != current_stream_request_id_) {
+                    callback(false, "", "");
+                    return;
+                }
+            }
 
             const std::string safeId  = sanitizeShellText(video_id);
             const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
@@ -411,10 +427,38 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             std::string url;
             std::string subtitle_url;
 
-            if (req_id == id_counter2) {
+            bool should_execute = true;
+            if (isPreview) {
+                if (!parent_focus_id.empty()) {
+                    std::lock_guard<std::mutex> lock(preview_mutex_);
+                    if (current_preview_focus_id_ != parent_focus_id) {
+                        should_execute = false;
+                    }
+                }
+            } else {
+                if (req_id != current_stream_request_id_) {
+                    should_execute = false;
+                }
+            }
+
+            if (should_execute) {
                 const std::string output = executeCommand(cmd);
 
-                if (req_id == id_counter2) {
+                bool should_parse = true;
+                if (isPreview) {
+                    if (!parent_focus_id.empty()) {
+                        std::lock_guard<std::mutex> lock(preview_mutex_);
+                        if (current_preview_focus_id_ != parent_focus_id) {
+                            should_parse = false;
+                        }
+                    }
+                } else {
+                    if (req_id != current_stream_request_id_) {
+                        should_parse = false;
+                    }
+                }
+
+                if (should_parse) {
                     std::istringstream iss(output);
                     std::string line;
                     while (std::getline(iss, line)) {

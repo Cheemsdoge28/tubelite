@@ -118,6 +118,8 @@ private:
     
     int last_playback_seconds_{-1};
     float scrub_hold_time_{0.0f};
+    std::string prefetched_next_video_id_;
+    void prefetchNextVideo();
     std::mutex queue_mutex_;
     std::vector<std::function<void()>> main_thread_queue_;
     void queueOnMainThread(std::function<void()> cb);
