@@ -3,12 +3,20 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <unordered_map>
+#include <sstream>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <SDL_ttf.h>
 #else
 #include <SDL2/SDL_ttf.h>
 #endif
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include <harfbuzz/hb.h>
+#include <harfbuzz/hb-ft.h>
 
 std::array<uint8_t, 7> glyphFor(char ch) {
         switch (static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(ch)))) {
@@ -337,9 +345,179 @@ static void initSolidCorner(SDL_Renderer* renderer) {
     SDL_FreeSurface(surf);
 }
 
+static FT_Library g_ft_library = nullptr;
+static FT_Face g_ft_faces[6] = {nullptr};
+static hb_font_t* g_hb_fonts[6] = {nullptr};
+
+struct CachedGlyph {
+    SDL_Texture* texture = nullptr;
+    int width = 0;
+    int height = 0;
+    int bearing_x = 0;
+    int bearing_y = 0;
+    int advance = 0;
+};
+
+static std::unordered_map<uint64_t, CachedGlyph> g_glyph_cache;
+
+static std::vector<uint32_t> utf8ToUtf32(const std::string& utf8) {
+    std::vector<uint32_t> utf32;
+    for (size_t i = 0; i < utf8.size(); ) {
+        unsigned char c = utf8[i];
+        uint32_t cp = 0;
+        size_t len = 0;
+        if (c < 0x80) {
+            cp = c;
+            len = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = c & 0x1F;
+            len = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = c & 0x0F;
+            len = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            cp = c & 0x07;
+            len = 4;
+        } else {
+            i++;
+            continue;
+        }
+        if (i + len > utf8.size()) break;
+        for (size_t j = 1; j < len; j++) {
+            cp = (cp << 6) | (utf8[i + j] & 0x3F);
+        }
+        utf32.push_back(cp);
+        i += len;
+    }
+    return utf32;
+}
+
+struct TextRun {
+    int font_idx;
+    std::vector<uint32_t> codepoints;
+};
+
+static std::vector<TextRun> segmentText(const std::vector<uint32_t>& codepoints, int size_idx) {
+    int prim_idx = size_idx * 2;
+    int fall_idx = size_idx * 2 + 1;
+
+    FT_Face prim_face = g_ft_faces[prim_idx];
+    FT_Face fall_face = g_ft_faces[fall_idx];
+
+    std::vector<TextRun> runs;
+    if (codepoints.empty()) return runs;
+
+    int current_font = -1;
+    for (uint32_t cp : codepoints) {
+        int font = prim_idx;
+        if (prim_face && FT_Get_Char_Index(prim_face, cp) != 0) {
+            font = prim_idx;
+        } else if (fall_face && FT_Get_Char_Index(fall_face, cp) != 0) {
+            font = fall_idx;
+        } else {
+            font = fall_face ? fall_idx : prim_idx;
+        }
+
+        if (runs.empty() || font != current_font) {
+            runs.push_back({font, {cp}});
+            current_font = font;
+        } else {
+            runs.back().codepoints.push_back(cp);
+        }
+    }
+    return runs;
+}
+
+struct ShapedGlyph {
+    uint32_t glyph_id;
+    int x_offset;
+    int y_offset;
+    int x_advance;
+    int y_advance;
+};
+
+static std::vector<ShapedGlyph> shapeRun(const TextRun& run) {
+    std::vector<ShapedGlyph> shaped;
+    hb_font_t* hb_font = g_hb_fonts[run.font_idx];
+    if (!hb_font) return shaped;
+
+    hb_buffer_t* buf = hb_buffer_create();
+    hb_buffer_add_utf32(buf, reinterpret_cast<const uint32_t*>(run.codepoints.data()), run.codepoints.size(), 0, run.codepoints.size());
+    hb_buffer_guess_segment_properties(buf);
+
+    hb_shape(hb_font, buf, nullptr, 0);
+
+    unsigned int glyph_count;
+    hb_glyph_info_t* glyph_info = hb_buffer_get_glyph_infos(buf, &glyph_count);
+    hb_glyph_position_t* glyph_pos = hb_buffer_get_glyph_positions(buf, &glyph_count);
+
+    shaped.reserve(glyph_count);
+    for (unsigned int i = 0; i < glyph_count; i++) {
+        ShapedGlyph sg;
+        sg.glyph_id = glyph_info[i].codepoint;
+        sg.x_offset = glyph_pos[i].x_offset >> 6;
+        sg.y_offset = glyph_pos[i].y_offset >> 6;
+        sg.x_advance = glyph_pos[i].x_advance >> 6;
+        sg.y_advance = glyph_pos[i].y_advance >> 6;
+        shaped.push_back(sg);
+    }
+
+    hb_buffer_destroy(buf);
+    return shaped;
+}
+
+static CachedGlyph getOrCacheGlyph(SDL_Renderer* renderer, int font_idx, uint32_t glyph_id) {
+    uint64_t key = (static_cast<uint64_t>(font_idx) << 32) | glyph_id;
+    auto it = g_glyph_cache.find(key);
+    if (it != g_glyph_cache.end()) {
+        return it->second;
+    }
+
+    FT_Face face = g_ft_faces[font_idx];
+    CachedGlyph glyph;
+    if (!face) return glyph;
+
+    if (FT_Load_Glyph(face, glyph_id, FT_LOAD_RENDER) != 0) {
+        return glyph;
+    }
+
+    FT_GlyphSlot slot = face->glyph;
+    glyph.width = slot->bitmap.width;
+    glyph.height = slot->bitmap.rows;
+    glyph.bearing_x = slot->bitmap_left;
+    glyph.bearing_y = slot->bitmap_top;
+    glyph.advance = slot->advance.x >> 6;
+
+    if (glyph.width > 0 && glyph.height > 0) {
+        SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, glyph.width, glyph.height, 32, SDL_PIXELFORMAT_RGBA32);
+        if (surf) {
+            SDL_LockSurface(surf);
+            uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
+            for (int y = 0; y < glyph.height; y++) {
+                for (int x = 0; x < glyph.width; x++) {
+                    uint8_t alpha = slot->bitmap.buffer[y * slot->bitmap.pitch + x];
+                    pixels[y * surf->pitch / 4 + x] = SDL_MapRGBA(surf->format, 255, 255, 255, alpha);
+                }
+            }
+            SDL_UnlockSurface(surf);
+
+            glyph.texture = SDL_CreateTextureFromSurface(renderer, surf);
+            SDL_FreeSurface(surf);
+        }
+    }
+
+    g_glyph_cache[key] = glyph;
+    return glyph;
+}
+
 bool initFonts(SDL_Renderer* renderer) {
     if (TTF_Init() != 0) {
         std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
+        return false;
+    }
+
+    if (FT_Init_FreeType(&g_ft_library) != 0) {
+        std::cerr << "FT_Init_FreeType failed" << std::endl;
         return false;
     }
     
@@ -378,6 +556,46 @@ bool initFonts(SDL_Renderer* renderer) {
         std::cerr << "Could not find Atkinson Hyperlegible font files, falling back to pixel font." << std::endl;
         return false;
     }
+
+    std::vector<std::string> fallbackPaths = {
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/malgun.ttf",
+        "C:/Windows/Fonts/msjh.ttc",
+        "C:/Windows/Fonts/arial.ttf"
+    };
+
+    std::string fallbackPath = "";
+    for (const auto& p : fallbackPaths) {
+        if (FILE* f = fopen(p.c_str(), "rb")) {
+            fclose(f);
+            fallbackPath = p;
+            break;
+        }
+    }
+
+    int sizes[3] = {14, 18, 24};
+    for (int i = 0; i < 3; i++) {
+        std::string primaryFile = (i == 2) ? boldPath : regPath;
+        int size = sizes[i];
+
+        if (FT_New_Face(g_ft_library, primaryFile.c_str(), 0, &g_ft_faces[i * 2]) == 0) {
+            FT_Set_Pixel_Sizes(g_ft_faces[i * 2], 0, size);
+            g_hb_fonts[i * 2] = hb_ft_font_create(g_ft_faces[i * 2], nullptr);
+        }
+
+        if (!fallbackPath.empty()) {
+            if (FT_New_Face(g_ft_library, fallbackPath.c_str(), 0, &g_ft_faces[i * 2 + 1]) == 0) {
+                FT_Set_Pixel_Sizes(g_ft_faces[i * 2 + 1], 0, size);
+                g_hb_fonts[i * 2 + 1] = hb_ft_font_create(g_ft_faces[i * 2 + 1], nullptr);
+            }
+        }
+    }
     
     g_font_small = TTF_OpenFont(regPath.c_str(), 14);
     g_font_medium = TTF_OpenFont(regPath.c_str(), 18);
@@ -400,6 +618,29 @@ bool initFonts(SDL_Renderer* renderer) {
 
 
 void cleanupFonts() {
+    for (auto& pair : g_glyph_cache) {
+        if (pair.second.texture) {
+            SDL_DestroyTexture(pair.second.texture);
+        }
+    }
+    g_glyph_cache.clear();
+
+    for (int i = 0; i < 6; i++) {
+        if (g_hb_fonts[i]) {
+            hb_font_destroy(g_hb_fonts[i]);
+            g_hb_fonts[i] = nullptr;
+        }
+        if (g_ft_faces[i]) {
+            FT_Done_Face(g_ft_faces[i]);
+            g_ft_faces[i] = nullptr;
+        }
+    }
+
+    if (g_ft_library) {
+        FT_Done_FreeType(g_ft_library);
+        g_ft_library = nullptr;
+    }
+
     if (g_atlas_small.texture)  { SDL_DestroyTexture(g_atlas_small.texture);  g_atlas_small.texture = nullptr; }
     if (g_atlas_medium.texture) { SDL_DestroyTexture(g_atlas_medium.texture); g_atlas_medium.texture = nullptr; }
     if (g_atlas_large.texture)  { SDL_DestroyTexture(g_atlas_large.texture);  g_atlas_large.texture = nullptr; }
@@ -414,45 +655,38 @@ void cleanupFonts() {
 void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {
     if (text.empty()) return;
     
-    const FontAtlas* atlas = nullptr;
-    if (scale <= 1)      atlas = &g_atlas_small;
-    else if (scale == 2) atlas = &g_atlas_medium;
-    else                 atlas = &g_atlas_large;
-    
-    if (atlas && atlas->texture) {
-        SDL_SetTextureColorMod(atlas->texture, color.r, color.g, color.b);
-        SDL_SetTextureAlphaMod(atlas->texture, color.a);
-        SDL_SetTextureBlendMode(atlas->texture, SDL_BLENDMODE_BLEND);
-        
-        int cursor_x = x;
-        for (size_t i = 0; i < text.size(); ) {
-            unsigned char ch = text[i];
-            if (ch >= 32 && ch < 127) {
-                const GlyphInfo& info = atlas->glyphs[ch];
-                if (info.maxx > info.minx && info.maxy > info.miny) {
-                    int draw_x = cursor_x - 4;
-                    int draw_y = y;
-                    SDL_Rect dst{draw_x, draw_y, info.src_rect.w, info.src_rect.h};
-                    SDL_RenderCopy(renderer, atlas->texture, &info.src_rect, &dst);
-                }
-                cursor_x += info.advance;
-                i += 1;
-            } else {
-                if ((ch & 0x80) == 0) i += 1;
-                else if ((ch & 0xE0) == 0xC0) i += 2;
-                else if ((ch & 0xF0) == 0xE0) i += 3;
-                else if ((ch & 0xF8) == 0xF0) i += 4;
-                else i += 1;
+    int size_idx = 0;
+    if (scale <= 1) size_idx = 0;
+    else if (scale == 2) size_idx = 1;
+    else size_idx = 2;
+
+    std::vector<uint32_t> utf32 = utf8ToUtf32(text);
+    std::vector<TextRun> runs = segmentText(utf32, size_idx);
+
+    int cursor_x = x;
+    for (const auto& run : runs) {
+        std::vector<ShapedGlyph> shaped = shapeRun(run);
+        FT_Face face = g_ft_faces[run.font_idx];
+        if (!face) continue;
+
+        int ascender = face->size->metrics.ascender >> 6;
+        int baseline_y = y + ascender;
+
+        for (const auto& sg : shaped) {
+            CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
+            if (cg.texture) {
+                SDL_SetTextureColorMod(cg.texture, color.r, color.g, color.b);
+                SDL_SetTextureAlphaMod(cg.texture, color.a);
+                SDL_SetTextureBlendMode(cg.texture, SDL_BLENDMODE_BLEND);
+
+                int draw_x = cursor_x + sg.x_offset + cg.bearing_x;
+                int draw_y = baseline_y - sg.y_offset - cg.bearing_y;
+
+                SDL_Rect dst{draw_x, draw_y, cg.width, cg.height};
+                SDL_RenderCopy(renderer, cg.texture, nullptr, &dst);
             }
+            cursor_x += sg.x_advance;
         }
-        return;
-    }
-    
-    // Fallback to custom pixel font if TTF is not available
-    int cursor = x;
-    for (char ch : text) {
-        drawGlyph(renderer, cursor, y, ch, scale, color);
-        cursor += scale * 6;
     }
 }
 
@@ -509,35 +743,130 @@ void getTextSize(const std::string& text, int scale, int* w, int* h) {
     if (h) *h = 0;
     if (text.empty()) return;
     
-    const FontAtlas* atlas = nullptr;
-    if (scale <= 1)      atlas = &g_atlas_small;
-    else if (scale == 2) atlas = &g_atlas_medium;
-    else                 atlas = &g_atlas_large;
-    
-    if (atlas && atlas->texture) {
-        int width = 0;
-        for (size_t i = 0; i < text.size(); ) {
-            unsigned char ch = text[i];
-            if (ch >= 32 && ch < 127) {
-                width += atlas->glyphs[ch].advance;
-                i += 1;
-            } else {
-                if ((ch & 0x80) == 0) i += 1;
-                else if ((ch & 0xE0) == 0xC0) i += 2;
-                else if ((ch & 0xF0) == 0xE0) i += 3;
-                else if ((ch & 0xF8) == 0xF0) i += 4;
-                else i += 1;
-            }
+    int size_idx = 0;
+    if (scale <= 1) size_idx = 0;
+    else if (scale == 2) size_idx = 1;
+    else size_idx = 2;
+
+    std::vector<uint32_t> utf32 = utf8ToUtf32(text);
+    std::vector<TextRun> runs = segmentText(utf32, size_idx);
+
+    int total_width = 0;
+    int max_height = 0;
+
+    for (const auto& run : runs) {
+        std::vector<ShapedGlyph> shaped = shapeRun(run);
+        FT_Face face = g_ft_faces[run.font_idx];
+        if (!face) continue;
+
+        int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
+        if (cap_height > max_height) {
+            max_height = cap_height;
         }
-        if (w) *w = width;
-        // Return cap_height (ascent + |descent|) instead of line_skip so callers
-        // can vertically-centre text without the extra external leading.
-        if (h) *h = (atlas->cap_height > 0) ? atlas->cap_height : atlas->line_skip;
-        return;
+
+        for (const auto& sg : shaped) {
+            total_width += sg.x_advance;
+        }
     }
-    
-    if (w) *w = static_cast<int>(text.length()) * 6 * scale;
-    if (h) *h = 7 * scale;
+
+    if (w) *w = total_width;
+    if (h) *h = max_height > 0 ? max_height : (14 * scale);
+}
+
+std::vector<std::string> wrapText(const std::string& text, int maxWidth, int scale) {
+    std::vector<std::string> lines;
+    if (text.empty()) return lines;
+
+    std::stringstream ss(text);
+    std::string paragraph;
+    while (std::getline(ss, paragraph, '\n')) {
+        if (paragraph.empty()) {
+            lines.push_back("");
+            continue;
+        }
+
+        std::vector<uint32_t> cp_vec = utf8ToUtf32(paragraph);
+        std::string current_line = "";
+        
+        for (size_t i = 0; i < cp_vec.size(); ) {
+            uint32_t cp = cp_vec[i];
+            
+            std::string cp_utf8;
+            if (cp < 0x80) {
+                cp_utf8 += static_cast<char>(cp);
+            } else if (cp < 0x800) {
+                cp_utf8 += static_cast<char>(0xC0 | (cp >> 6));
+                cp_utf8 += static_cast<char>(0x80 | (cp & 0x3F));
+            } else if (cp < 0x10000) {
+                cp_utf8 += static_cast<char>(0xE0 | (cp >> 12));
+                cp_utf8 += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                cp_utf8 += static_cast<char>(0x80 | (cp & 0x3F));
+            } else {
+                cp_utf8 += static_cast<char>(0xF0 | (cp >> 18));
+                cp_utf8 += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                cp_utf8 += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                cp_utf8 += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+            
+            std::string test_line = current_line + cp_utf8;
+            int w = 0, h = 0;
+            getTextSize(test_line, scale, &w, &h);
+            
+            if (w > maxWidth && !current_line.empty()) {
+                size_t last_space = current_line.find_last_of(" \t\r\n");
+                if (last_space != std::string::npos && last_space > 0) {
+                    lines.push_back(current_line.substr(0, last_space));
+                    std::string remainder = current_line.substr(last_space + 1);
+                    current_line = remainder + cp_utf8;
+                } else {
+                    lines.push_back(current_line);
+                    current_line = cp_utf8;
+                }
+            } else {
+                current_line = test_line;
+            }
+            i++;
+        }
+        if (!current_line.empty()) {
+            lines.push_back(current_line);
+        }
+    }
+    return lines;
+}
+
+std::string formatStatsNumber(long long count) {
+    if (count < 0) return "0";
+    if (count < 1000) {
+        return std::to_string(count);
+    }
+    if (count < 1000000) {
+        double k = count / 1000.0;
+        char buf[32];
+        if (k < 10.0) {
+            snprintf(buf, sizeof(buf), "%.1fK", k);
+        } else {
+            snprintf(buf, sizeof(buf), "%.0fK", k);
+        }
+        return buf;
+    }
+    if (count < 1000000000) {
+        double m = count / 1000000.0;
+        char buf[32];
+        if (m < 10.0) {
+            snprintf(buf, sizeof(buf), "%.1fM", m);
+        } else {
+            snprintf(buf, sizeof(buf), "%.0fM", m);
+        }
+        return buf;
+    }
+    double b = count / 1000000000.0;
+    char buf[32];
+    if (b < 10.0) {
+        snprintf(buf, sizeof(buf), "%.1fB", b);
+    } else {
+        snprintf(buf, sizeof(buf), "%.0fB", b);
+    }
+    return buf;
 }
 
 void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {

@@ -553,6 +553,9 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     
     current_video_ = video;
     state_.isLoadingVideo = true;
+    state_.showDescriptionDrawer = false;
+    description_scroll_row_ = 0;
+    active_video_metadata_ = VideoPlaybackMetadata();
     loading_status_text_ = "Resolving Stream...";
     last_playback_seconds_ = -1;
     prefetched_next_video_id_.clear();
@@ -595,11 +598,12 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
         return;
     }
 
-    youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight, [this, video, cacheKey, keepMiniplayer](bool success, const std::string& url, const std::string& subtitle_url) {
-        queueOnMainThread([this, video, cacheKey, success, url, subtitle_url, keepMiniplayer]() {
+    youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight, [this, video, cacheKey, keepMiniplayer](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta) {
+        queueOnMainThread([this, video, cacheKey, success, url, subtitle_url, meta, keepMiniplayer]() {
             if (!state_.isLoadingVideo || current_video_.id != video.id) return;
             state_.isLoadingVideo = false;
             if (success) {
+                active_video_metadata_ = meta;
                 setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
                 if (keepMiniplayer) {
                     state_manager_.transitionTo(state_manager_.getPreviousBrowseScreen());
@@ -769,6 +773,7 @@ void App::handleEvent(SDL_Event& event) {
     switch (event.type) {
     case SDL_QUIT: state_.running = false; break;
     case SDL_KEYDOWN: handleKey(event.key.keysym.sym); break;
+    case SDL_KEYUP: handleKeyUp(event.key.keysym.sym); break;
     case SDL_CONTROLLERDEVICEADDED: openController(); break;
     case SDL_CONTROLLERDEVICEREMOVED: closeController(); openController(); break;
     case SDL_CONTROLLERBUTTONDOWN: handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), true); break;
@@ -807,7 +812,34 @@ void App::toggleMiniplayer() {
     uiDirty_ = true;
 }
 
+void App::handleKeyUp(SDL_Keycode key) {
+    if (key == SDLK_TAB || key == SDLK_F3 || key == SDLK_LSHIFT) {
+        select_held_ = false;
+        if (!select_action_triggered_) {
+            toggleMiniplayer();
+        }
+    }
+}
+
 void App::handleKey(SDL_Keycode key) {
+    if (key == SDLK_TAB || key == SDLK_F3 || key == SDLK_LSHIFT) {
+        select_held_ = true;
+        select_action_triggered_ = false;
+        return;
+    }
+
+    if (select_held_) {
+        if (key == SDLK_a || key == SDLK_RETURN) {
+            if (state_.currentScreen == TubeState::Screen::Playback) {
+                state_.showDescriptionDrawer = !state_.showDescriptionDrawer;
+                description_scroll_row_ = 0;
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
+        }
+    }
+
     if (state_.inputMode == TubeState::InputMode::SearchText) {
         if (key == SDLK_RETURN)    activateKeyboardGo();
         else if (key == SDLK_BACKSPACE) KeyboardOverlay::eraseActiveBufferChar(state_);
@@ -827,7 +859,12 @@ void App::handleKey(SDL_Keycode key) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
         } else if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
-            leavePlayback();
+            if (state_.showDescriptionDrawer) {
+                state_.showDescriptionDrawer = false;
+                uiDirty_ = true;
+            } else {
+                leavePlayback();
+            }
         } else {
             state_.running = false;
         }
@@ -889,16 +926,26 @@ void App::handleKey(SDL_Keycode key) {
         break;
     case SDLK_UP:
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleSubtitleTrack();
-            showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
+            if (state_.showDescriptionDrawer) {
+                description_scroll_row_ = std::max(0, description_scroll_row_ - 1);
+                uiDirty_ = true;
+            } else {
+                mpv_player_.cycleSubtitleTrack();
+                showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
+            }
         } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(0, -1);
         }
         break;
     case SDLK_DOWN:
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleAudioTrack();
-            showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
+            if (state_.showDescriptionDrawer) {
+                description_scroll_row_++;
+                uiDirty_ = true;
+            } else {
+                mpv_player_.cycleAudioTrack();
+                showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
+            }
         } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(0, 1);
         }
@@ -950,6 +997,30 @@ void App::handleKey(SDL_Keycode key) {
 }
 
 void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
+    if (button == SDL_CONTROLLER_BUTTON_BACK) {
+        select_held_ = down;
+        if (down) {
+            select_action_triggered_ = false;
+        } else {
+            if (!select_action_triggered_) {
+                toggleMiniplayer();
+            }
+        }
+        return;
+    }
+
+    if (down && select_held_) {
+        if (button == SDL_CONTROLLER_BUTTON_A) {
+            if (state_.currentScreen == TubeState::Screen::Playback) {
+                state_.showDescriptionDrawer = !state_.showDescriptionDrawer;
+                description_scroll_row_ = 0;
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
+        }
+    }
+
     if (button == SDL_CONTROLLER_BUTTON_START && controller_ != nullptr && SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
         state_.running = false;
         return;
@@ -1005,7 +1076,12 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         }
     } else if (button == SDL_CONTROLLER_BUTTON_B) {
         if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
-            leavePlayback();
+            if (state_.showDescriptionDrawer) {
+                state_.showDescriptionDrawer = false;
+                uiDirty_ = true;
+            } else {
+                leavePlayback();
+            }
         } else if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
             uiDirty_ = true;
@@ -1039,13 +1115,23 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         uiDirty_ = true;
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleSubtitleTrack();
-            showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
+            if (state_.showDescriptionDrawer) {
+                description_scroll_row_ = std::max(0, description_scroll_row_ - 1);
+                uiDirty_ = true;
+            } else {
+                mpv_player_.cycleSubtitleTrack();
+                showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
+            }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleAudioTrack();
-            showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
+            if (state_.showDescriptionDrawer) {
+                description_scroll_row_++;
+                uiDirty_ = true;
+            } else {
+                mpv_player_.cycleAudioTrack();
+                showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
+            }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
         // Handled via updateSticks() scrubbing
@@ -1066,8 +1152,6 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_.showUi = !state_.showUi;
             uiDirty_ = true;
         }
-    } else if (button == SDL_CONTROLLER_BUTTON_BACK) {
-        toggleMiniplayer();
     }
 }
 
@@ -1345,7 +1429,7 @@ void App::updateHoverPreviews() {
                 stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
                 stream_prefetch_inflight_.insert(cacheKey);
                 is_loading_preview_ = true;
-                youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+                youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
                     queueOnMainThread([this, cacheKey, success, url, subtitle_url]() {
                         stream_prefetch_inflight_.erase(cacheKey);
                         is_loading_preview_ = false;
@@ -1368,7 +1452,7 @@ void App::updateHoverPreviews() {
                         if (!getCachedStreamUrl(nextCacheKey).has_value() &&
                             stream_prefetch_inflight_.find(nextCacheKey) == stream_prefetch_inflight_.end()) {
                             stream_prefetch_inflight_.insert(nextCacheKey);
-                            youtube_api_.getStreamUrl(nextCard->video.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+                            youtube_api_.getStreamUrl(nextCard->video.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
                                 queueOnMainThread([this, nextCacheKey, success, url, subtitle_url]() {
                                     stream_prefetch_inflight_.erase(nextCacheKey);
                                     if (success && !url.empty()) {
@@ -1616,7 +1700,7 @@ void App::prefetchNextVideo() {
     
     // Start background prefetch request (using isPreview=true so it doesn't cancel main playback requests)
     std::cerr << "[prefetch] Prefetching next video stream URL: " << nextVideo.title << "\n";
-    youtube_api_.getStreamUrl(nextVideo.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url) {
+    youtube_api_.getStreamUrl(nextVideo.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
         queueOnMainThread([this, nextCacheKey, success, url, subtitle_url]() {
             if (success && !url.empty()) {
                 setCachedStreamUrl(nextCacheKey, url + "|" + subtitle_url);

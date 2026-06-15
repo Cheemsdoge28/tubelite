@@ -20,6 +20,14 @@ struct YouTubeVideo {
     int duration_seconds = 0;
 };
 
+struct VideoPlaybackMetadata {
+    long long like_count = 0;
+    long long comment_count = 0;
+    long long view_count = 0;
+    long long subscriber_count = 0;
+    std::string description;
+};
+
 class YouTubeAPI {
 public:
     YouTubeAPI();
@@ -33,7 +41,7 @@ public:
     // isPreview=true uses a separate request counter so preview prefetches
     // don't cancel main playback resolutions and vice versa.
     void getStreamUrl(const std::string& video_id, int max_height,
-        std::function<void(bool success, const std::string& url, const std::string& subtitle_url)> callback,
+        std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta)> callback,
         bool isPreview = false,
         const std::string& parent_focus_id = "");
 

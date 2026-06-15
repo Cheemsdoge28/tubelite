@@ -35,8 +35,8 @@ ifeq ($(PLATFORM),windows)
     # Windows (MinGW)
     CXX ?= g++
     SDL2DIR ?= /mingw64
-    SDL_CFLAGS ?= -I$(SDL2DIR)/include/SDL2 -Dmain=SDL_main
-    SDL_LIBS ?= -L$(SDL2DIR)/lib -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf
+    SDL_CFLAGS ?= -I$(SDL2DIR)/include/SDL2 -I$(SDL2DIR)/include/freetype2 -I$(SDL2DIR)/include/harfbuzz -Dmain=SDL_main
+    SDL_LIBS ?= -L$(SDL2DIR)/lib -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lharfbuzz -lfreetype
     TARGET_SUFFIX := .exe
     STRIP ?= strip
 
@@ -47,8 +47,8 @@ else ifeq ($(PLATFORM),arm64)
     CXX ?= aarch64-linux-gnu-g++
     SDL2DIR ?= /usr/aarch64-linux-gnu
     PKG_CONFIG_PATH := /usr/aarch64-linux-gnu/lib/pkgconfig
-    SDL_CFLAGS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags sdl2 2>/dev/null || echo "-I$(SDL2DIR)/include/SDL2")
-    SDL_LIBS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs sdl2 SDL2_ttf 2>/dev/null || echo "-L$(SDL2DIR)/lib -lSDL2 -lSDL2_ttf") -lrt -lGLESv2
+    SDL_CFLAGS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags sdl2 SDL2_ttf harfbuzz freetype2 2>/dev/null || echo "-I$(SDL2DIR)/include/SDL2 -I$(SDL2DIR)/include/freetype2 -I$(SDL2DIR)/include/harfbuzz")
+    SDL_LIBS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs sdl2 SDL2_ttf harfbuzz freetype2 2>/dev/null || echo "-L$(SDL2DIR)/lib -lSDL2 -lSDL2_ttf -lharfbuzz -lfreetype") -lrt -lGLESv2
     CXXFLAGS += -march=armv8-a+simd -mcpu=cortex-a53 -mtune=cortex-a53
     TARGET_SUFFIX := .arm64
     STRIP ?= aarch64-linux-gnu-strip
@@ -57,14 +57,14 @@ else
     # Linux native (builds directly on the R36S or any Linux host)
     CXX ?= g++
     PKG_CONFIG ?= pkg-config
-    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf 2>/dev/null)
-    SDL_LIBS   ?= $(shell $(PKG_CONFIG) --libs   sdl2 SDL2_ttf 2>/dev/null)
+    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf harfbuzz freetype2 2>/dev/null)
+    SDL_LIBS   ?= $(shell $(PKG_CONFIG) --libs   sdl2 SDL2_ttf harfbuzz freetype2 2>/dev/null)
 
     ifeq ($(strip $(SDL_CFLAGS)),)
-        SDL_CFLAGS := -I/usr/include/SDL2
+        SDL_CFLAGS := -I/usr/include/SDL2 -I/usr/include/freetype2 -I/usr/include/harfbuzz
     endif
     ifeq ($(strip $(SDL_LIBS)),)
-        SDL_LIBS := -lSDL2 -lSDL2_ttf
+        SDL_LIBS := -lSDL2 -lSDL2_ttf -lharfbuzz -lfreetype
     endif
 
     # GLESv2 for glViewport/glScissor; dl for dlopen/dlsym in the GL proc-address resolver.

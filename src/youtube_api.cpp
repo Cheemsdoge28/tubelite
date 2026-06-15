@@ -374,7 +374,7 @@ static std::string extractSubtitleUrl(const json& j) {
 }
 
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
-    std::function<void(bool success, const std::string& url, const std::string& subtitle_url)> callback,
+    std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta)> callback,
     bool isPreview,
     const std::string& parent_focus_id) {
 
@@ -394,13 +394,13 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                 if (!parent_focus_id.empty()) {
                     std::lock_guard<std::mutex> lock(preview_mutex_);
                     if (current_preview_focus_id_ != parent_focus_id) {
-                        callback(false, "", "");
+                        callback(false, "", "", VideoPlaybackMetadata());
                         return;
                     }
                 }
             } else {
                 if (req_id != current_stream_request_id_) {
-                    callback(false, "", "");
+                    callback(false, "", "", VideoPlaybackMetadata());
                     return;
                 }
             }
@@ -426,6 +426,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
 
             std::string url;
             std::string subtitle_url;
+            VideoPlaybackMetadata meta;
 
             bool should_execute = true;
             if (isPreview) {
@@ -469,6 +470,16 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                             if (j.is_object() && j.contains("url")) {
                                 url = safeGet<std::string>(j, "url", "");
                                 subtitle_url = extractSubtitleUrl(j);
+                                
+                                meta.like_count = j.value("like_count", 0LL);
+                                meta.comment_count = j.value("comment_count", 0LL);
+                                meta.view_count = j.value("view_count", 0LL);
+                                meta.subscriber_count = j.value("channel_follower_count", 0LL);
+                                if (meta.subscriber_count == 0LL) {
+                                    meta.subscriber_count = j.value("subscriber_count", 0LL);
+                                }
+                                meta.description = j.value("description", "");
+
                                 if (!url.empty()) break;
                             }
                         } catch (...) {
@@ -485,12 +496,12 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
 
             if (url.empty()) {
                 appendLog("yt-dlp: no URL found", "No playable URL was extracted.");
-                callback(false, "", "");
+                callback(false, "", "", VideoPlaybackMetadata());
             } else {
-                callback(true, url, subtitle_url);
+                callback(true, url, subtitle_url, meta);
             }
         } catch (...) {
-            callback(false, "", "");
+            callback(false, "", "", VideoPlaybackMetadata());
         }
     }).detach();
 }

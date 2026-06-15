@@ -13,6 +13,8 @@ std::string utf8Slice(const std::string& text, size_t startCodepoint, size_t max
 size_t utf8Length(const std::string& text);
 
 void getTextSize(const std::string& text, int scale, int* w, int* h);
+std::vector<std::string> wrapText(const std::string& text, int maxWidth, int scale);
+std::string formatStatsNumber(long long count);
 void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);
 void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);
 

@@ -40,6 +40,7 @@ private:
 
     void handleEvent(SDL_Event& event);
     void handleKey(SDL_Keycode key);
+    void handleKeyUp(SDL_Keycode key);
     void handleControllerButton(SDL_GameControllerButton button, bool down);
     void handleControllerAxis(const SDL_ControllerAxisEvent& caxis);
     void handleJoyHat(Uint8 value);
@@ -139,6 +140,10 @@ private:
     int frame_count_{0};
     float current_fps_{0.0f};
     float render_latency_ms_{0.0f};
+    VideoPlaybackMetadata active_video_metadata_;
+    int description_scroll_row_{0};
+    bool select_held_{false};
+    bool select_action_triggered_{false};
 
     int headerTitleW_Home_{0};
     int headerTitleH_Home_{0};
