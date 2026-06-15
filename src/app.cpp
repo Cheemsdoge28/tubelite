@@ -689,10 +689,31 @@ void App::updateSticks(float dt) {
             }
         }
 
+        // Repeating scroll for description drawer
+        if (state_.showDescriptionDrawer) {
+            static auto lastDescScroll = std::chrono::steady_clock::now();
+            auto scrollNow = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(scrollNow - lastDescScroll).count() > 80) {
+                const Uint8* keys = SDL_GetKeyboardState(nullptr);
+                bool kbUp = keys[SDL_SCANCODE_UP];
+                bool kbDown = keys[SDL_SCANCODE_DOWN];
+                
+                if (state_.dpadUpPressed || kbUp || state_.leftStickY < -0.5f) {
+                    description_scroll_row_ = std::max(0, description_scroll_row_ - 1);
+                    uiDirty_ = true;
+                    lastDescScroll = scrollNow;
+                } else if (state_.dpadDownPressed || kbDown || state_.leftStickY > 0.5f) {
+                    description_scroll_row_++;
+                    uiDirty_ = true;
+                    lastDescScroll = scrollNow;
+                }
+            }
+        }
+
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         bool kbLeft = keys[SDL_SCANCODE_LEFT];
         bool kbRight = keys[SDL_SCANCODE_RIGHT];
-        bool wantsScrub = state_.dpadLeftPressed || state_.dpadRightPressed || kbLeft || kbRight || std::abs(state_.leftStickX) > 0.2f;
+        bool wantsScrub = !state_.showDescriptionDrawer && (state_.dpadLeftPressed || state_.dpadRightPressed || kbLeft || kbRight || std::abs(state_.leftStickX) > 0.2f);
         if (wantsScrub) {
             showPlaybackUi();
             if (!state_.isScrubbing) {
@@ -785,9 +806,16 @@ void App::handleEvent(SDL_Event& event) {
         if (controller_ == nullptr) handleJoyAxis(event.jaxis);
         break;
     case SDL_JOYBUTTONDOWN:
+        if (event.jbutton.button == 16) {
+            select_held_ = true;
+            select_action_triggered_ = false;
+        }
         if (controller_ == nullptr) handleJoyButton(event.jbutton.button, event.jbutton.which, true);
         break;
     case SDL_JOYBUTTONUP:
+        if (event.jbutton.button == 16) {
+            select_held_ = false;
+        }
         if (controller_ == nullptr) handleJoyButton(event.jbutton.button, event.jbutton.which, false);
         break;
     case SDL_CONTROLLERAXISMOTION: handleControllerAxis(event.caxis); break;
@@ -1206,6 +1234,12 @@ void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
     case 7:
     case 15:
         handleControllerButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, down);
+        break;
+    case 16:
+        select_held_ = down;
+        if (down) {
+            select_action_triggered_ = false;
+        }
         break;
     default: break;
     }

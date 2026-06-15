@@ -402,30 +402,72 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // ── Top Panel ─────────────────────────────────────────────────────────────
     SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
-    SDL_Rect topPanel{0, 0, width, 48};
+    SDL_Rect topPanel{0, 0, width, 56};
     SDL_RenderFillRect(renderer_, &topPanel);
     
     SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
-    SDL_Rect topBorder{0, 48, width, 2};
+    SDL_Rect topBorder{0, 56, width, 2};
     SDL_RenderFillRect(renderer_, &topBorder);
     
     {
-        std::string titleTxt = utf8Truncate(app->current_video_.title, 48, true);
-        drawTextShadow(renderer_, 14, 6, titleTxt, 2, {214, 220, 230, 255});
-
-        int titleH = 0; getTextSize(titleTxt, 2, nullptr, &titleH);
-        if (!app->current_video_.author.empty()) {
-            std::string author = utf8Truncate(app->current_video_.author, 52, false);
-            drawText(renderer_, 14, 6 + titleH + 2, author, 1, {214, 220, 230, 200});
+        std::string titleTxt = app->current_video_.title;
+        int maxTitleW = width - 28;
+        if (app->state_.speed != 1.0) {
+            maxTitleW -= 60;
         }
+        int titleW = 0, titleH = 0;
+        getTextSize(titleTxt, 2, &titleW, &titleH);
+        if (titleW > maxTitleW) {
+            while (!titleTxt.empty() && titleW > maxTitleW - 16) {
+                titleTxt = utf8Slice(titleTxt, 0, utf8Length(titleTxt) - 1);
+                getTextSize(titleTxt + "...", 2, &titleW, &titleH);
+            }
+            titleTxt += "...";
+        }
+        drawTextShadow(renderer_, 14, 6, titleTxt, 2, {255, 255, 255, 255});
 
         // Speed badge (top right)
         if (app->state_.speed != 1.0) {
             char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
             int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
-            SDL_Rect badge{width - sw - 20, 12, sw + 12, sh + 6};
+            SDL_Rect badge{width - sw - 20, 10, sw + 12, sh + 6};
             fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
             drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, {255, 255, 255, 255});
+        }
+
+        // Stats string formatted on the right of Line 2
+        std::string statsStr = "";
+        if (app->active_video_metadata_.view_count > 0 || app->active_video_metadata_.like_count > 0) {
+            statsStr = formatStatsNumber(app->active_video_metadata_.view_count) + " VIEWS   •   " +
+                       formatStatsNumber(app->active_video_metadata_.like_count) + " LIKES";
+            if (app->active_video_metadata_.subscriber_count > 0) {
+                statsStr += "   •   " + formatStatsNumber(app->active_video_metadata_.subscriber_count) + " SUBS";
+            }
+            if (app->active_video_metadata_.comment_count > 0) {
+                statsStr += "   •   " + formatStatsNumber(app->active_video_metadata_.comment_count) + " COMMENTS";
+            }
+        } else {
+            statsStr = "LOADING STATS...";
+        }
+
+        int statsW = 0, statsH = 0;
+        getTextSize(statsStr, 1, &statsW, &statsH);
+        drawText(renderer_, width - 14 - statsW, 32, statsStr, 1, {214, 220, 230, 200});
+
+        // Channel Author on the left of Line 2
+        if (!app->current_video_.author.empty()) {
+            std::string author = app->current_video_.author;
+            int maxAuthorW = width - 28 - statsW - 20;
+            int authW = 0, authH = 0;
+            getTextSize(author, 1, &authW, &authH);
+            if (authW > maxAuthorW) {
+                while (!author.empty() && authW > maxAuthorW - 12) {
+                    author = utf8Slice(author, 0, utf8Length(author) - 1);
+                    getTextSize(author + "...", 1, &authW, &authH);
+                }
+                author += "...";
+            }
+            drawText(renderer_, 14, 32, author, 1, {255, 48, 48, 255});
         }
     }
 
@@ -599,6 +641,44 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         }
     }
 
+    // ── Description Drawer ─────────────────────────────────────────────────────
+    if (app->state_.showDescriptionDrawer) {
+        SDL_Rect drawerRect{width - 300, 58, 300, height - 132};
+        fillRoundedRect(renderer_, drawerRect, 0, {12, 14, 18, 240});
+        
+        SDL_SetRenderDrawColor(renderer_, 42, 48, 56, 255);
+        SDL_RenderDrawLine(renderer_, drawerRect.x, drawerRect.y, drawerRect.x, drawerRect.y + drawerRect.h);
+
+        std::vector<std::string> descLines = wrapText(app->active_video_metadata_.description, 280, 1);
+        int lineH = 14;
+        int visibleLines = drawerRect.h / (lineH + 4);
+        int maxScroll = std::max(0, static_cast<int>(descLines.size()) - visibleLines);
+        
+        app->description_scroll_row_ = std::max(0, std::min(app->description_scroll_row_, maxScroll));
+
+        if (descLines.empty()) {
+            std::string noDesc = app->active_video_metadata_.description.empty() ? "No description available." : "Loading...";
+            drawTextCentered(renderer_, drawerRect.x + drawerRect.w / 2, drawerRect.y + drawerRect.h / 2, noDesc, 1, {150, 150, 160, 255});
+        } else {
+            int startIdx = app->description_scroll_row_;
+            int endIdx = std::min(static_cast<int>(descLines.size()), startIdx + visibleLines);
+            int drawY = drawerRect.y + 10;
+            for (int i = startIdx; i < endIdx; ++i) {
+                drawText(renderer_, drawerRect.x + 10, drawY, descLines[i], 1, {230, 230, 240, 255});
+                drawY += lineH + 4;
+            }
+
+            if (descLines.size() > static_cast<size_t>(visibleLines)) {
+                int barHeight = drawerRect.h - 20;
+                int scrollbarH = static_cast<int>(barHeight * ((double)visibleLines / descLines.size()));
+                scrollbarH = std::max(10, scrollbarH);
+                int scrollbarY = drawerRect.y + 10 + static_cast<int>((barHeight - scrollbarH) * ((double)app->description_scroll_row_ / maxScroll));
+                SDL_Rect scrollbar{drawerRect.x + drawerRect.w - 6, scrollbarY, 4, scrollbarH};
+                fillRoundedRect(renderer_, scrollbar, 2, {255, 48, 48, 180});
+            }
+        }
+    }
+
     // Bottom hint line
     SDL_Color textColor{214, 220, 230, 255};
     const SDL_Color red{255, 48, 48, 255};
@@ -607,15 +687,28 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     const SDL_Color green{64, 214, 96, 255};
     const SDL_Color panel{24, 28, 34, 200};
 
-    std::vector<HintItem> activeHints = {
-        {"A", red, playing ? "PAUSE" : "PLAY"},
-        {"B", yellow, "EXIT"},
-        {"SELECT", textColor, "MINIPLAYER"},
-        {"Y", green, "SUBS"},
-        {"X", blue, "STATS"},
-        {"L1/R1", textColor, "SPEED"},
-        {"L2/R2", textColor, "VOL"}
-    };
+    std::vector<HintItem> activeHints;
+    if (app->state_.showDescriptionDrawer) {
+        activeHints = {
+            {"A", red, playing ? "PAUSE" : "PLAY"},
+            {"B", yellow, "CLOSE"},
+            {"UP/DOWN", textColor, "SCROLL"},
+            {"FN+A", red, "TOGGLE DESC"},
+            {"L1/R1", textColor, "SPEED"},
+            {"L2/R2", textColor, "VOL"}
+        };
+    } else {
+        activeHints = {
+            {"A", red, playing ? "PAUSE" : "PLAY"},
+            {"B", yellow, "EXIT"},
+            {"FN+A", red, "DESC"},
+            {"SELECT", textColor, "MINI"},
+            {"Y", green, "SUBS"},
+            {"X", blue, "STATS"},
+            {"L1/R1", textColor, "SPEED"},
+            {"L2/R2", textColor, "VOL"}
+        };
+    }
 
     drawHintButtons(renderer_, activeHints, height - 34, 24, 1, width, panel, {42, 48, 56, 180}, textColor);
 
