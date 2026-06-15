@@ -312,9 +312,22 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     if (!mpv_gl_) return nullptr;
     if (w <= 0 || h <= 0) return nullptr;
 
+    // To prevent OpenGL FBO/texture resizing stutters and flickers, we always
+    // render the mpv video frame at the full window resolution.
+    int targetW = w;
+    int targetH = h;
+    int winW = 0, winH = 0;
+    if (window_) {
+        SDL_GetWindowSize(window_, &winW, &winH);
+    }
+    if (winW > 0 && winH > 0) {
+        targetW = winW;
+        targetH = winH;
+    }
+
     bool texture_just_recreated = false;
-    if (!video_layer_.getTexture() || video_layer_.getWidth() != w || video_layer_.getHeight() != h) {
-        video_layer_.init(renderer, w, h, {0, 0, w, h});
+    if (!video_layer_.getTexture() || video_layer_.getWidth() != targetW || video_layer_.getHeight() != targetH) {
+        video_layer_.init(renderer, targetW, targetH, {0, 0, targetW, targetH});
         texture_just_recreated = true;
     }
 
@@ -323,11 +336,11 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     }
     has_new_frame_ = false;
 
-    video_layer_.renderGLES(renderer, egl_display_, egl_draw_, egl_read_, egl_context_, [this, w, h](unsigned int fbo) {
+    video_layer_.renderGLES(renderer, egl_display_, egl_draw_, egl_read_, egl_context_, [this, targetW, targetH](unsigned int fbo) {
         mpv_opengl_fbo mpv_fbo{};
         mpv_fbo.fbo = fbo;
-        mpv_fbo.w   = w;
-        mpv_fbo.h   = h;
+        mpv_fbo.w   = targetW;
+        mpv_fbo.h   = targetH;
         mpv_fbo.internal_format = GL_RGBA;
 
         int flip_y = 0; // standard EGL texture alignment inside SDL
