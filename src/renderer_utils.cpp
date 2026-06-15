@@ -346,8 +346,8 @@ static void initSolidCorner(SDL_Renderer* renderer) {
 }
 
 static FT_Library g_ft_library = nullptr;
-static FT_Face g_ft_faces[6] = {nullptr};
-static hb_font_t* g_hb_fonts[6] = {nullptr};
+static FT_Face g_ft_faces[8] = {nullptr}; // [0..5] primary+fallback per size, [6..7] emoji small/medium
+static hb_font_t* g_hb_fonts[8] = {nullptr};
 
 struct CachedGlyph {
     SDL_Texture* texture = nullptr;
@@ -397,23 +397,45 @@ struct TextRun {
     std::vector<uint32_t> codepoints;
 };
 
+// Returns true for codepoints that are best rendered by an emoji font.
+static bool isEmojiCodepoint(uint32_t cp) {
+    // Miscellaneous Symbols, Dingbats, Emoticons, Transport, Misc Symbols & Pictographs,
+    // Supplemental Symbols, Regional Indicators, Enclosed Alphanumeric Supplement,
+    // Mahjong/Domino, Playing Cards, and high-plane emoji blocks.
+    if (cp >= 0x2600 && cp <= 0x27FF) return true;  // Misc Symbols, Dingbats
+    if (cp >= 0x2900 && cp <= 0x297F) return true;  // Supplemental Arrows-B
+    if (cp >= 0x1F000 && cp <= 0x1FFFF) return true; // All emoji planes
+    if (cp >= 0xFE00 && cp <= 0xFE0F) return true;  // Variation selectors
+    if (cp >= 0x1F1E0 && cp <= 0x1F1FF) return true; // Regional indicators
+    if (cp >= 0x200D && cp <= 0x200D) return true;  // ZWJ
+    if (cp == 0x20E3) return true; // Combining enclosing keycap
+    return false;
+}
+
 static std::vector<TextRun> segmentText(const std::vector<uint32_t>& codepoints, int size_idx) {
     int prim_idx = size_idx * 2;
     int fall_idx = size_idx * 2 + 1;
+    // Emoji font uses slots 6 (small) or 7 (medium/large), mapped from size_idx 0→6, 1+→7
+    int emoji_idx = (size_idx == 0) ? 6 : 7;
 
-    FT_Face prim_face = g_ft_faces[prim_idx];
-    FT_Face fall_face = g_ft_faces[fall_idx];
+    FT_Face prim_face  = g_ft_faces[prim_idx];
+    FT_Face fall_face  = g_ft_faces[fall_idx];
+    FT_Face emoji_face = g_ft_faces[emoji_idx];
 
     std::vector<TextRun> runs;
     if (codepoints.empty()) return runs;
 
     int current_font = -1;
     for (uint32_t cp : codepoints) {
-        int font = prim_idx;
-        if (prim_face && FT_Get_Char_Index(prim_face, cp) != 0) {
+        int font;
+        if (isEmojiCodepoint(cp) && emoji_face && FT_Get_Char_Index(emoji_face, cp) != 0) {
+            font = emoji_idx;
+        } else if (prim_face && FT_Get_Char_Index(prim_face, cp) != 0) {
             font = prim_idx;
         } else if (fall_face && FT_Get_Char_Index(fall_face, cp) != 0) {
             font = fall_idx;
+        } else if (emoji_face && FT_Get_Char_Index(emoji_face, cp) != 0) {
+            font = emoji_idx; // last-resort emoji
         } else {
             font = fall_face ? fall_idx : prim_idx;
         }
@@ -596,6 +618,35 @@ bool initFonts(SDL_Renderer* renderer) {
             }
         }
     }
+
+    // ── Emoji font (slots 6 = 14px, 7 = 18px) ───────────────────────────────
+    std::vector<std::string> emojiPaths = {
+        "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
+        "res/fonts/NotoEmoji-Regular.ttf",
+        "../res/fonts/NotoEmoji-Regular.ttf",
+        "/roms/tools/tubelite/res/fonts/NotoEmoji-Regular.ttf",
+        "C:/Windows/Fonts/seguiemj.ttf",  // Windows: Segoe UI Emoji
+    };
+    std::string emojiPath = "";
+    for (const auto& p : emojiPaths) {
+        if (FILE* f = fopen(p.c_str(), "rb")) { fclose(f); emojiPath = p; break; }
+    }
+    if (!emojiPath.empty()) {
+        // Slot 6: small (14px), Slot 7: medium (18px) — large scale uses medium emoji
+        for (int ei = 0; ei < 2; ei++) {
+            int esize = (ei == 0) ? 14 : 18;
+            if (FT_New_Face(g_ft_library, emojiPath.c_str(), 0, &g_ft_faces[6 + ei]) == 0) {
+                FT_Set_Pixel_Sizes(g_ft_faces[6 + ei], 0, esize);
+                g_hb_fonts[6 + ei] = hb_ft_font_create(g_ft_faces[6 + ei], nullptr);
+            }
+        }
+        std::cerr << "[fonts] Emoji font loaded: " << emojiPath << "\n";
+    } else {
+        std::cerr << "[fonts] No emoji font found — emoji will render as tofu\n";
+    }
     
     g_font_small = TTF_OpenFont(regPath.c_str(), 14);
     g_font_medium = TTF_OpenFont(regPath.c_str(), 18);
@@ -625,7 +676,7 @@ void cleanupFonts() {
     }
     g_glyph_cache.clear();
 
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         if (g_hb_fonts[i]) {
             hb_font_destroy(g_hb_fonts[i]);
             g_hb_fonts[i] = nullptr;

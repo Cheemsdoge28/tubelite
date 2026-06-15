@@ -124,78 +124,96 @@ void Compositor::render(App* app, int width, int height) {
 
     // Draw Miniplayer using miniplayer_layer_
     if (app->state_.miniplayerActive) {
-        int mX = width - 250;
-        int mY = height - 193;
-        int mW = 240;
-        int mH = 135;
-        
+        const int mX = width - 252;
+        const int mY = height - 210;
+        const int mW = 240;
+        const int mVH = 135;  // video area height
+        const int mSH = 20;   // title strip height below video
+        const int mH  = mVH + mSH; // total content height
+
         SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
-        
-        // Clear the screen area underneath first to avoid card thumbnail bleed/flicker
+
+        // Clear screen area under miniplayer (prevents card thumbnail bleed)
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderFillRect(renderer_, &miniplayerBounds);
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
-        // Ensure the miniplayer layer is initialized
-        if (!miniplayer_layer_.getTexture() || miniplayer_layer_.getWidth() != mW + 4 || miniplayer_layer_.getHeight() != mH + 4) {
+        // Init/resize layer
+        if (!miniplayer_layer_.getTexture() ||
+            miniplayer_layer_.getWidth()  != mW + 4 ||
+            miniplayer_layer_.getHeight() != mH + 4) {
             miniplayer_layer_.init(renderer_, mW + 4, mH + 4, miniplayerBounds);
         }
 
-        // Render miniplayer components offscreen
-        SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mH);
-        miniplayer_layer_.begin(renderer_, {0, 0, 0, 255}); // solid black background to avoid card bleed-through
+        // ── CRITICAL: fetch video texture BEFORE layer.begin() ────────────────
+        // SDL_GL_BindTexture probes the wrong GL texture if the layer's offscreen
+        // texture is the active render target -> full-screen flicker every frame.
+        SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mVH);
 
+        miniplayer_layer_.begin(renderer_, {8, 8, 10, 255});
+
+        // Video frame
         if (previewTex) {
-            SDL_Rect videoDst{2, 2, mW, mH};
+            SDL_Rect videoDst{2, 2, mW, mVH};
             SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
         }
-        
-        // Draw 2px red accent borders
-        SDL_Rect border1{1, 1, mW + 2, mH + 2};
-        SDL_Rect border2{0, 0, mW + 4, mH + 4};
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-        SDL_RenderDrawRect(renderer_, &border1);
-        SDL_RenderDrawRect(renderer_, &border2);
-        
+
+        // Pause indicator (centred on video area only)
         if (!app->mpv_player_.isPlaying()) {
-            int centerX = 2 + mW / 2;
-            int centerY = 2 + mH / 2;
-            SDL_Rect pauseBg{ centerX - 15, centerY - 15, 30, 30 };
+            int cx = 2 + mW / 2;
+            int cy = 2 + mVH / 2;
+            SDL_Rect pauseBg{cx - 16, cy - 16, 32, 32};
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            fillRoundedRect(renderer_, pauseBg, 15, {0, 0, 0, 150});
-            
-            SDL_Rect pauseLeft{ centerX - 5, centerY - 8, 3, 16 };
-            SDL_Rect pauseRight{ centerX + 2, centerY - 8, 3, 16 };
+            fillRoundedRect(renderer_, pauseBg, 16, {0, 0, 0, 160});
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
             SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
-            SDL_RenderFillRect(renderer_, &pauseLeft);
-            SDL_RenderFillRect(renderer_, &pauseRight);
+            SDL_Rect pL{cx - 6, cy - 8, 4, 16};
+            SDL_Rect pR{cx + 2, cy - 8, 4, 16};
+            SDL_RenderFillRect(renderer_, &pL);
+            SDL_RenderFillRect(renderer_, &pR);
         }
-        
-        // Hints: START: Play/Pause  B: Close
-        std::string hint1 = "START: Play/Pause";
-        std::string hint2 = "B: Close";
-        int w1 = 0, h1 = 0;
-        int w2 = 0, h2 = 0;
-        getTextSize(hint1, 1, &w1, &h1);
-        getTextSize(hint2, 1, &w2, &h2);
-        int textW = std::max(w1, w2);
-        int textH = h1 + h2 + 2;
-        int plateW = textW + 8;
-        int plateH = textH + 6;
-        
-        SDL_Rect plate{ 6, mH - plateH - 2, plateW, plateH };
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-        SDL_RenderFillRect(renderer_, &plate);
-        
-        drawText(renderer_, 10, mH - plateH + 1, hint1, 1, {255, 255, 255, 255});
-        drawText(renderer_, 10, mH - 12, hint2, 1, {255, 255, 255, 255});
+
+        // Red accent border around the video
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_Rect border1{1, 1, mW + 2, mVH + 2};
+        SDL_RenderDrawRect(renderer_, &border1);
+        SDL_Rect border2{0, 0, mW + 4, mVH + 4};
+        SDL_RenderDrawRect(renderer_, &border2);
+
+        // ── Title strip ──────────────────────────────────────────────────────
+        SDL_Rect strip{0, 2 + mVH, mW + 4, mSH + 2};
+        SDL_SetRenderDrawColor(renderer_, 14, 14, 18, 255);
+        SDL_RenderFillRect(renderer_, &strip);
+        // 1px top divider
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 130);
+        SDL_Rect divider{0, 2 + mVH, mW + 4, 1};
+        SDL_RenderFillRect(renderer_, &divider);
+
+        // Truncate title to fit the strip
+        std::string titleTxt = app->current_video_.title;
+        int maxTitleW = mW - 4;
+        int titleW = 0, titleH = 0;
+        getTextSize(titleTxt, 1, &titleW, &titleH);
+        if (titleW > maxTitleW) {
+            while (!titleTxt.empty() && titleW > maxTitleW - 12) {
+                titleTxt = utf8Slice(titleTxt, 0, utf8Length(titleTxt) - 1);
+                getTextSize(titleTxt + "...", 1, &titleW, &titleH);
+            }
+            titleTxt += "...";
+        }
+        int stripTextY = 2 + mVH + (mSH + 2 - titleH) / 2;
+        drawText(renderer_, 6, stripTextY, titleTxt, 1, {210, 210, 220, 255});
+
+        // A / B hint right-aligned in the strip
+        bool isPlaying = app->mpv_player_.isPlaying();
+        std::string hintStr = std::string(isPlaying ? "A:Pause" : "A:Play") + "  B:Close";
+        int hw = 0;
+        getTextSize(hintStr, 1, &hw, nullptr);
+        drawText(renderer_, mW + 4 - hw - 4, stripTextY, hintStr, 1, {130, 130, 140, 255});
 
         miniplayer_layer_.end(renderer_);
-
-        // Present miniplayer onto the screen in a single composition pass
         miniplayer_layer_.present(renderer_);
     }
 
@@ -295,7 +313,7 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
 
     bool isSearching = app->state_.isSearching && app->activeGrid() && !app->activeGrid()->cards.empty();
 
-    // Check cache validity. Redraw only if header dimensions, screen mode, or search query change.
+    // Check cache validity.
     bool needsRedraw = (
         !header_layer_.getTexture() ||
         header_layer_.getWidth() != width ||
@@ -308,48 +326,57 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
 
     if (needsRedraw) {
         header_layer_.init(renderer_, width, headerHeight, {0, 0, width, headerHeight});
-        header_layer_.begin(renderer_, {10, 10, 12, 255});
+        header_layer_.begin(renderer_, {10, 10, 13, 255});
 
-        // Subtle red accent line at bottom
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 80);
-        SDL_Rect accent{0, headerHeight - 2, width, 2};
+
+        // Left red accent bar (3px)
+        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 220);
+        SDL_Rect leftBar{0, 0, 3, headerHeight};
+        SDL_RenderFillRect(renderer_, &leftBar);
+
+        // Bottom separator line
+        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 60);
+        SDL_Rect accent{0, headerHeight - 1, width, 1};
         SDL_RenderFillRect(renderer_, &accent);
+        SDL_SetRenderDrawColor(renderer_, 50, 50, 60, 180);
+        SDL_Rect accent2{0, headerHeight - 2, width, 1};
+        SDL_RenderFillRect(renderer_, &accent2);
 
         float t = (headerHeight - collapsedHeight) / (float)(expandedHeight - collapsedHeight);
         t = std::max(0.0f, std::min(1.0f, t));
 
-        // ── Title (left) ─────────────────────────────────────────────────────────
+        // ── Title (left, offset past accent bar) ─────────────────────────────
         int titleScale = searchScreen ? 2 : 3;
         int titleH = 0;
         getTextSize(title, titleScale, nullptr, &titleH);
         int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
-        SDL_Color titleColor = searchScreen ? SDL_Color{255, 80, 80, 255} : SDL_Color{255, 52, 52, 255};
-        drawTextShadow(renderer_, 16, titleY, title, titleScale, titleColor);
+        SDL_Color titleColor = searchScreen ? SDL_Color{255, 85, 85, 255} : SDL_Color{255, 52, 52, 255};
+        drawTextShadow(renderer_, 20, titleY, title, titleScale, titleColor);
 
         if (!searchScreen) {
             if (t > 0.25f) {
                 Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.25f) / 0.5f));
-                drawText(renderer_, 18, titleY + titleH + 5, "RECOMMENDED", 1, {90, 90, 100, alpha});
+                drawText(renderer_, 22, titleY + titleH + 4, "RECOMMENDED", 1, {135, 135, 150, alpha});
             }
         } else {
             if (t > 0.15f) {
                 Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.15f) / 0.5f));
-                const int bx = 16;
+                const int bx = 20;
                 const int by = titleY + titleH + 6;
                 const int bw = width - bx - 12;
                 const int bh = 20;
 
                 SDL_Rect bar{bx, by, bw, bh};
-                fillRoundedRect(renderer_, bar, 6, {26, 26, 30, alpha});
-                drawRoundedRect(renderer_, bar, 6, {70, 70, 82, static_cast<Uint8>(alpha * 0.7f)});
+                fillRoundedRect(renderer_, bar, 6, {22, 22, 28, alpha});
+                drawRoundedRect(renderer_, bar, 6, {82, 82, 100, static_cast<Uint8>(alpha * 0.8f)});
 
                 std::string q = app->current_search_query_.empty()
                                 ? "Search..."
                                 : utf8Truncate(app->current_search_query_, 50, true);
                 SDL_Color qCol = app->current_search_query_.empty()
-                                 ? SDL_Color{70, 70, 80, alpha}
-                                 : SDL_Color{210, 210, 220, alpha};
+                                 ? SDL_Color{75, 75, 88, alpha}
+                                 : SDL_Color{215, 215, 225, alpha};
                 drawText(renderer_, bx + 8, by + 3, q, 1, qCol);
             }
         }
@@ -365,7 +392,7 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
     // Present header layer
     header_layer_.present(renderer_);
 
-    // Draw spinner directly to screen outside the cache so the cache remains clean
+    // Loading spinner drawn outside the cached layer so it animates freely
     if (isSearching) {
         float time = SDL_GetTicks() / 1000.0f;
         drawSpinner(renderer_, width - 30, headerHeight / 2, 10, time);
@@ -537,30 +564,31 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     }
 
     // ── Bottom Panel ──────────────────────────────────────────────────────────
-    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
-    SDL_Rect botPanel{0, height - 72, width, 72};
+    const int botH = 60; // was 72; saved 12px
+    SDL_SetRenderDrawColor(renderer_, 14, 16, 20, 225);
+    SDL_Rect botPanel{0, height - botH, width, botH};
     SDL_RenderFillRect(renderer_, &botPanel);
-    
-    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
-    SDL_Rect botBorder{0, height - 72, width, 2};
+    // Top separator
+    SDL_SetRenderDrawColor(renderer_, 32, 36, 44, 255);
+    SDL_Rect botBorder{0, height - botH, width, 1};
     SDL_RenderFillRect(renderer_, &botBorder);
 
     // Progress bar
     const int mg  = 14;
-    const int pbY = height - 64;
-    const int pbH = 5;
+    const int pbY = height - botH + 10;
+    const int pbH = 6;
     const int pbW = width - mg * 2;
 
     // Track (background)
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(renderer_, 80, 80, 88, 255);
+    SDL_SetRenderDrawColor(renderer_, 68, 68, 78, 255);
     SDL_Rect pbBg{mg, pbY, pbW, pbH};
     SDL_RenderFillRect(renderer_, &pbBg);
 
     // Buffered indicator
     {
         int bufW = static_cast<int>(pbW * std::min(frac + 0.15, 1.0));
-        SDL_SetRenderDrawColor(renderer_, 130, 130, 138, 255);
+        SDL_SetRenderDrawColor(renderer_, 100, 100, 112, 255);
         SDL_Rect pbBuf{mg, pbY, bufW, pbH};
         SDL_RenderFillRect(renderer_, &pbBuf);
     }
@@ -573,16 +601,18 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_RenderFillRect(renderer_, &pbFill);
     }
 
-    // Playhead circle
+    // Playhead circle (using fillRoundedRect for a proper disc)
     {
         int dotX = mg + static_cast<int>(pbW * frac);
-        int dotR = 7;
-        SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
-        SDL_Rect dot{dotX - dotR, pbY - dotR + pbH / 2, dotR * 2, dotR * 2};
-        SDL_RenderFillRect(renderer_, &dot);
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-        SDL_Rect dotInner{dotX - 4, pbY - 4 + pbH / 2, 8, 8};
-        SDL_RenderFillRect(renderer_, &dotInner);
+        int dotR = 6;
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        // White outer disc
+        SDL_Rect dotOuter{dotX - dotR, pbY - dotR + pbH / 2, dotR * 2, dotR * 2};
+        fillRoundedRect(renderer_, dotOuter, dotR, {255, 255, 255, 255});
+        // Red inner disc
+        int iR = 4;
+        SDL_Rect dotInner{dotX - iR, pbY - iR + pbH / 2, iR * 2, iR * 2};
+        fillRoundedRect(renderer_, dotInner, iR, {255, 48, 48, 255});
     }
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
@@ -631,14 +661,16 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // Timestamps
     {
+        const int botH = 60;
         std::string posStr = fmtTime(displayTime);
-        int tsY = pbY + pbH + 4;
-        drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 230, 255});
+        int tsY = pbY + pbH + 5;
+        drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 232, 255});
         if (dur > 0.0) {
             std::string remStr = "-" + fmtTime(dur - displayTime);
             int rw = 0; getTextSize(remStr, 1, &rw, nullptr);
-            drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, {160, 160, 170, 255});
+            drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, {160, 160, 172, 255});
         }
+        (void)botH;
     }
 
     // ── Description Drawer ─────────────────────────────────────────────────────

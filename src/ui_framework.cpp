@@ -39,10 +39,10 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     int thumbH = horizontal ? 90 : static_cast<int>(bounds.w * (9.0f / 16.0f));
 
     // Card background — when previewing, skip thumbnail area
-    // so the mpv GLES video (rendered in the? first pass) shows through.
+    // so the mpv GLES video (rendered in the first pass) shows through.
     if (is_previewing) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
+        SDL_SetRenderDrawColor(renderer, 26, 28, 32, 255);
         if (horizontal) {
             SDL_Rect textSection{cardRect.x + thumbW, cardRect.y, cardRect.w - thumbW, cardRect.h};
             SDL_RenderFillRect(renderer, &textSection);
@@ -53,8 +53,12 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     } else {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 26, 26, 26, 255);
+        SDL_SetRenderDrawColor(renderer, 26, 28, 32, 255);
         SDL_RenderFillRect(renderer, &cardRect);
+        // Subtle 1px top accent line for visual separation
+        SDL_SetRenderDrawColor(renderer, 52, 54, 62, 255);
+        SDL_Rect topLine{cardRect.x, cardRect.y, cardRect.w, 1};
+        SDL_RenderFillRect(renderer, &topLine);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     }
 
@@ -216,21 +220,21 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     }
     
     // Draw Channel Name
-    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_author_, 1, {160, 160, 160, 255});
+    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_author_, 1, {185, 185, 195, 255});
     
     // Draw Views & Date line
-    drawText(renderer, textX, textY + titleH_ + lineGap + metaH_ + lineGap, truncated_views_date_, 1, {120, 120, 120, 255});
+    drawText(renderer, textX, textY + titleH_ + lineGap + metaH_ + lineGap, truncated_views_date_, 1, {140, 140, 155, 255});
     
     if (!video.duration_string.empty() && !is_previewing) {
-        int pillW = durW_ + 8;
-        int pillH = durH_ + 4;
-        int pillX = cardRect.x + thumbW - pillW - 6;
-        int pillY = cardRect.y + thumbH - pillH - 6;
+        int pillW = durW_ + 10;
+        int pillH = durH_ + 6;
+        int pillX = cardRect.x + thumbW - pillW - 5;
+        int pillY = cardRect.y + thumbH - pillH - 5;
         int textPillY = pillY + (pillH - durH_) / 2;
         
         SDL_Rect pillRect{pillX, pillY, pillW, pillH};
-        fillRoundedRect(renderer, pillRect, 3, {0, 0, 0, 180});
-        drawText(renderer, pillX + 4, textPillY, video.duration_string, 1, {255, 255, 255, 255});
+        fillRoundedRect(renderer, pillRect, 4, {0, 0, 0, 210});
+        drawText(renderer, pillX + 5, textPillY, video.duration_string, 1, {255, 255, 255, 255});
     }
 
     // maskRoundedCorners paints background-colour pixels into the corners; when
@@ -297,8 +301,12 @@ void GridContainer::pruneOldCards(int maxCards, int& focusedCardIdx) {
 }
 
 void GridContainer::update(float dt) {
-    (void)dt;
-    scrollY = targetScrollY;
+    // Smooth scroll lerp — feels premium, especially on the handheld touchpad
+    const float lerpSpeed = 18.0f;
+    float alpha = std::min(1.0f, dt * lerpSpeed);
+    scrollY = scrollY + (targetScrollY - scrollY) * alpha;
+    // Snap to rest when very close to avoid sub-pixel jitter
+    if (std::abs(scrollY - targetScrollY) < 0.5f) scrollY = targetScrollY;
     for (auto& c : cards) c->update(dt);
 }
 
@@ -439,7 +447,15 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
     };
     
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    drawRoundedRect(renderer, ring, 10, {255, 255, 255, 220});
+    // Outer glow ring
+    SDL_Rect glow{
+        ring.x - 2,
+        ring.y - 2,
+        ring.w + 4,
+        ring.h + 4
+    };
+    drawRoundedRect(renderer, glow, 12, {255, 48, 48, 70});
+    drawRoundedRect(renderer, ring, 10, {255, 255, 255, 200});
     ring.x -= 1; ring.y -= 1; ring.w += 2; ring.h += 2;
     drawRoundedRect(renderer, ring, 11, {255, 48, 48, 255});
     SDL_RenderSetClipRect(renderer, nullptr);
