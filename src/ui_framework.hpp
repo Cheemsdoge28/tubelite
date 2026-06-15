@@ -89,6 +89,7 @@ public:
     void clickFocused();
     void pruneGridIfNeeded(int maxCards);
     void setFocusedIndex(int index);
+    void resetGridFocus(std::shared_ptr<GridContainer> grid);
 
 private:
     std::shared_ptr<GridContainer> grid_;

@@ -498,6 +498,7 @@ void App::doSearch(const std::string& query) {
     search_page_ = 1;
     
     search_grid_->cards.clear();
+    focus_manager_.resetGridFocus(search_grid_);
     focus_manager_.setGrid(search_grid_);
     
     if (image_manager_) image_manager_->clearCache();
@@ -1172,6 +1173,7 @@ void App::loadHomeFeeds() {
     // Stale-While-Revalidate: If we have no cache, we must clear and show loading
     if (cached_trending_videos_.empty()) {
         home_grid_->cards.clear();
+        focus_manager_.resetGridFocus(home_grid_);
         focus_manager_.setGrid(home_grid_);
     }
     

@@ -395,22 +395,29 @@ void FocusManager::handleInput(int dx, int dy) {
         focusedCardIdx_ = newIdx;
         updateTargetFocus();
         
-        if (newIdx >= static_cast<int>(grid_->cards.size()) - (maxCols * 2)) {
+        // Speculative prefetching: load more cards when user gets 70% of the way through current grid
+        if (newIdx >= static_cast<int>(grid_->cards.size()) * 7 / 10) {
             if (grid_->onScrolledToBottom) grid_->onScrolledToBottom();
         }
     }
 }
 
 void FocusManager::update(float dt) {
-    (void)dt;
-    if (grid_) grid_->update(dt);
-    
-    if (grid_ && !grid_->cards.empty()) {
-        float scroll = grid_->scrollY;
-        currentFocusRing_.x = targetFocusRing_.x;
-        currentFocusRing_.y = targetFocusRing_.y - scroll;
-        currentFocusRing_.w = targetFocusRing_.w;
-        currentFocusRing_.h = targetFocusRing_.h;
+    if (grid_) {
+        grid_->update(dt);
+        if (!grid_->cards.empty()) {
+            focusedCardIdx_ = std::max(0, std::min(focusedCardIdx_, static_cast<int>(grid_->cards.size()) - 1));
+            auto card = grid_->cards[focusedCardIdx_];
+            if (card) {
+                card->focused = true;
+                targetFocusRing_ = card->bounds;
+            }
+            float scroll = grid_->scrollY;
+            currentFocusRing_.x = targetFocusRing_.x;
+            currentFocusRing_.y = targetFocusRing_.y - scroll;
+            currentFocusRing_.w = targetFocusRing_.w;
+            currentFocusRing_.h = targetFocusRing_.h;
+        }
     }
 }
 
@@ -440,7 +447,8 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
 
 std::shared_ptr<VideoCard> FocusManager::getFocusedCard() const {
     if (!grid_ || grid_->cards.empty()) return nullptr;
-    return grid_->cards[focusedCardIdx_];
+    int idx = std::max(0, std::min(focusedCardIdx_, static_cast<int>(grid_->cards.size()) - 1));
+    return grid_->cards[idx];
 }
 
 void FocusManager::clickFocused() {
@@ -459,6 +467,16 @@ void FocusManager::setFocusedIndex(int index) {
     focusedCardIdx_ = std::clamp(index, 0, static_cast<int>(grid_->cards.size()) - 1);
     updateTargetFocus();
     currentFocusRing_ = targetFocusRing_;
+}
+
+void FocusManager::resetGridFocus(std::shared_ptr<GridContainer> grid) {
+    if (grid) {
+        gridFocusIndices_[grid.get()] = 0;
+        if (grid_ == grid) {
+            focusedCardIdx_ = 0;
+            updateTargetFocus();
+        }
+    }
 }
 
 } // namespace ui
