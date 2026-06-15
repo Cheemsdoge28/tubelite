@@ -102,6 +102,10 @@ private:
     std::string loading_status_text_{"Resolving Stream..."};
     int search_page_{1};
     int home_page_{1};
+    // Set when onScrolledToBottom fires while isSearching=true so we retry
+    // immediately once the current page load finishes.
+    bool pendingMoreHome_{false};
+    bool pendingMoreSearch_{false};
 
     int lastStickDirX_{0};
     int lastStickDirY_{0};

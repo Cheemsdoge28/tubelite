@@ -100,13 +100,25 @@ bool App::initialize() {
     home_grid_->title = "Trending Now";
     home_grid_->columns = 2;
     home_grid_->bounds = {0, 100, 640, 332};
-    home_grid_->onScrolledToBottom = [this]() { loadMoreHomeFeeds(); };
+    home_grid_->onScrolledToBottom = [this]() {
+        if (state_.isLoadingVideo || state_.isSearching) {
+            pendingMoreHome_ = true; // retry once current load finishes
+        } else {
+            loadMoreHomeFeeds();
+        }
+    };
 
     search_grid_ = std::make_shared<ui::GridContainer>();
     search_grid_->title = "";
     search_grid_->columns = 2;
     search_grid_->bounds = {0, 100, 640, 332};
-    search_grid_->onScrolledToBottom = [this]() { loadMoreSearchResults(); };
+    search_grid_->onScrolledToBottom = [this]() {
+        if (state_.isLoadingVideo || state_.isSearching) {
+            pendingMoreSearch_ = true; // retry once current load finishes
+        } else {
+            loadMoreSearchResults();
+        }
+    };
     compositor_ = std::make_unique<Compositor>(renderer_);
 
     state_manager_.setTransitionCallback([this](TubeState::Screen oldScreen, TubeState::Screen newScreen, bool oldMiniplayer, bool newMiniplayer) {
@@ -496,6 +508,7 @@ void App::doSearch(const std::string& query) {
     uiDirty_ = true;
     current_search_query_ = query;
     search_page_ = 1;
+    pendingMoreSearch_ = false;
     
     search_grid_->cards.clear();
     focus_manager_.resetGridFocus(search_grid_);
@@ -770,7 +783,7 @@ void App::renderFrame() {
     
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
-    bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing;
+    bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing || state_.isSearching || (state_.miniplayerActive && mpv_player_.isPlaying());
     if (!shouldPresent) return;
 
     compositor_->render(this, width, height);
@@ -1299,6 +1312,7 @@ void App::loadHomeFeeds() {
     uiDirty_ = true;
     home_grid_->title = "Trending";
     home_feed_query_ = "trending";
+    pendingMoreHome_ = false;
     
     int reqPage = home_page_;
     auto accumulated_results = std::make_shared<std::vector<YouTubeVideo>>();
@@ -1350,6 +1364,10 @@ void App::loadMoreHomeFeeds() {
                 state_.isSearching = false;
                 focus_manager_.pruneGridIfNeeded(100);
                 uiDirty_ = true;
+                if (pendingMoreHome_) {
+                    pendingMoreHome_ = false;
+                    loadMoreHomeFeeds();
+                }
                 return;
             }
             
@@ -1388,6 +1406,10 @@ void App::loadMoreSearchResults() {
                 state_.isSearching = false;
                 focus_manager_.pruneGridIfNeeded(100);
                 uiDirty_ = true;
+                if (pendingMoreSearch_) {
+                    pendingMoreSearch_ = false;
+                    loadMoreSearchResults();
+                }
                 return;
             }
             

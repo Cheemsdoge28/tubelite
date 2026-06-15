@@ -143,9 +143,9 @@ void Compositor::render(App* app, int width, int height) {
         }
 
         // Render miniplayer components offscreen
+        SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mH);
         miniplayer_layer_.begin(renderer_, {0, 0, 0, 255}); // solid black background to avoid card bleed-through
 
-        SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mH);
         if (previewTex) {
             SDL_Rect videoDst{2, 2, mW, mH};
             SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
