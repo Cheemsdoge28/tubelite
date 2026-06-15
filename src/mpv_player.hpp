@@ -12,6 +12,8 @@
 //   mpv_render_context_create uses THAT same EGL context (already current).
 //   mpv renders directly to FBO=0 (the display framebuffer) via glViewport/scissor.
 //   SDL draws 2D UI overlays after mpv — no GPU→CPU→GPU roundtrip.
+#include "layer.hpp"
+
 class MpvPlayer {
 public:
     MpvPlayer()  = default;
@@ -21,9 +23,7 @@ public:
     bool initialize(SDL_Window* window, SDL_Renderer* renderer);
     void shutdown();
 
-    // Render the latest video frame directly into the current framebuffer.
-    // Internally: SDL_RenderFlush → mpv → reset viewport.
-    // Call before any SDL overlays that should appear above video.
+    // Render the latest video frame by rendering it offscreen to texture and copying it to the screen.
     void render(int winWidth, int winHeight);
 
     // Pump mpv events + check for new frame. Returns true if redraw needed.
@@ -44,7 +44,6 @@ public:
     std::string getSubtitleTrackName();
     std::string getAudioTrackName();
     void setMute(bool mute);
-    void renderViewport(int winWidth, int winHeight, int x, int y, int w, int h);
     SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
     void destroyPreviewTexture();
     void setSpeed(double speed);
@@ -77,10 +76,7 @@ private:
     double playback_time_ = 0.0;
     double duration_      = 0.0;
 
-    SDL_Texture* preview_tex_{nullptr};
-    int          preview_tex_w_{0};
-    int          preview_tex_h_{0};
-    unsigned int preview_fbo_{0};
+    Layer        video_layer_;
     bool         has_new_frame_{false};
 
     std::string pending_subtitle_url_;

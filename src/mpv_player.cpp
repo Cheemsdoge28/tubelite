@@ -200,11 +200,8 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
 
 
 void MpvPlayer::shutdown() {
-    if (preview_tex_) {
-        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-        SDL_DestroyTexture(preview_tex_);
-        preview_tex_ = nullptr;
-    }
+    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
+    video_layer_.destroy();
     if (mpv_gl_) {
         restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
         mpv_render_context_free(mpv_gl_);
@@ -305,285 +302,48 @@ void MpvPlayer::render(int winWidth, int winHeight) {
     if (!mpv_gl_) return;
     if (winWidth <= 0 || winHeight <= 0) return;
 
-    // 1. Flush any pending SDL draw commands first while SDL's EGL context/surface is current.
-    SDL_RenderFlush(renderer_);
-
-    // 2. Restore EGL context for mpv
-    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-
-    // 3. Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
-    GLint last_program = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
-    GLint last_array_buffer = 0;
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
-    GLint last_element_array_buffer = 0;
-    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &last_element_array_buffer);
-    GLint last_active_texture = 0;
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &last_active_texture);
-    GLint last_texture_2d = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture_2d);
-    
-    GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
-    GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
-    
-    GLint last_viewport[4];
-    glGetIntegerv(GL_VIEWPORT, last_viewport);
-    GLint last_scissor_box[4];
-    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
-
-    glViewport(0, 0, winWidth, winHeight);
-
-    // Render mpv into FBO=0 (the real framebuffer / SDL's EGL surface).
-    // flip_y=1: compensates for GL's Y-flip so the video is right-side-up.
-    mpv_opengl_fbo fbo{};
-    fbo.fbo = 0;
-    fbo.w   = winWidth;        // tell mpv the target logical size
-    fbo.h   = winHeight;
-    fbo.internal_format = 0;
-
-    int flip_y = 1;
-    mpv_render_param rparams[] = {
-        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
-        {MPV_RENDER_PARAM_FLIP_Y,     &flip_y},
-        {MPV_RENDER_PARAM_INVALID,    nullptr}
-    };
-    mpv_render_context_render(mpv_gl_, rparams);
-
-    // 4. Restore saved GLES2 state
-    glUseProgram(last_program);
-    glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);
-    glActiveTexture(last_active_texture);
-    glBindTexture(GL_TEXTURE_2D, last_texture_2d);
-    
-    if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-    if (last_enable_cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    
-    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
-    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
-}
-
-void MpvPlayer::renderViewport(int winWidth, int winHeight, int x, int y, int w, int h) {
-    if (!mpv_gl_) return;
-    if (winWidth <= 0 || winHeight <= 0 || w <= 0 || h <= 0) return;
-
-    // 1. Flush any pending SDL draw commands first while SDL's EGL context/surface is current.
-    SDL_RenderFlush(renderer_);
-
-    // 2. Restore EGL context for mpv
-    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-
-    // 3. Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
-    GLint last_program = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
-    GLint last_array_buffer = 0;
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
-    GLint last_element_array_buffer = 0;
-    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &last_element_array_buffer);
-    GLint last_active_texture = 0;
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &last_active_texture);
-    GLint last_texture_2d = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture_2d);
-    
-    GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
-    GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
-    
-    GLint last_viewport[4];
-    glGetIntegerv(GL_VIEWPORT, last_viewport);
-    GLint last_scissor_box[4];
-    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
-
-    // OpenGL coordinate system starts from bottom-left corner of the window.
-    // Screen coordinates (x, y) start from top-left.
-    glViewport(x, winHeight - y - h, w, h);
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(x, winHeight - y - h, w, h);
-
-    // Render mpv into FBO=0 (directly to window framebuffer)
-    mpv_opengl_fbo fbo{};
-    fbo.fbo = 0;
-    fbo.w   = w;
-    fbo.h   = h;
-    fbo.internal_format = 0;
-
-    int flip_y = 1; // Direct rendering to FBO=0 requires flip_y=1
-    mpv_render_param rparams[] = {
-        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
-        {MPV_RENDER_PARAM_FLIP_Y,     &flip_y},
-        {MPV_RENDER_PARAM_INVALID,    nullptr}
-    };
-    mpv_render_context_render(mpv_gl_, rparams);
-
-    // 4. Restore saved GLES2 state
-    glUseProgram(last_program);
-    glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);
-    glActiveTexture(last_active_texture);
-    glBindTexture(GL_TEXTURE_2D, last_texture_2d);
-    
-    if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-    if (last_enable_cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    
-    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
-    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
+    SDL_Texture* tex = renderToTexture(renderer_, winWidth, winHeight);
+    if (tex) {
+        SDL_RenderCopy(renderer_, tex, nullptr, nullptr);
+    }
 }
 
 SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     if (!mpv_gl_) return nullptr;
-
-    // Save current EGL context/surface to restore later (protect SDL context)
-    void* old_display = nullptr;
-    void* old_draw = nullptr;
-    void* old_read = nullptr;
-    void* old_context = nullptr;
-
-    static auto egl_get_current_display = []() -> PFN_eglGetCurrentDisplay {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
-        return lib ? reinterpret_cast<PFN_eglGetCurrentDisplay>(dlsym(lib, "eglGetCurrentDisplay")) : nullptr;
-    }();
-    static auto egl_get_current_surface = []() -> PFN_eglGetCurrentSurface {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
-        return lib ? reinterpret_cast<PFN_eglGetCurrentSurface>(dlsym(lib, "eglGetCurrentSurface")) : nullptr;
-    }();
-    static auto egl_get_current_context = []() -> PFN_eglGetCurrentContext {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
-        return lib ? reinterpret_cast<PFN_eglGetCurrentContext>(dlsym(lib, "eglGetCurrentContext")) : nullptr;
-    }();
-
-    if (egl_get_current_display && egl_get_current_surface && egl_get_current_context) {
-        old_display = egl_get_current_display();
-        old_draw    = egl_get_current_surface(EGL_DRAW);
-        old_read    = egl_get_current_surface(EGL_READ);
-        old_context = egl_get_current_context();
-    }
+    if (w <= 0 || h <= 0) return nullptr;
 
     bool texture_just_recreated = false;
-    if (!preview_tex_ || preview_tex_w_ != w || preview_tex_h_ != h) {
-        if (preview_tex_) {
-            restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-            SDL_DestroyTexture(preview_tex_);
-        }
-        preview_tex_ = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
-                                         SDL_TEXTUREACCESS_TARGET, w, h);
-        preview_tex_w_ = w;
-        preview_tex_h_ = h;
+    if (!video_layer_.getTexture() || video_layer_.getWidth() != w || video_layer_.getHeight() != h) {
+        video_layer_.init(renderer, w, h, {0, 0, w, h});
         texture_just_recreated = true;
     }
 
-    if (!preview_tex_) return nullptr;
-
     if (!has_new_frame_ && !texture_just_recreated) {
-        return preview_tex_;
+        return video_layer_.getTexture();
     }
-
     has_new_frame_ = false;
 
-    restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
+    video_layer_.renderGLES(renderer, egl_display_, egl_draw_, egl_read_, egl_context_, [this, w, h](unsigned int fbo) {
+        mpv_opengl_fbo mpv_fbo{};
+        mpv_fbo.fbo = fbo;
+        mpv_fbo.w   = w;
+        mpv_fbo.h   = h;
+        mpv_fbo.internal_format = GL_RGBA;
 
-    // Save GLES2 state to prevent libmpv rendering from corrupting SDL's state cache
-    GLint last_framebuffer = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &last_framebuffer);
-    GLint last_program = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
-    GLint last_array_buffer = 0;
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
-    GLint last_element_array_buffer = 0;
-    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &last_element_array_buffer);
-    GLint last_active_texture = 0;
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &last_active_texture);
-    GLint last_texture_2d = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture_2d);
-    
-    GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
-    GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
-    
-    GLint last_viewport[4];
-    glGetIntegerv(GL_VIEWPORT, last_viewport);
-    GLint last_scissor_box[4];
-    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
+        int flip_y = 0; // standard EGL texture alignment inside SDL
+        mpv_render_param rparams[] = {
+            {MPV_RENDER_PARAM_OPENGL_FBO, &mpv_fbo},
+            {MPV_RENDER_PARAM_FLIP_Y,     &flip_y},
+            {MPV_RENDER_PARAM_INVALID,    nullptr}
+        };
+        mpv_render_context_render(mpv_gl_, rparams);
+    });
 
-    // Bind the texture to retrieve its OpenGL texture ID
-    float texw = 0.0f, texh = 0.0f;
-    SDL_GL_BindTexture(preview_tex_, &texw, &texh);
-
-    GLint texture_id = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture_id);
-
-    SDL_GL_UnbindTexture(preview_tex_);
-
-    if (preview_fbo_ == 0) {
-        glGenFramebuffers(1, &preview_fbo_);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, preview_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_id, 0);
-
-    glViewport(0, 0, w, h);
-    glDisable(GL_SCISSOR_TEST);
-
-    mpv_opengl_fbo fbo{};
-    fbo.fbo = preview_fbo_;
-    fbo.w   = w;
-    fbo.h   = h;
-    fbo.internal_format = GL_RGBA;
-
-    int flip_y = 0; // standard EGL texture alignment inside SDL
-    mpv_render_param rparams[] = {
-        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
-        {MPV_RENDER_PARAM_FLIP_Y,     &flip_y},
-        {MPV_RENDER_PARAM_INVALID,    nullptr}
-    };
-    mpv_render_context_render(mpv_gl_, rparams);
-
-    // Restore saved GLES2 state
-    glBindFramebuffer(GL_FRAMEBUFFER, last_framebuffer);
-    glUseProgram(last_program);
-    glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);
-    glActiveTexture(last_active_texture);
-    glBindTexture(GL_TEXTURE_2D, last_texture_2d);
-    
-    if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-    if (last_enable_cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    
-    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
-    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
-
-    // Restore EGL context to exactly what SDL had set up
-    if (old_display && old_context) {
-        restore_egl_context(old_display, old_draw, old_read, old_context);
-    }
-
-    return preview_tex_;
+    return video_layer_.getTexture();
 }
 
 void MpvPlayer::destroyPreviewTexture() {
-    if (preview_tex_) {
-        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-        SDL_DestroyTexture(preview_tex_);
-        preview_tex_ = nullptr;
-    }
-    if (preview_fbo_) {
-        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
-        glDeleteFramebuffers(1, &preview_fbo_);
-        preview_fbo_ = 0;
-    }
-    preview_tex_w_ = 0;
-    preview_tex_h_ = 0;
+    video_layer_.destroy();
 }
 
 // ── Playback controls ─────────────────────────────────────────────────────────

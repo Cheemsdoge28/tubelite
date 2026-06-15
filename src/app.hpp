@@ -67,8 +67,6 @@ private:
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
     std::optional<std::string> getCachedStreamUrl(const std::string& key);
     void setCachedStreamUrl(const std::string& key, const std::string& url);
-    void renderBrowseHeader(int width, int height, const std::string& title, float scrollY, bool searchScreen);
-    void renderPlaybackOverlay(int width, int height);
     void renderBrowseLoadingState(int width, int height, const std::string& text);
 
 

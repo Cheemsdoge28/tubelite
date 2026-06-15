@@ -11,28 +11,15 @@ void Compositor::render(App* app, int width, int height) {
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
 
-        // Render the video frame first (directly to the display framebuffer FBO=0)
+        // Render the video frame (internally delegates to offscreen Layer in MpvPlayer)
         app->mpv_player_.render(width, height);
 
-        // Draw the UI overlay layers (HUD, loading spinner, overlays) on top of the video
+        // Draw the HUD overlay offscreen via Layer and composite it on top of the video
         if (app->state_.showUi) {
-            app->renderPlaybackOverlay(width, height);
+            renderPlaybackOverlay(app, width, height);
         }
 
-        if (app->state_.isLoadingVideo) {
-            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-            SDL_Rect bg{0, 0, width, height};
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            SDL_RenderFillRect(renderer_, &bg);
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-
-            float time = SDL_GetTicks() / 1000.0f;
-            drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
-            drawTextCentered(renderer_, width / 2, height / 2 + 25, app->loading_status_text_, 2, {255, 255, 255, 255}, true);
-            app->uiDirty_ = true;
-        }
-
-        // Volume / speed overlays
+        // Draw volume/speed adjust overlays
         {
             auto now = std::chrono::steady_clock::now();
             bool volumeActive = (now < app->volume_overlay_timeout_);
@@ -45,25 +32,16 @@ void Compositor::render(App* app, int width, int height) {
             lastSpeedActivePlayback  = speedActive;
 
             if (volumeActive) {
-                int boxW = 200, boxH = 36;
-                int boxX = (width - boxW) / 2, boxY = 64;
-                SDL_Rect r{boxX, boxY, boxW, boxH};
-                fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-                drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
-                char volBuf[32];
-                snprintf(volBuf, sizeof(volBuf), "Volume: %d%%", app->state_.volume);
-                drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, volBuf, 1, {255, 255, 255, 255}, true);
+                drawVolumeOverlay(renderer_, width / 2, 64, app->state_.volume, app->state_.muted, {64, 148, 255, 255});
+            } else if (speedActive) {
+                drawSpeedOverlay(renderer_, width / 2, 64, app->state_.speed, {64, 148, 255, 255});
             }
-            if (speedActive) {
-                int boxW = 200, boxH = 36;
-                int boxX = (width - boxW) / 2, boxY = 64;
-                SDL_Rect r{boxX, boxY, boxW, boxH};
-                fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-                drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
-                char speedBuf[32];
-                snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", app->state_.speed);
-                drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, speedBuf, 1, {255, 255, 255, 255}, true);
-            }
+        }
+
+        // Draw loading overlay
+        if (app->state_.isLoadingVideo) {
+            drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, {255, 255, 255, 255}, true);
+            app->uiDirty_ = true;
         }
 
         app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_);
@@ -85,7 +63,8 @@ void Compositor::render(App* app, int width, int height) {
                 drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load feed.", 2, {255, 100, 100, 255});
                 drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
             } else {
-                app->renderBrowseLoadingState(width, height, "Loading Feed...");
+                drawLoadingOverlay(renderer_, width, height, "Loading Feed...", SDL_GetTicks() / 1000.0f, {150, 150, 150, 255}, false);
+                app->uiDirty_ = true;
             }
         } else {
             app->home_grid_->render(renderer_, 0.0f, 0.0f);
@@ -108,12 +87,11 @@ void Compositor::render(App* app, int width, int height) {
             }
             app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
-        auto focusedCard = app->focus_manager_.getFocusedCard();
-        (void)focusedCard;
-        app->renderBrowseHeader(width, height, "TubeLite", scrollY, false);
+        renderBrowseHeader(app, width, height, "TubeLite", scrollY, false);
     } else if (app->state_.currentScreen == TubeState::Screen::Search) {
         if (app->state_.isSearching && app->search_grid_->cards.empty()) {
-            app->renderBrowseLoadingState(width, height, "Searching...");
+            drawLoadingOverlay(renderer_, width, height, "Searching...", SDL_GetTicks() / 1000.0f, {150, 150, 150, 255}, false);
+            app->uiDirty_ = true;
         } else if (app->search_grid_->cards.empty()) {
             if (app->current_search_query_.empty()) {
                 drawTextCentered(renderer_, width / 2, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
@@ -141,39 +119,42 @@ void Compositor::render(App* app, int width, int height) {
             }
             app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
         }
-        app->renderBrowseHeader(width, height, "Search", scrollY, true);
+        renderBrowseHeader(app, width, height, "Search", scrollY, true);
     }
 
+    // Draw Miniplayer using miniplayer_layer_
     if (app->state_.miniplayerActive) {
         int mX = width - 250;
         int mY = height - 193;
         int mW = 240;
         int mH = 135;
         
-        SDL_Rect miniplayerBounds{mX, mY, mW, mH};
+        SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
         
-        // Clear the background region under the miniplayer to solid black
-        // to prevent grid cards and thumbnails from bleeding through.
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
-        SDL_RenderFillRect(renderer_, &miniplayerBounds);
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        // Ensure the miniplayer layer is initialized
+        if (!miniplayer_layer_.getTexture() || miniplayer_layer_.getWidth() != mW + 4 || miniplayer_layer_.getHeight() != mH + 4) {
+            miniplayer_layer_.init(renderer_, mW + 4, mH + 4, miniplayerBounds);
+        }
+
+        // Render miniplayer components offscreen
+        miniplayer_layer_.begin(renderer_, {0, 0, 0, 255}); // solid black background to avoid card bleed-through
 
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mH);
         if (previewTex) {
-            SDL_RenderCopy(renderer_, previewTex, nullptr, &miniplayerBounds);
+            SDL_Rect videoDst{2, 2, mW, mH};
+            SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
         }
         
-        // Draw a 2px red accent border around the miniplayer
-        SDL_Rect border1{mX - 1, mY - 1, mW + 2, mH + 2};
-        SDL_Rect border2{mX - 2, mY - 2, mW + 4, mH + 4};
+        // Draw 2px red accent borders
+        SDL_Rect border1{1, 1, mW + 2, mH + 2};
+        SDL_Rect border2{0, 0, mW + 4, mH + 4};
         SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
         SDL_RenderDrawRect(renderer_, &border1);
         SDL_RenderDrawRect(renderer_, &border2);
         
         if (!app->mpv_player_.isPlaying()) {
-            int centerX = mX + mW / 2;
-            int centerY = mY + mH / 2;
+            int centerX = 2 + mW / 2;
+            int centerY = 2 + mH / 2;
             SDL_Rect pauseBg{ centerX - 15, centerY - 15, 30, 30 };
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
             fillRoundedRect(renderer_, pauseBg, 15, {0, 0, 0, 150});
@@ -198,43 +179,20 @@ void Compositor::render(App* app, int width, int height) {
         int plateW = textW + 8;
         int plateH = textH + 6;
         
-        SDL_Rect plate{ mX + 4, mY + mH - plateH - 4, plateW, plateH };
+        SDL_Rect plate{ 6, mH - plateH - 2, plateW, plateH };
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
         SDL_RenderFillRect(renderer_, &plate);
         
-        drawText(renderer_, mX + 8, mY + mH - plateH - 1, hint1, 1, {255, 255, 255, 255});
-        drawText(renderer_, mX + 8, mY + mH - 14, hint2, 1, {255, 255, 255, 255});
+        drawText(renderer_, 10, mH - plateH + 1, hint1, 1, {255, 255, 255, 255});
+        drawText(renderer_, 10, mH - 12, hint2, 1, {255, 255, 255, 255});
+
+        miniplayer_layer_.end(renderer_);
+
+        // Present miniplayer onto the screen in a single composition pass
+        miniplayer_layer_.present(renderer_);
     }
 
-    // Render header-level spinner if searching and grid is not empty
-    if (app->state_.isSearching && app->activeGrid() && !app->activeGrid()->cards.empty()) {
-        const int expandedHeight = 84;
-        const int collapsedHeight = 58;
-        const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
-        float time = SDL_GetTicks() / 1000.0f;
-        drawSpinner(renderer_, width - 30, headerHeight / 2, 10, time);
-        app->uiDirty_ = true;
-    }
-
-    // Browse status bar
-    if (app->state_.showUi) {
-        app->status_.render(renderer_, app->state_, width, height, app->uiDirty_);
-    }
-    
-    // Loading overlay
-    if (app->state_.isLoadingVideo) {
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 180);
-        SDL_Rect bg{0, 0, width, height};
-        SDL_RenderFillRect(renderer_, &bg);
-        
-        float time = SDL_GetTicks() / 1000.0f;
-        drawSpinner(renderer_, width / 2, height / 2 - 20, 30, time);
-        
-        drawTextCentered(renderer_, width / 2, height / 2 + 25, app->loading_status_text_, 2, {255, 255, 255, 255}, true);
-        app->uiDirty_ = true;
-    }
-    
     // Draw custom volume/speed overlays
     {
         auto now = std::chrono::steady_clock::now();
@@ -250,47 +208,9 @@ void Compositor::render(App* app, int width, int height) {
         lastSpeedActive = speedActive;
 
         if (volumeActive) {
-            int boxW = 200;
-            int boxH = 36;
-            int boxX = (width - boxW) / 2;
-            int boxY = 64;
-            
-            SDL_Rect r{boxX, boxY, boxW, boxH};
-            fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-            drawRoundedRect(renderer_, r, 6, {255, 48, 48, 255});
-            
-            std::string volText = "Volume: " + std::to_string(app->state_.volume) + "%";
-            if (app->state_.muted) volText = "Mute: ON";
-            
-            int barW = 160;
-            int barH = 6;
-            int barX = boxX + 20;
-            int barY = boxY + 24;
-            SDL_Rect barBg{barX, barY, barW, barH};
-            SDL_SetRenderDrawColor(renderer_, 60, 60, 60, 255);
-            SDL_RenderFillRect(renderer_, &barBg);
-            
-            if (!app->state_.muted) {
-                int fillW = static_cast<int>(barW * (app->state_.volume / 100.0f));
-                SDL_Rect barFill{barX, barY, fillW, barH};
-                SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-                SDL_RenderFillRect(renderer_, &barFill);
-            }
-            
-            drawTextCentered(renderer_, boxX + boxW / 2, boxY + 4, volText, 1, {255, 255, 255, 255}, true);
+            drawVolumeOverlay(renderer_, width / 2, 64, app->state_.volume, app->state_.muted, {255, 48, 48, 255});
         } else if (speedActive) {
-            int boxW = 160;
-            int boxH = 32;
-            int boxX = (width - boxW) / 2;
-            int boxY = 64;
-            
-            SDL_Rect r{boxX, boxY, boxW, boxH};
-            fillRoundedRect(renderer_, r, 6, {0, 0, 0, 200});
-            drawRoundedRect(renderer_, r, 6, {64, 148, 255, 255});
-            
-            char speedBuf[32];
-            snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", app->state_.speed);
-            drawTextCentered(renderer_, boxX + boxW / 2, boxY + 8, speedBuf, 1, {255, 255, 255, 255}, true);
+            drawSpeedOverlay(renderer_, width / 2, 64, app->state_.speed, {64, 148, 255, 255});
         }
     }
 
@@ -333,7 +253,6 @@ void Compositor::render(App* app, int width, int height) {
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
         textY += 16;
 
-        // Throttle to 1 Hz to avoid hammering /proc and statvfs at 60 fps
         static double cached_ram = 0.0, cached_storage_free = 0.0, cached_storage_total = 0.0;
         static uint32_t last_sys_poll = 0;
         uint32_t now_ticks = SDL_GetTicks();
@@ -349,5 +268,353 @@ void Compositor::render(App* app, int width, int height) {
         drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
     }
 
+    // Browse status bar
+    if (app->state_.showUi) {
+        app->status_.render(renderer_, app->state_, width, height, app->uiDirty_);
+    }
+    
+    // Loading overlay
+    if (app->state_.isLoadingVideo) {
+        drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, {255, 255, 255, 255}, true);
+        app->uiDirty_ = true;
+    }
+
     SDL_RenderPresent(renderer_);
+}
+
+void Compositor::renderBrowseHeader(App* app, int width, int height, const std::string& title, float scrollY, bool searchScreen) {
+    const int expandedHeight = 84;
+    const int collapsedHeight = 58;
+    const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
+
+    bool isSearching = app->state_.isSearching && app->activeGrid() && !app->activeGrid()->cards.empty();
+
+    // Check cache validity. Redraw only if header dimensions, screen mode, or search query change.
+    bool needsRedraw = (
+        !header_layer_.getTexture() ||
+        header_layer_.getWidth() != width ||
+        header_layer_.getHeight() != headerHeight ||
+        last_header_width_ != width ||
+        last_header_height_ != headerHeight ||
+        last_header_query_ != app->current_search_query_ ||
+        last_header_search_screen_ != searchScreen
+    );
+
+    if (needsRedraw) {
+        header_layer_.init(renderer_, width, headerHeight, {0, 0, width, headerHeight});
+        header_layer_.begin(renderer_, {10, 10, 12, 255});
+
+        // Subtle red accent line at bottom
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 80);
+        SDL_Rect accent{0, headerHeight - 2, width, 2};
+        SDL_RenderFillRect(renderer_, &accent);
+
+        float t = (headerHeight - collapsedHeight) / (float)(expandedHeight - collapsedHeight);
+        t = std::max(0.0f, std::min(1.0f, t));
+
+        // ── Title (left) ─────────────────────────────────────────────────────────
+        int titleScale = searchScreen ? 2 : 3;
+        int titleH = 0;
+        getTextSize(title, titleScale, nullptr, &titleH);
+        int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
+        SDL_Color titleColor = searchScreen ? SDL_Color{255, 80, 80, 255} : SDL_Color{255, 52, 52, 255};
+        drawTextShadow(renderer_, 16, titleY, title, titleScale, titleColor);
+
+        if (!searchScreen) {
+            if (t > 0.25f) {
+                Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.25f) / 0.5f));
+                drawText(renderer_, 18, titleY + titleH + 5, "RECOMMENDED", 1, {90, 90, 100, alpha});
+            }
+        } else {
+            if (t > 0.15f) {
+                Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.15f) / 0.5f));
+                const int bx = 16;
+                const int by = titleY + titleH + 6;
+                const int bw = width - bx - 12;
+                const int bh = 20;
+
+                SDL_Rect bar{bx, by, bw, bh};
+                fillRoundedRect(renderer_, bar, 6, {26, 26, 30, alpha});
+                drawRoundedRect(renderer_, bar, 6, {70, 70, 82, static_cast<Uint8>(alpha * 0.7f)});
+
+                std::string q = app->current_search_query_.empty()
+                                ? "Search..."
+                                : utf8Truncate(app->current_search_query_, 50, true);
+                SDL_Color qCol = app->current_search_query_.empty()
+                                 ? SDL_Color{70, 70, 80, alpha}
+                                 : SDL_Color{210, 210, 220, alpha};
+                drawText(renderer_, bx + 8, by + 3, q, 1, qCol);
+            }
+        }
+
+        header_layer_.end(renderer_);
+
+        last_header_width_ = width;
+        last_header_height_ = headerHeight;
+        last_header_query_ = app->current_search_query_;
+        last_header_search_screen_ = searchScreen;
+    }
+
+    // Present header layer
+    header_layer_.present(renderer_);
+
+    // Draw spinner directly to screen outside the cache so the cache remains clean
+    if (isSearching) {
+        float time = SDL_GetTicks() / 1000.0f;
+        drawSpinner(renderer_, width - 30, headerHeight / 2, 10, time);
+        app->uiDirty_ = true;
+    }
+}
+
+void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
+    double pos    = app->mpv_player_.getPlaybackTime();
+    double dur    = app->mpv_player_.getDuration();
+    bool   playing = app->mpv_player_.isPlaying();
+
+    auto fmtTime = [](double s) -> std::string {
+        if (s < 0) s = 0;
+        int tot = static_cast<int>(s);
+        int h = tot / 3600, m = (tot % 3600) / 60, sec = tot % 60;
+        char buf[16];
+        if (h > 0) snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, sec);
+        else       snprintf(buf, sizeof(buf), "%d:%02d", m, sec);
+        return buf;
+    };
+
+    const double displayTime = app->state_.isScrubbing ? app->state_.scrubTargetTime : pos;
+    const double frac        = (dur > 0.0) ? std::max(0.0, std::min(1.0, displayTime / dur)) : 0.0;
+
+    // Initialize or resize HUD layer if needed
+    if (!hud_layer_.getTexture() || hud_layer_.getWidth() != width || hud_layer_.getHeight() != height) {
+        hud_layer_.init(renderer_, width, height, {0, 0, width, height});
+    }
+
+    hud_layer_.begin(renderer_, {0, 0, 0, 0});
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+    // ── Top Panel ─────────────────────────────────────────────────────────────
+    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
+    SDL_Rect topPanel{0, 0, width, 48};
+    SDL_RenderFillRect(renderer_, &topPanel);
+    
+    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
+    SDL_Rect topBorder{0, 48, width, 2};
+    SDL_RenderFillRect(renderer_, &topBorder);
+    
+    {
+        std::string titleTxt = utf8Truncate(app->current_video_.title, 48, true);
+        drawTextShadow(renderer_, 14, 6, titleTxt, 2, {214, 220, 230, 255});
+
+        int titleH = 0; getTextSize(titleTxt, 2, nullptr, &titleH);
+        if (!app->current_video_.author.empty()) {
+            std::string author = utf8Truncate(app->current_video_.author, 52, false);
+            drawText(renderer_, 14, 6 + titleH + 2, author, 1, {214, 220, 230, 200});
+        }
+
+        // Speed badge (top right)
+        if (app->state_.speed != 1.0) {
+            char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
+            int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
+            SDL_Rect badge{width - sw - 20, 12, sw + 12, sh + 6};
+            fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
+            drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, {255, 255, 255, 255});
+        }
+    }
+
+    // ── Centre pause/play icon ─────────────────────────────────────────────────
+    bool showPlayFlash = false;
+    float flashProgress = 0.0f;
+    Uint32 ticks = SDL_GetTicks();
+    if (app->play_flash_start_time_ > 0) {
+        Uint32 diff = ticks - app->play_flash_start_time_;
+        if (diff < 400) {
+            showPlayFlash = true;
+            flashProgress = (float)diff / 400.0f;
+        } else {
+            app->play_flash_start_time_ = 0;
+        }
+    }
+
+    if (!playing || app->state_.isScrubbing || showPlayFlash) {
+        int baseIconSize = 40;
+        int iconSize = baseIconSize;
+        Uint8 bgAlpha = 120;
+        Uint8 iconAlpha = 200;
+
+        bool drawPlay = showPlayFlash;
+
+        if (showPlayFlash) {
+            iconSize = static_cast<int>(baseIconSize * (1.0f + flashProgress * 0.8f));
+            bgAlpha = static_cast<Uint8>(120 * (1.0f - flashProgress));
+            iconAlpha = static_cast<Uint8>(200 * (1.0f - flashProgress));
+        }
+
+        int iconX = (width - iconSize) / 2;
+        int iconY = (height - iconSize) / 2;
+        
+        SDL_Rect iconBg{iconX - 8, iconY - 8, iconSize + 16, iconSize + 16};
+        fillRoundedRect(renderer_, iconBg, iconBg.w / 2, {0, 0, 0, bgAlpha});
+
+        int centerX = width / 2;
+        int centerY = height / 2;
+
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+        if (drawPlay) {
+            SDL_Color color{255, 255, 255, iconAlpha};
+            SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+            int halfSize = iconSize / 2;
+            int startX = centerX - halfSize + 4;
+            int endX = centerX + halfSize;
+            int sizeX = endX - startX;
+            for (int x = startX; x <= endX; ++x) {
+                float t = (sizeX > 0) ? (float)(x - startX) / sizeX : 0.0f;
+                int h = static_cast<int>(halfSize * (1.0f - t));
+                SDL_RenderDrawLine(renderer_, x, centerY - h, x, centerY + h);
+            }
+        } else {
+            SDL_Color color{255, 255, 255, iconAlpha};
+            SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+            int barW = iconSize / 3;
+            int barH = iconSize;
+            int gap = iconSize / 3;
+            SDL_Rect leftBar{centerX - barW - gap / 2, centerY - barH / 2, barW, barH};
+            SDL_Rect rightBar{centerX + gap / 2, centerY - barH / 2, barW, barH};
+            SDL_RenderFillRect(renderer_, &leftBar);
+            SDL_RenderFillRect(renderer_, &rightBar);
+        }
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+    }
+
+    // ── Bottom Panel ──────────────────────────────────────────────────────────
+    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
+    SDL_Rect botPanel{0, height - 72, width, 72};
+    SDL_RenderFillRect(renderer_, &botPanel);
+    
+    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
+    SDL_Rect botBorder{0, height - 72, width, 2};
+    SDL_RenderFillRect(renderer_, &botBorder);
+
+    // Progress bar
+    const int mg  = 14;
+    const int pbY = height - 64;
+    const int pbH = 5;
+    const int pbW = width - mg * 2;
+
+    // Track (background)
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer_, 80, 80, 88, 255);
+    SDL_Rect pbBg{mg, pbY, pbW, pbH};
+    SDL_RenderFillRect(renderer_, &pbBg);
+
+    // Buffered indicator
+    {
+        int bufW = static_cast<int>(pbW * std::min(frac + 0.15, 1.0));
+        SDL_SetRenderDrawColor(renderer_, 130, 130, 138, 255);
+        SDL_Rect pbBuf{mg, pbY, bufW, pbH};
+        SDL_RenderFillRect(renderer_, &pbBuf);
+    }
+
+    // Played
+    {
+        int fillW = static_cast<int>(pbW * frac);
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_Rect pbFill{mg, pbY, fillW, pbH};
+        SDL_RenderFillRect(renderer_, &pbFill);
+    }
+
+    // Playhead circle
+    {
+        int dotX = mg + static_cast<int>(pbW * frac);
+        int dotR = 7;
+        SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+        SDL_Rect dot{dotX - dotR, pbY - dotR + pbH / 2, dotR * 2, dotR * 2};
+        SDL_RenderFillRect(renderer_, &dot);
+        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_Rect dotInner{dotX - 4, pbY - 4 + pbH / 2, 8, 8};
+        SDL_RenderFillRect(renderer_, &dotInner);
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+    // Scrub preview thumbnail above playhead
+    if (app->state_.isScrubbing) {
+        int dotX = mg + static_cast<int>(pbW * frac);
+        std::string timeStr = fmtTime(displayTime);
+
+        SDL_Texture* sbTex = app->storyboard_.getTexture(renderer_, displayTime);
+        if (sbTex) {
+            int thumbW = 160;
+            int thumbH = 90;
+            int previewX = std::max(mg, std::min(width - mg - thumbW, dotX - thumbW / 2));
+            int previewY = pbY - thumbH - 24;
+
+            SDL_Rect thumbRect{previewX, previewY, thumbW, thumbH};
+            SDL_RenderCopy(renderer_, sbTex, nullptr, &thumbRect);
+            
+            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 180);
+            SDL_RenderDrawRect(renderer_, &thumbRect);
+
+            int tw = 0, th = 0;
+            getTextSize(timeStr, 1, &tw, &th);
+            int pillW = tw + 8;
+            int pillH = th + 4;
+            int pillX = thumbRect.x + (thumbW - pillW) / 2;
+            int pillY = thumbRect.y + thumbH - pillH - 4;
+
+            SDL_Rect tsBg{pillX, pillY, pillW, pillH};
+            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
+            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+        } else {
+            int tw = 0, th = 0;
+            getTextSize(timeStr, 1, &tw, &th);
+            int previewW = tw + 8;
+            int previewH = th + 4;
+            int previewX = std::max(mg, std::min(width - mg - previewW, dotX - previewW / 2));
+            int previewY = pbY - previewH - 12;
+
+            SDL_Rect tsBg{previewX, previewY, previewW, previewH};
+            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
+            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+        }
+    }
+
+    // Timestamps
+    {
+        std::string posStr = fmtTime(displayTime);
+        int tsY = pbY + pbH + 4;
+        drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 230, 255});
+        if (dur > 0.0) {
+            std::string remStr = "-" + fmtTime(dur - displayTime);
+            int rw = 0; getTextSize(remStr, 1, &rw, nullptr);
+            drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, {160, 160, 170, 255});
+        }
+    }
+
+    // Bottom hint line
+    SDL_Color textColor{214, 220, 230, 255};
+    const SDL_Color red{255, 48, 48, 255};
+    const SDL_Color blue{64, 148, 255, 255};
+    const SDL_Color yellow{255, 214, 64, 255};
+    const SDL_Color green{64, 214, 96, 255};
+    const SDL_Color panel{24, 28, 34, 200};
+
+    std::vector<HintItem> activeHints = {
+        {"A", red, playing ? "PAUSE" : "PLAY"},
+        {"B", yellow, "EXIT"},
+        {"SELECT", textColor, "MINIPLAYER"},
+        {"Y", green, "SUBS"},
+        {"X", blue, "STATS"},
+        {"L1/R1", textColor, "SPEED"},
+        {"L2/R2", textColor, "VOL"}
+    };
+
+    drawHintButtons(renderer_, activeHints, height - 34, 24, 1, width, panel, {42, 48, 56, 180}, textColor);
+
+    hud_layer_.end(renderer_);
+
+    // Copy HUD onto screen
+    hud_layer_.present(renderer_);
 }

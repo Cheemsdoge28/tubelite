@@ -54,12 +54,6 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             const int boxY = 8;
             const int boxH = 30;
 
-            struct HintItem {
-                std::string button;
-                SDL_Color btnColor;
-                std::string action;
-            };
-
             std::vector<HintItem> activeHints;
             if (state.inputMode == TubeState::InputMode::SearchText) {
                 activeHints = {
@@ -87,49 +81,8 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                 };
             }
 
-            int totalWidth = 0;
-            std::vector<int> boxWidths;
-            std::vector<int> btnWidths;
-            std::vector<int> actWidths;
-            
-            for (const auto& item : activeHints) {
-                int btnW = 0, actW = 0;
-                getTextSize(item.button, 2, &btnW, nullptr);
-                getTextSize(item.action, 2, &actW, nullptr);
-                int boxW = btnW + actW + 24;
-                boxWidths.push_back(boxW);
-                btnWidths.push_back(btnW);
-                actWidths.push_back(actW);
-                totalWidth += boxW;
-            }
-            if (!activeHints.empty()) {
-                totalWidth += (static_cast<int>(activeHints.size()) - 1) * 12;
-            }
+            drawHintButtons(renderer, activeHints, boxY, boxH, 2, width, panel, {42, 48, 56, 255}, textColor);
 
-            int fontHeight = 18;
-            getTextSize("Ay", 2, nullptr, &fontHeight);
-
-            int currentX = (width - totalWidth) / 2;
-            for (size_t i = 0; i < activeHints.size(); ++i) {
-                const auto& item = activeHints[i];
-                int boxW = boxWidths[i];
-                int btnW = btnWidths[i];
-                int actW = actWidths[i];
-                
-                SDL_Rect box{currentX, boxY, boxW, boxH};
-                fillRoundedRect(renderer, box, 4, panel);
-                drawRoundedRect(renderer, box, 4, {42, 48, 56, 255});
-                
-                int contentW = btnW + 8 + actW;
-                int contentX = currentX + (boxW - contentW) / 2;
-                
-                int textY = boxY + (boxH - fontHeight) / 2;
-                
-                drawTextShadow(renderer, contentX, textY, item.button, 2, item.btnColor);
-                drawTextShadow(renderer, contentX + btnW + 8, textY, item.action, 2, textColor);
-                
-                currentX += boxW + 12;
-            }
             
             SDL_SetRenderTarget(renderer, prev);
         }

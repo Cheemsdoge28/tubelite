@@ -625,3 +625,104 @@ void maskRoundedCornersTop(SDL_Renderer* renderer, const SDL_Rect& rect, int rad
     SDL_Rect dstTR{rect.x + rect.w - r, rect.y, r, r};
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTR, &dstTR);
 }
+
+void drawHintButtons(SDL_Renderer* renderer, const std::vector<HintItem>& hints, int y, int height, int scale, int width, SDL_Color panelColor, SDL_Color borderColor, SDL_Color textColor) {
+    if (hints.empty()) return;
+    int fontHeight = 14;
+    getTextSize("Ay", scale, nullptr, &fontHeight);
+
+    int totalWidth = 0;
+    std::vector<int> boxWidths;
+    std::vector<int> btnWidths;
+    std::vector<int> actWidths;
+    
+    int gap = (scale == 2) ? 12 : 8;
+    int innerPad = (scale == 2) ? 24 : 16;
+    int labelGap = (scale == 2) ? 8 : 4;
+
+    for (const auto& item : hints) {
+        int btnW = 0, actW = 0;
+        getTextSize(item.button, scale, &btnW, nullptr);
+        getTextSize(item.action, scale, &actW, nullptr);
+        int boxW = btnW + actW + innerPad;
+        boxWidths.push_back(boxW);
+        btnWidths.push_back(btnW);
+        actWidths.push_back(actW);
+        totalWidth += boxW;
+    }
+    totalWidth += (static_cast<int>(hints.size()) - 1) * gap;
+
+    int currentX = (width - totalWidth) / 2;
+    for (size_t i = 0; i < hints.size(); ++i) {
+        const auto& item = hints[i];
+        int boxW = boxWidths[i];
+        int btnW = btnWidths[i];
+        int actW = actWidths[i];
+        
+        SDL_Rect box{currentX, y, boxW, height};
+        fillRoundedRect(renderer, box, 4, panelColor);
+        drawRoundedRect(renderer, box, 4, borderColor);
+        
+        int contentW = btnW + labelGap + actW;
+        int contentX = currentX + (boxW - contentW) / 2;
+        int textY = y + (height - fontHeight) / 2;
+        
+        drawTextShadow(renderer, contentX, textY, item.button, scale, item.btnColor);
+        drawTextShadow(renderer, contentX + btnW + labelGap, textY, item.action, scale, textColor);
+        
+        currentX += boxW + gap;
+    }
+}
+
+void drawVolumeOverlay(SDL_Renderer* renderer, int centerX, int y, int volume, bool muted, SDL_Color themeColor) {
+    int boxW = 200, boxH = 36;
+    int boxX = centerX - boxW / 2;
+    SDL_Rect r{boxX, y, boxW, boxH};
+    fillRoundedRect(renderer, r, 6, {0, 0, 0, 200});
+    drawRoundedRect(renderer, r, 6, themeColor);
+    
+    std::string volText = "Volume: " + std::to_string(volume) + "%";
+    if (muted) volText = "Mute: ON";
+    
+    int barW = 160, barH = 6;
+    int barX = boxX + 20;
+    int barY = y + 24;
+    SDL_Rect barBg{barX, barY, barW, barH};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+    SDL_RenderFillRect(renderer, &barBg);
+    
+    if (!muted) {
+        int fillW = static_cast<int>(barW * (volume / 100.0f));
+        SDL_Rect barFill{barX, barY, fillW, barH};
+        SDL_SetRenderDrawColor(renderer, themeColor.r, themeColor.g, themeColor.b, themeColor.a);
+        SDL_RenderFillRect(renderer, &barFill);
+    }
+    
+    drawTextCentered(renderer, centerX, y + 4, volText, 1, {255, 255, 255, 255}, true);
+}
+
+void drawSpeedOverlay(SDL_Renderer* renderer, int centerX, int y, double speed, SDL_Color themeColor) {
+    int boxW = 200, boxH = 36;
+    int boxX = centerX - boxW / 2;
+    SDL_Rect r{boxX, y, boxW, boxH};
+    fillRoundedRect(renderer, r, 6, {0, 0, 0, 200});
+    drawRoundedRect(renderer, r, 6, themeColor);
+    
+    char speedBuf[32];
+    snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", speed);
+    drawTextCentered(renderer, centerX, y + 8, speedBuf, 1, {255, 255, 255, 255}, true);
+}
+
+void drawLoadingOverlay(SDL_Renderer* renderer, int width, int height, const std::string& text, float time, SDL_Color textColor, bool drawBg) {
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    if (drawBg) {
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
+        SDL_Rect bg{0, 0, width, height};
+        SDL_RenderFillRect(renderer, &bg);
+    }
+    
+    drawSpinner(renderer, width / 2, height / 2 - 20, 30, time);
+    drawTextCentered(renderer, width / 2, height / 2 + 25, text, 2, textColor, true);
+}
+
