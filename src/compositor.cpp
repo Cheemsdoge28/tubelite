@@ -661,7 +661,6 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // Timestamps
     {
-        const int botH = 60;
         std::string posStr = fmtTime(displayTime);
         int tsY = pbY + pbH + 5;
         drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 232, 255});
@@ -670,12 +669,11 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             int rw = 0; getTextSize(remStr, 1, &rw, nullptr);
             drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, {160, 160, 172, 255});
         }
-        (void)botH;
     }
 
     // ── Description Drawer ─────────────────────────────────────────────────────
     if (app->state_.showDescriptionDrawer) {
-        SDL_Rect drawerRect{width - 300, 58, 300, height - 132};
+        SDL_Rect drawerRect{width - 300, 58, 300, height - 120}; // 60px bottom + 58px header + 2px margin
         fillRoundedRect(renderer_, drawerRect, 0, {12, 14, 18, 240});
         
         SDL_SetRenderDrawColor(renderer_, 42, 48, 56, 255);
@@ -742,7 +740,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         };
     }
 
-    drawHintButtons(renderer_, activeHints, height - 34, 24, 1, width, panel, {42, 48, 56, 180}, textColor);
+    // Hint bar sits inside the 60px bottom panel, below the timestamp row
+    drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, {42, 48, 56, 180}, textColor);
 
     hud_layer_.end(renderer_);
 
