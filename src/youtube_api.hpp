@@ -48,6 +48,8 @@ public:
 private:
     std::string executeCommand(const std::string& cmd);
     static std::string sanitizeShellText(const std::string& value);
+    bool fetchFromInvidious(const std::string& video_id, int max_height, std::string& out_url, VideoPlaybackMetadata& out_meta);
+    bool fetchFromPiped(const std::string& video_id, int max_height, std::string& out_url, VideoPlaybackMetadata& out_meta);
 
     // Separate counters so preview and main stream requests don't interfere.
     std::atomic<int> current_stream_request_id_{0};

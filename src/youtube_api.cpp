@@ -6,6 +6,7 @@
 #include <fstream>
 #include <ctime>
 #include <filesystem>
+#include <cstdio>
 
 // Since nlohmann/json is a single-header library, we include it here.
 #include "json.hpp"
@@ -373,6 +374,100 @@ static std::string extractSubtitleUrl(const json& j) {
     return url;
 }
 
+bool YouTubeAPI::fetchFromInvidious(const std::string& video_id, int max_height, std::string& out_url, VideoPlaybackMetadata& out_meta) {
+    std::vector<std::string> instances = {
+        "https://invidious.projectsegfau.lt",
+        "https://yewtu.be",
+        "https://invidious.flokinet.to"
+    };
+    
+    for (const auto& instance : instances) {
+        std::string cmd = "curl -k -s -m 3 \"" + instance + "/api/v1/videos/" + video_id + "\"";
+        try {
+            std::string response = executeCommand(cmd);
+            if (response.empty()) continue;
+            
+            auto j = json::parse(response);
+            if (j.is_object() && j.contains("formatStreams")) {
+                std::string best_url;
+                int best_height = 0;
+                for (const auto& s : j["formatStreams"]) {
+                    std::string res = s.value("resolution", "");
+                    int w = 0, h = 0;
+                    if (std::sscanf(res.c_str(), "%dx%d", &w, &h) == 2) {
+                        if (h > 0 && h <= max_height) {
+                            std::string container = s.value("container", "");
+                            if (container == "mp4" || best_url.empty() || h > best_height) {
+                                best_url = s.value("url", "");
+                                best_height = h;
+                            }
+                        }
+                    }
+                }
+                
+                if (!best_url.empty()) {
+                    out_url = best_url;
+                    out_meta.description = j.value("description", "");
+                    out_meta.view_count = j.value("viewCount", 0LL);
+                    out_meta.like_count = j.value("likeCount", 0LL);
+                    out_meta.subscriber_count = j.value("subCount", 0LL);
+                    return true;
+                }
+            }
+        } catch (...) {
+            // try next
+        }
+    }
+    return false;
+}
+
+bool YouTubeAPI::fetchFromPiped(const std::string& video_id, int max_height, std::string& out_url, VideoPlaybackMetadata& out_meta) {
+    std::vector<std::string> instances = {
+        "https://pipedapi.kavin.rocks",
+        "https://piped-api.lunar.icu",
+        "https://pipedapi.colt.top"
+    };
+    
+    for (const auto& instance : instances) {
+        std::string cmd = "curl -k -s -m 3 \"" + instance + "/streams/" + video_id + "\"";
+        try {
+            std::string response = executeCommand(cmd);
+            if (response.empty()) continue;
+            
+            auto j = json::parse(response);
+            if (j.is_object() && j.contains("videoStreams")) {
+                std::string best_url;
+                int best_height = 0;
+                for (const auto& s : j["videoStreams"]) {
+                    if (s.value("videoOnly", false)) continue;
+                    std::string quality = s.value("quality", "");
+                    int height = 0;
+                    if (std::sscanf(quality.c_str(), "%dp", &height) == 1) {
+                        if (height > 0 && height <= max_height) {
+                            std::string codec = s.value("codec", "");
+                            if (codec.find("avc1") != std::string::npos || best_url.empty() || height > best_height) {
+                                best_url = s.value("url", "");
+                                best_height = height;
+                            }
+                        }
+                    }
+                }
+                
+                if (!best_url.empty()) {
+                    out_url = best_url;
+                    out_meta.description = j.value("description", "");
+                    out_meta.view_count = j.value("views", 0LL);
+                    out_meta.like_count = j.value("likes", 0LL);
+                    return true;
+                }
+            }
+        } catch (...) {
+            // try next
+        }
+    }
+    return false;
+}
+
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta)> callback,
     bool isPreview,
@@ -408,6 +503,44 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             const std::string safeId  = sanitizeShellText(video_id);
             const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
 
+            // --- FIRST PASS: Try fast public API resolution (Invidious / Piped) ---
+            std::string url;
+            std::string subtitle_url;
+            VideoPlaybackMetadata meta;
+            bool resolved_via_api = false;
+
+            try {
+                if (fetchFromInvidious(safeId, max_height, url, meta)) {
+                    resolved_via_api = true;
+                } else if (fetchFromPiped(safeId, max_height, url, meta)) {
+                    resolved_via_api = true;
+                }
+            } catch (...) {
+                // ignore and fallback
+            }
+
+            if (resolved_via_api) {
+                bool should_callback = true;
+                if (isPreview) {
+                    if (!parent_focus_id.empty()) {
+                        std::lock_guard<std::mutex> lock(preview_mutex_);
+                        if (current_preview_focus_id_ != parent_focus_id) {
+                            should_callback = false;
+                        }
+                    }
+                } else {
+                    if (req_id != current_stream_request_id_) {
+                        should_callback = false;
+                    }
+                }
+
+                if (should_callback) {
+                    callback(true, url, subtitle_url, meta);
+                    return;
+                }
+            }
+
+            // --- SECOND PASS: Fallback to local yt-dlp ---
             // Use muxed-only format selectors (no bestvideo+bestaudio) because
             // skip=dash,hls means DASH merging is unavailable. We want a single
             // H.264 muxed stream for reliable hardware decode on ARM.
@@ -421,12 +554,10 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                 "--no-check-certificate --force-ipv4 --no-playlist --no-call-home --no-check-formats "
                 "--youtube-skip-dash-manifest "
                 "--cache-dir \"build/cache\" "
-                "--extractor-args \"youtube:player_client=android;skip=dash,hls\" "
+                "--extractor-args \"youtube:player_client=ios,android;skip=dash,hls\" "
                 "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1";
 
-            std::string url;
-            std::string subtitle_url;
-            VideoPlaybackMetadata meta;
+
 
             bool should_execute = true;
             if (isPreview) {

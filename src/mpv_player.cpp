@@ -140,6 +140,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "vd-lavc-skiploopfilter", "nonkey");
     mpv_set_option_string(mpv_, "vd-lavc-fast",           "yes");
     mpv_set_option_string(mpv_, "tls-verify",             "no");
+    mpv_set_option_string(mpv_, "user-agent",             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     mpv_set_option_string(mpv_, "ytdl-raw-options",       "no-check-certificate=");
 
     // Use included Atkinson Hyperlegible font for subtitles
