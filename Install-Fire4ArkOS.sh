@@ -266,7 +266,9 @@ if [ "$DO_BINARY" -eq 1 ]; then
     if [ -z "$BROWSER_BIN" ]; then
         log_info "Compiling natively..."
         BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libstdc++-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libglu1-mesa-dev libglew-dev cmake ninja-build libc6-dev linux-libc-dev libfreetype6-dev libharfbuzz-dev"
-        apt-get install -y $BUILD_DEPS || true
+        BUILD_APT_FLAGS="-y"
+        if [ "${REINSTALL_DEPS:-0}" = "1" ]; then BUILD_APT_FLAGS="$BUILD_APT_FLAGS --reinstall"; fi
+        apt-get install $BUILD_APT_FLAGS $BUILD_DEPS || true
         cd "$SCRIPT_DIR"
         make native || true
         BROWSER_BIN="$SCRIPT_DIR/build/browser"

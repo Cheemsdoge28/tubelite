@@ -114,10 +114,18 @@ sudo apt-get install -y build-essential g++ make pkg-config libsdl2-dev libgles2
 
 ### 2. Runtime Dependencies
 To run the video player application after compilation, the following runtime packages must be available on the device:
-- `python3`, `yt-dlp` (required to resolve and stream video URLs)
+- `python3`, `yt-dlp` (required to resolve and stream video URLs; must be manually installed/updated to ensure YouTube signature deciphering compatibility)
 - `libmpv1` (required to decode and render video streams)
 - `libsdl2-2.0-0` (required for application windowing and input routing)
 - `ffmpeg`, `libasound2` (required for audio and stream rendering)
+
+> [!IMPORTANT]
+> **Outdated Package Warning**: Do NOT install `yt-dlp` via `apt-get` as package manager repositories contain extremely outdated versions that fail to decipher newer YouTube stream signatures. Always download the standalone binary (tested and recommended version: `2026.03.17` or newer):
+> ```bash
+> sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
+> sudo chmod a+rx /usr/local/bin/yt-dlp
+> ```
+
 
 
 ### 3. Bundled Platform Headers
