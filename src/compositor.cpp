@@ -122,98 +122,113 @@ void Compositor::render(App* app, int width, int height) {
         renderBrowseHeader(app, width, height, "Search", scrollY, true);
     }
 
-    // Draw Miniplayer using miniplayer_layer_
+    // Draw Miniplayer
+    // Architecture: two-pass dirty cache (same pattern as the header layer).
+    //   Pass 1 — chrome layer (borders, title strip, hint text, pause icon):
+    //     Only redrawn when video ID or play-state changes. Result is cached
+    //     in miniplayer_layer_ and composited cheaply every frame.
+    //   Pass 2 — live video frame:
+    //     mpv's texture is fetched and blitted *directly* to the screen (not
+    //     through the layer) so we avoid the FBO / render-target conflict that
+    //     caused the full-screen flicker in the first place.
     if (app->state_.miniplayerActive) {
-        const int mX = width - 252;
-        const int mY = height - 210;
-        const int mW = 240;
-        const int mVH = 135;  // video area height
-        const int mSH = 20;   // title strip height below video
-        const int mH  = mVH + mSH; // total content height
+        const int mX  = width  - 252;
+        const int mY  = height - 210;
+        const int mW  = 240;
+        const int mVH = 135;   // video area height
+        const int mSH = 20;    // title strip height
+        const int mH  = mVH + mSH;
 
-        SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
+        const SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
 
-        // Clear screen area under miniplayer (prevents card thumbnail bleed)
+        // Clear the screen region to prevent card thumbnail bleed-through
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderFillRect(renderer_, &miniplayerBounds);
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
-        // Init/resize layer
-        if (!miniplayer_layer_.getTexture() ||
-            miniplayer_layer_.getWidth()  != mW + 4 ||
-            miniplayer_layer_.getHeight() != mH + 4) {
+        // ── Pass 1: chrome layer (dirty-cached) ───────────────────────────────
+        bool playing   = app->mpv_player_.isPlaying();
+        bool stripDirty = miniplayer_strip_dirty_
+            || !miniplayer_layer_.getTexture()
+            || miniplayer_layer_.getWidth()  != mW + 4
+            || miniplayer_layer_.getHeight() != mH + 4
+            || app->current_video_.id != last_miniplayer_video_id_
+            || playing != last_miniplayer_playing_;
+
+        if (stripDirty) {
             miniplayer_layer_.init(renderer_, mW + 4, mH + 4, miniplayerBounds);
+            miniplayer_layer_.begin(renderer_, {0, 0, 0, 0}); // fully transparent — video shows through
+
+            // Red accent border (around video area, not the strip)
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+            SDL_Rect border1{1, 1, mW + 2, mVH + 2};
+            SDL_RenderDrawRect(renderer_, &border1);
+            SDL_Rect border2{0, 0, mW + 4, mVH + 4};
+            SDL_RenderDrawRect(renderer_, &border2);
+
+            // Pause icon (only shown when paused)
+            if (!playing) {
+                int cx = 2 + mW / 2;
+                int cy = 2 + mVH / 2;
+                SDL_Rect pauseBg{cx - 16, cy - 16, 32, 32};
+                SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+                fillRoundedRect(renderer_, pauseBg, 16, {0, 0, 0, 170});
+                SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+                SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+                SDL_Rect pL{cx - 6, cy - 8, 4, 16};
+                SDL_Rect pR{cx + 2, cy - 8, 4, 16};
+                SDL_RenderFillRect(renderer_, &pL);
+                SDL_RenderFillRect(renderer_, &pR);
+            }
+
+            // ── Title strip ──────────────────────────────────────────────────
+            SDL_Rect strip{0, 2 + mVH, mW + 4, mSH + 2};
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer_, 14, 14, 18, 255);
+            SDL_RenderFillRect(renderer_, &strip);
+            SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 130);
+            SDL_Rect divider{0, 2 + mVH, mW + 4, 1};
+            SDL_RenderFillRect(renderer_, &divider);
+
+            // Truncate title to fit the strip (only computed on dirty)
+            std::string titleTxt = app->current_video_.title;
+            int maxTitleW = mW - 4;
+            int titleW = 0, titleH = 0;
+            getTextSize(titleTxt, 1, &titleW, &titleH);
+            if (titleW > maxTitleW) {
+                while (!titleTxt.empty() && titleW > maxTitleW - 12) {
+                    titleTxt = utf8Slice(titleTxt, 0, utf8Length(titleTxt) - 1);
+                    getTextSize(titleTxt + "...", 1, &titleW, &titleH);
+                }
+                titleTxt += "...";
+            }
+            int stripTextY = 2 + mVH + (mSH + 2 - titleH) / 2;
+            drawText(renderer_, 6, stripTextY, titleTxt, 1, {210, 210, 220, 255});
+
+            // Hint text — right-aligned, depends on play-state (triggers dirty too)
+            std::string hintStr = std::string(playing ? "A:Pause" : "A:Play") + "  B:Close";
+            int hw = 0;
+            getTextSize(hintStr, 1, &hw, nullptr);
+            drawText(renderer_, mW + 4 - hw - 4, stripTextY, hintStr, 1, {130, 130, 140, 255});
+
+            miniplayer_layer_.end(renderer_);
+
+            last_miniplayer_video_id_ = app->current_video_.id;
+            last_miniplayer_playing_  = playing;
+            miniplayer_strip_dirty_   = false;
         }
 
-        // ── CRITICAL: fetch video texture BEFORE layer.begin() ────────────────
-        // SDL_GL_BindTexture probes the wrong GL texture if the layer's offscreen
-        // texture is the active render target -> full-screen flicker every frame.
+        // ── Pass 2: live video frame (every frame, directly to screen) ────────
+        // Fetch BEFORE any SDL render-target change to avoid the FBO conflict.
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mVH);
-
-        miniplayer_layer_.begin(renderer_, {8, 8, 10, 255});
-
-        // Video frame
         if (previewTex) {
-            SDL_Rect videoDst{2, 2, mW, mVH};
+            SDL_Rect videoDst{mX + 2, mY + 2, mW, mVH};
             SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
         }
 
-        // Pause indicator (centred on video area only)
-        if (!app->mpv_player_.isPlaying()) {
-            int cx = 2 + mW / 2;
-            int cy = 2 + mVH / 2;
-            SDL_Rect pauseBg{cx - 16, cy - 16, 32, 32};
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            fillRoundedRect(renderer_, pauseBg, 16, {0, 0, 0, 160});
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
-            SDL_Rect pL{cx - 6, cy - 8, 4, 16};
-            SDL_Rect pR{cx + 2, cy - 8, 4, 16};
-            SDL_RenderFillRect(renderer_, &pL);
-            SDL_RenderFillRect(renderer_, &pR);
-        }
-
-        // Red accent border around the video
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-        SDL_Rect border1{1, 1, mW + 2, mVH + 2};
-        SDL_RenderDrawRect(renderer_, &border1);
-        SDL_Rect border2{0, 0, mW + 4, mVH + 4};
-        SDL_RenderDrawRect(renderer_, &border2);
-
-        // ── Title strip ──────────────────────────────────────────────────────
-        SDL_Rect strip{0, 2 + mVH, mW + 4, mSH + 2};
-        SDL_SetRenderDrawColor(renderer_, 14, 14, 18, 255);
-        SDL_RenderFillRect(renderer_, &strip);
-        // 1px top divider
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 130);
-        SDL_Rect divider{0, 2 + mVH, mW + 4, 1};
-        SDL_RenderFillRect(renderer_, &divider);
-
-        // Truncate title to fit the strip
-        std::string titleTxt = app->current_video_.title;
-        int maxTitleW = mW - 4;
-        int titleW = 0, titleH = 0;
-        getTextSize(titleTxt, 1, &titleW, &titleH);
-        if (titleW > maxTitleW) {
-            while (!titleTxt.empty() && titleW > maxTitleW - 12) {
-                titleTxt = utf8Slice(titleTxt, 0, utf8Length(titleTxt) - 1);
-                getTextSize(titleTxt + "...", 1, &titleW, &titleH);
-            }
-            titleTxt += "...";
-        }
-        int stripTextY = 2 + mVH + (mSH + 2 - titleH) / 2;
-        drawText(renderer_, 6, stripTextY, titleTxt, 1, {210, 210, 220, 255});
-
-        // A / B hint right-aligned in the strip
-        bool isPlaying = app->mpv_player_.isPlaying();
-        std::string hintStr = std::string(isPlaying ? "A:Pause" : "A:Play") + "  B:Close";
-        int hw = 0;
-        getTextSize(hintStr, 1, &hw, nullptr);
-        drawText(renderer_, mW + 4 - hw - 4, stripTextY, hintStr, 1, {130, 130, 140, 255});
-
-        miniplayer_layer_.end(renderer_);
+        // Composite chrome layer on top of the live video
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         miniplayer_layer_.present(renderer_);
     }
 

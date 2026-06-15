@@ -25,4 +25,11 @@ private:
     int last_header_height_{-1};
     std::string last_header_query_;
     bool last_header_search_screen_{false};
+
+    // Cache invalidation state for the miniplayer strip
+    // The video frame itself is always live (from mpv), but the title strip
+    // and hint text only need to redraw when the video or play-state changes.
+    std::string last_miniplayer_video_id_;
+    bool last_miniplayer_playing_{false};
+    bool miniplayer_strip_dirty_{true};
 };
