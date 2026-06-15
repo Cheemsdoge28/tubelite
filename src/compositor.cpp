@@ -694,7 +694,10 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_SetRenderDrawColor(renderer_, 42, 48, 56, 255);
         SDL_RenderDrawLine(renderer_, drawerRect.x, drawerRect.y, drawerRect.x, drawerRect.y + drawerRect.h);
 
-        std::vector<std::string> descLines = wrapText(app->active_video_metadata_.description, 280, 1);
+        if (app->wrapped_description_lines_.empty() && !app->active_video_metadata_.description.empty()) {
+            app->wrapped_description_lines_ = wrapText(app->active_video_metadata_.description, 280, 1);
+        }
+        const auto& descLines = app->wrapped_description_lines_;
         int lineH = 14;
         int visibleLines = drawerRect.h / (lineH + 4);
         int maxScroll = std::max(0, static_cast<int>(descLines.size()) - visibleLines);

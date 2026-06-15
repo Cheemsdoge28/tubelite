@@ -488,6 +488,33 @@ static std::vector<ShapedGlyph> shapeRun(const TextRun& run) {
     return shaped;
 }
 
+struct TextCacheKey {
+    std::string text;
+    int scale;
+    bool operator==(const TextCacheKey& o) const {
+        return scale == o.scale && text == o.text;
+    }
+};
+
+struct TextCacheKeyHash {
+    std::size_t operator()(const TextCacheKey& k) const {
+        return std::hash<std::string>{}(k.text) ^ (std::hash<int>{}(k.scale) << 1);
+    }
+};
+
+struct CachedShapedRun {
+    int font_idx;
+    std::vector<ShapedGlyph> shaped;
+};
+
+struct CachedTextShaping {
+    std::vector<CachedShapedRun> runs;
+    int width = 0;
+    int height = 0;
+};
+
+static std::unordered_map<TextCacheKey, CachedTextShaping, TextCacheKeyHash> g_text_shaping_cache;
+
 static CachedGlyph getOrCacheGlyph(SDL_Renderer* renderer, int font_idx, uint32_t glyph_id) {
     uint64_t key = (static_cast<uint64_t>(font_idx) << 32) | glyph_id;
     auto it = g_glyph_cache.find(key);
@@ -669,6 +696,7 @@ bool initFonts(SDL_Renderer* renderer) {
 
 
 void cleanupFonts() {
+    g_text_shaping_cache.clear();
     for (auto& pair : g_glyph_cache) {
         if (pair.second.texture) {
             SDL_DestroyTexture(pair.second.texture);
@@ -711,19 +739,55 @@ void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int
     else if (scale == 2) size_idx = 1;
     else size_idx = 2;
 
-    std::vector<uint32_t> utf32 = utf8ToUtf32(text);
-    std::vector<TextRun> runs = segmentText(utf32, size_idx);
+    TextCacheKey key{text, scale};
+    auto it = g_text_shaping_cache.find(key);
+    if (it == g_text_shaping_cache.end()) {
+        if (g_text_shaping_cache.size() > 1000) {
+            g_text_shaping_cache.clear();
+        }
 
+        CachedTextShaping shaping;
+        std::vector<uint32_t> utf32 = utf8ToUtf32(text);
+        std::vector<TextRun> runs = segmentText(utf32, size_idx);
+
+        int total_width = 0;
+        int max_height = 0;
+
+        shaping.runs.reserve(runs.size());
+        for (const auto& run : runs) {
+            CachedShapedRun csr;
+            csr.font_idx = run.font_idx;
+            csr.shaped = shapeRun(run);
+
+            FT_Face face = g_ft_faces[run.font_idx];
+            if (face) {
+                int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
+                if (cap_height > max_height) {
+                    max_height = cap_height;
+                }
+                for (const auto& sg : csr.shaped) {
+                    total_width += sg.x_advance;
+                }
+            }
+            shaping.runs.push_back(std::move(csr));
+        }
+
+        shaping.width = total_width;
+        shaping.height = max_height > 0 ? max_height : (14 * scale);
+
+        it = g_text_shaping_cache.emplace(key, std::move(shaping)).first;
+    }
+
+    const auto& shaping = it->second;
     int cursor_x = x;
-    for (const auto& run : runs) {
-        std::vector<ShapedGlyph> shaped = shapeRun(run);
+    for (const auto& run : shaping.runs) {
         FT_Face face = g_ft_faces[run.font_idx];
         if (!face) continue;
 
         int ascender = face->size->metrics.ascender >> 6;
         int baseline_y = y + ascender;
 
-        for (const auto& sg : shaped) {
+        for (const auto& sg : run.shaped) {
             CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
             if (cg.texture) {
                 SDL_SetTextureColorMod(cg.texture, color.r, color.g, color.b);
@@ -799,29 +863,47 @@ void getTextSize(const std::string& text, int scale, int* w, int* h) {
     else if (scale == 2) size_idx = 1;
     else size_idx = 2;
 
-    std::vector<uint32_t> utf32 = utf8ToUtf32(text);
-    std::vector<TextRun> runs = segmentText(utf32, size_idx);
-
-    int total_width = 0;
-    int max_height = 0;
-
-    for (const auto& run : runs) {
-        std::vector<ShapedGlyph> shaped = shapeRun(run);
-        FT_Face face = g_ft_faces[run.font_idx];
-        if (!face) continue;
-
-        int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
-        if (cap_height > max_height) {
-            max_height = cap_height;
+    TextCacheKey key{text, scale};
+    auto it = g_text_shaping_cache.find(key);
+    if (it == g_text_shaping_cache.end()) {
+        if (g_text_shaping_cache.size() > 1000) {
+            g_text_shaping_cache.clear();
         }
 
-        for (const auto& sg : shaped) {
-            total_width += sg.x_advance;
+        CachedTextShaping shaping;
+        std::vector<uint32_t> utf32 = utf8ToUtf32(text);
+        std::vector<TextRun> runs = segmentText(utf32, size_idx);
+
+        int total_width = 0;
+        int max_height = 0;
+
+        shaping.runs.reserve(runs.size());
+        for (const auto& run : runs) {
+            CachedShapedRun csr;
+            csr.font_idx = run.font_idx;
+            csr.shaped = shapeRun(run);
+
+            FT_Face face = g_ft_faces[run.font_idx];
+            if (face) {
+                int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
+                if (cap_height > max_height) {
+                    max_height = cap_height;
+                }
+                for (const auto& sg : csr.shaped) {
+                    total_width += sg.x_advance;
+                }
+            }
+            shaping.runs.push_back(std::move(csr));
         }
+
+        shaping.width = total_width;
+        shaping.height = max_height > 0 ? max_height : (14 * scale);
+
+        it = g_text_shaping_cache.emplace(key, std::move(shaping)).first;
     }
 
-    if (w) *w = total_width;
-    if (h) *h = max_height > 0 ? max_height : (14 * scale);
+    if (w) *w = it->second.width;
+    if (h) *h = it->second.height;
 }
 
 std::vector<std::string> wrapText(const std::string& text, int maxWidth, int scale) {

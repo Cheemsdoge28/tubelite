@@ -210,8 +210,15 @@ void App::run() {
                 play_flash_start_time_ = 0;
             }
         }
+
+        auto currentGrid = activeGrid();
+        bool gridScrolling = false;
+        if (currentGrid && std::abs(currentGrid->scrollY - currentGrid->targetScrollY) > 0.05f) {
+            gridScrolling = true;
+            uiDirty_ = true;
+        }
         
-        bool active = uiDirty_ || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo;
+        bool active = uiDirty_ || gridScrolling || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo;
         if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
             active = true;
         }
@@ -569,6 +576,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     state_.showDescriptionDrawer = false;
     description_scroll_row_ = 0;
     active_video_metadata_ = VideoPlaybackMetadata();
+    wrapped_description_lines_.clear();
     loading_status_text_ = "Resolving Stream...";
     last_playback_seconds_ = -1;
     prefetched_next_video_id_.clear();
@@ -617,6 +625,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
             state_.isLoadingVideo = false;
             if (success) {
                 active_video_metadata_ = meta;
+                wrapped_description_lines_ = wrapText(meta.description, 280, 1);
                 setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
                 if (keepMiniplayer) {
                     state_manager_.transitionTo(state_manager_.getPreviousBrowseScreen());

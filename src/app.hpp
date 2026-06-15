@@ -145,6 +145,7 @@ private:
     float current_fps_{0.0f};
     float render_latency_ms_{0.0f};
     VideoPlaybackMetadata active_video_metadata_;
+    std::vector<std::string> wrapped_description_lines_;
     int description_scroll_row_{0};
     bool select_held_{false};
     bool select_action_triggered_{false};
