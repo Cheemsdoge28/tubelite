@@ -226,37 +226,32 @@ if [ "$DO_DEPS" -eq 1 ]; then
     # Ensure any previous holds are cleared before installing
     apt-mark unhold libsdl2-2.0-0 libasound2-plugins libasound2 2>/dev/null || true
     
-    RUNTIME_DEPS="python3 xvfb xdotool x11-utils apulse alsa-utils pulseaudio-utils libasound2 libasound2-plugins fonts-liberation ffmpeg fbset fbcat i2c-tools usbutils mmc-utils gdb git"
+    RUNTIME_DEPS="python3 libsdl2-2.0-0 ffmpeg libasound2 libmpv1"
     APT_FLAGS="-y --allow-change-held-packages"
     if [ "$REINSTALL_DEPS" = "1" ]; then APT_FLAGS="$APT_FLAGS --reinstall"; fi
     
     log_info "Running apt-get install..."
-    apt-get install $APT_FLAGS $RUNTIME_DEPS
+    apt-get install $APT_FLAGS $RUNTIME_DEPS || true
     
     # Protect critical libraries AFTER installation
     log_info "Protecting SDL and Audio libraries..."
-    apt-mark hold libsdl2-2.0-0 libasound2-plugins libasound2 2>/dev/null || true
+    apt-mark hold libsdl2-2.0-0 libasound2 2>/dev/null || true
     
     # Verification check
     log_info "Verifying dependencies..."
     MISSING_DEPS=""
-    for dep in Xvfb xdotool python3 apulse; do
+    for dep in python3 yt-dlp; do
         if ! command -v "$dep" &>/dev/null; then
             MISSING_DEPS="$MISSING_DEPS $dep"
         fi
     done
     
     if [ -n "$MISSING_DEPS" ]; then
-        log_err "Failed to install some critical dependencies:$MISSING_DEPS"
-        log_err "Please check your internet connection and run 'sudo apt-get update' manually."
+        log_err "Failed to verify some critical runtime dependencies:$MISSING_DEPS"
+        log_err "Please ensure python3 and yt-dlp are installed and available in the PATH."
         exit 1
     fi
     log_ok "Dependencies verified"
-
-    # Firefox
-    if ! command -v firefox &>/dev/null; then
-        apt-get install -y firefox-esr || apt-get install -y firefox || true
-    fi
 fi
 
 if [ "$DO_BINARY" -eq 1 ]; then
@@ -270,7 +265,7 @@ if [ "$DO_BINARY" -eq 1 ]; then
 
     if [ -z "$BROWSER_BIN" ]; then
         log_info "Compiling natively..."
-        BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libstdc++-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libglu1-mesa-dev libglew-dev cmake ninja-build libc6-dev linux-libc-dev"
+        BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libstdc++-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libglu1-mesa-dev libglew-dev cmake ninja-build libc6-dev linux-libc-dev libfreetype6-dev libharfbuzz-dev"
         apt-get install -y $BUILD_DEPS || true
         cd "$SCRIPT_DIR"
         make native || true

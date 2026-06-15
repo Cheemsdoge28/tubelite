@@ -288,7 +288,7 @@ void Compositor::render(App* app, int width, int height) {
     SDL_RenderPresent(renderer_);
 }
 
-void Compositor::renderBrowseHeader(App* app, int width, int height, const std::string& title, float scrollY, bool searchScreen) {
+void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const std::string& title, float scrollY, bool searchScreen) {
     const int expandedHeight = 84;
     const int collapsedHeight = 58;
     const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));

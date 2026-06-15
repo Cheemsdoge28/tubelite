@@ -85,3 +85,40 @@ sudo bash uninstall-theme.sh
 
 ### Stick Drift
 - R36S analog sticks can vary in quality. If the cursor drifts, we have set a generous deadzone of 10000. If you still experience drift, you may need to increase the `DEADZONE` value in `src/main.cpp` and run a rebuild.
+
+---
+
+## 🏗️ Development & Native Compilation Details
+
+If you are modifying the C++ browser engine (e.g., adding features, adjusting overlays, or testing layouts) and compiling natively on the RK3326 device, use the following guide.
+
+### 1. Build Dependencies
+To compile natively on the ArkOS target, you must install the compilation packages and development headers:
+- **Core build tools**: `build-essential`, `g++`, `make`, `pkg-config`, `cmake`, `ninja-build`.
+- **System development headers**:
+  - `libsdl2-dev` (SDL2 library)
+  - `libstdc++-dev` (C++ Standard library)
+  - `libc6-dev`, `linux-libc-dev` (C and Linux system headers)
+- **Graphics & Rendering**:
+  - `libgles2-mesa-dev`, `libegl1-mesa-dev`, `libgl1-mesa-dev` (GLES2/EGL Mesa libraries for offscreen compositing)
+  - `libglu1-mesa-dev`, `libglew-dev` (OpenGL utilities)
+- **Text & Font Pipelines**:
+  - `libfreetype6-dev` (FreeType2 header files)
+  - `libharfbuzz-dev` (HarfBuzz text-shaping libraries)
+
+Install them all via:
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential g++ make pkg-config libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libfreetype6-dev libharfbuzz-dev
+```
+
+### 2. Runtime Dependencies
+To run the video player application after compilation, the following runtime packages must be available on the device:
+- `python3`, `yt-dlp` (required to resolve and stream video URLs)
+- `libmpv1` (required to decode and render video streams)
+- `libsdl2-2.0-0` (required for application windowing and input routing)
+- `ffmpeg`, `libasound2` (required for audio and stream rendering)
+
+
+### 3. Bundled Platform Headers
+- **Khronos platform header**: The source directory bundles `src/KHR/khrplatform.h` to supply cross-platform type declarations (e.g., `khronos_int32_t`, `khronos_float_t`) for EGL and GLES2 rendering across MinGW (Windows), Linux, and ARM64 systems without requiring system-level installation of platform headers.
