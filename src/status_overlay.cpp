@@ -16,7 +16,8 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
     bool stateChanged = (
         state.inputMode != last_input_mode_ ||
         state.currentScreen != last_screen_ ||
-        state.maxQualityHeight != last_max_quality_
+        state.maxQualityHeight != last_max_quality_ ||
+        state.backgroundDaemonEnabled != last_background_daemon_enabled_
     );
 
     if (needsRecreate || stateChanged) {
@@ -31,6 +32,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             last_input_mode_ = state.inputMode;
             last_screen_ = state.currentScreen;
             last_max_quality_ = state.maxQualityHeight;
+            last_background_daemon_enabled_ = state.backgroundDaemonEnabled;
 
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);
             SDL_SetRenderTarget(renderer, texture_);
@@ -51,8 +53,8 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             const SDL_Color yellow{255, 214, 64, 255};
             const SDL_Color green{64, 214, 96, 255};
             const SDL_Color panel{24, 28, 34, 255};
-            const int boxY = 8;
-            const int boxH = 30;
+            const int boxY = 13;
+            const int boxH = 22;
 
             std::vector<HintItem> activeHints;
             if (state.inputMode == TubeState::InputMode::SearchText) {
@@ -82,7 +84,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                 };
             }
 
-            drawHintButtons(renderer, activeHints, boxY, boxH, 2, width, panel, {42, 48, 56, 255}, textColor);
+            drawHintButtons(renderer, activeHints, boxY, boxH, 1, width, panel, {42, 48, 56, 255}, textColor);
 
             
             SDL_SetRenderTarget(renderer, prev);

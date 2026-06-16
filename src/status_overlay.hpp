@@ -15,4 +15,5 @@ private:
     TubeState::InputMode last_input_mode_{TubeState::InputMode::None};
     TubeState::Screen last_screen_{TubeState::Screen::Home};
     int last_max_quality_{0};
+    bool last_background_daemon_enabled_{false};
 };
