@@ -32,11 +32,16 @@ pick_binary() {
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/bin"
 
-BINARY_PATH="$(pick_binary)"
+BINARY_PATH="$(pick_binary || true)"
 
 copy_file "$SCRIPT_DIR/Install-TubeLite.sh" "$APP_DIR/Install-TubeLite.sh"
 copy_file "$SCRIPT_DIR/TubeLite.tbl" "$APP_DIR/TubeLite.tbl"
-copy_file "$BINARY_PATH" "$APP_DIR/bin/tubelite.arm64"
+if [ -n "$BINARY_PATH" ]; then
+    copy_file "$BINARY_PATH" "$APP_DIR/bin/tubelite.arm64"
+else
+    echo "WARNING: No pre-built binary found. Staging will proceed without a pre-built binary (the target device can compile natively)."
+fi
+
 if [ -f "$SCRIPT_DIR/bin/yt-dlp" ]; then
     copy_file "$SCRIPT_DIR/bin/yt-dlp" "$APP_DIR/bin/yt-dlp"
 fi

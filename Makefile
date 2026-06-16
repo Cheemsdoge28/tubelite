@@ -1,4 +1,4 @@
-# Fire4ArkOS Browser - Cross-Platform Makefile
+# TubeLite YouTube Client - Cross-Platform Makefile
 # Supports: Windows (MinGW), ARM64 (aarch64-linux-gnu), Linux native
 
 TARGET ?= tubelite
@@ -22,6 +22,7 @@ endif
 CXXFLAGS ?= -std=c++17 -O3 -ffast-math -Wall -Wextra -Wpedantic -pthread -Isrc
 LDFLAGS ?= -lmpv -pthread
 
+# LTO flags check (skip on Windows/macOS if causing issues, default on for native optimization)
 ifeq ($(LTO),1)
     CXXFLAGS += -flto
     LDFLAGS += -flto
@@ -90,7 +91,7 @@ all: check_compiler $(BUILD_TARGET)
 check_compiler:
 	@if ! command -v $(CXX) >/dev/null 2>&1; then \
 		echo "ERROR: Compiler '$(CXX)' not found."; \
-		echo "Please run 'sudo bash Install-Fire4ArkOS.sh' to install build dependencies (build-essential, g++, etc)."; \
+		echo "Please run 'sudo bash Install-TubeLite.sh' to install build dependencies (build-essential, g++, etc)."; \
 		exit 1; \
 	fi
 
