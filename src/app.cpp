@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "daemon.hpp"
 #include "json.hpp"
 #include "renderer_utils.hpp"
 #include "stb_image.h"
@@ -926,6 +927,20 @@ void App::handleKey(SDL_Keycode key) {
                 uiDirty_ = true;
                 return;
             }
+        } else if (key == SDLK_RIGHT) {
+            if (state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) {
+                playNextTrack();
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
+        } else if (key == SDLK_LEFT) {
+            if (state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) {
+                playPreviousTrack();
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
         }
     }
 
@@ -1121,6 +1136,20 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 uiDirty_ = true;
                 return;
             }
+        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT || button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+            if (state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) {
+                playNextTrack();
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
+        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+            if (state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) {
+                playPreviousTrack();
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
         } else if (button == SDL_CONTROLLER_BUTTON_B) {
             if (state_.miniplayerActive) {
                 leavePlayback();
@@ -1243,6 +1272,10 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_.speed = std::max(0.25, state_.speed - 0.25);
             mpv_player_.setSpeed(state_.speed);
             showPlaybackToast("Speed " + std::to_string(state_.speed).substr(0, 4) + "x");
+        } else {
+            state_.backgroundDaemonEnabled = !state_.backgroundDaemonEnabled;
+            saveSettings();
+            uiDirty_ = true;
         }
     } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -1621,6 +1654,104 @@ void App::updateHoverPreviews() {
         is_playing_preview_ = true;
         focusedCard->is_previewing = true;
         uiDirty_ = true;
+    }
+}
+
+void App::saveSettings() {
+    try {
+        nlohmann::json j;
+        j["background_daemon_enabled"] = state_.backgroundDaemonEnabled;
+        std::ofstream ofs(getAppDataPath("settings.json"));
+        if (ofs) {
+            ofs << j.dump(4);
+        }
+    } catch (...) {}
+}
+
+void App::loadSettings() {
+    try {
+        std::ifstream ifs(getAppDataPath("settings.json"));
+        if (ifs) {
+            nlohmann::json j;
+            ifs >> j;
+            state_.backgroundDaemonEnabled = j.value("background_daemon_enabled", true);
+        }
+    } catch (...) {}
+}
+
+void App::saveDaemonQueue() {
+    try {
+        nlohmann::json j;
+        std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+        if (!grid || grid->cards.empty()) {
+            nlohmann::json v;
+            v["id"] = current_video_.id;
+            v["title"] = current_video_.title;
+            v["author"] = current_video_.author;
+            v["duration_seconds"] = current_video_.duration_seconds;
+            v["duration_string"] = current_video_.duration_string;
+            j["videos"].push_back(v);
+            j["current_index"] = 0;
+        } else {
+            int current_idx = 0;
+            for (size_t i = 0; i < grid->cards.size(); ++i) {
+                nlohmann::json v;
+                v["id"] = grid->cards[i]->video.id;
+                v["title"] = grid->cards[i]->video.title;
+                v["author"] = grid->cards[i]->video.author;
+                v["duration_seconds"] = grid->cards[i]->video.duration_seconds;
+                v["duration_string"] = grid->cards[i]->video.duration_string;
+                j["videos"].push_back(v);
+                if (grid->cards[i]->video.id == current_video_.id) {
+                    current_idx = static_cast<int>(i);
+                }
+            }
+            j["current_index"] = current_idx;
+        }
+        j["current_position"] = mpv_player_.getPlaybackTime();
+        
+        std::ofstream ofs(getAppDataPath("daemon_queue.json"));
+        if (ofs) {
+            ofs << j.dump(4);
+        }
+    } catch (...) {}
+}
+
+void App::playNextTrack() {
+    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    if (grid && !grid->cards.empty()) {
+        for (size_t i = 0; i < grid->cards.size(); ++i) {
+            if (grid->cards[i]->video.id == current_video_.id) {
+                if (i + 1 < grid->cards.size()) {
+                    auto nextVideo = grid->cards[i + 1]->video;
+                    focus_manager_.setFocusedIndex(i + 1);
+                    playVideo(nextVideo, !state_.miniplayerActive);
+                    showPlaybackToast("Next Track");
+                } else {
+                    showPlaybackToast("End of Playlist");
+                }
+                break;
+            }
+        }
+    }
+}
+
+void App::playPreviousTrack() {
+    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    if (grid && !grid->cards.empty()) {
+        for (size_t i = 0; i < grid->cards.size(); ++i) {
+            if (grid->cards[i]->video.id == current_video_.id) {
+                if (i > 0) {
+                    auto prevVideo = grid->cards[i - 1]->video;
+                    focus_manager_.setFocusedIndex(i - 1);
+                    playVideo(prevVideo, !state_.miniplayerActive);
+                    showPlaybackToast("Previous Track");
+                } else {
+                    showPlaybackToast("Start of Playlist");
+                }
+                break;
+            }
+        }
     }
 }
 
