@@ -226,7 +226,12 @@ if [ "$DO_DEPS" -eq 1 ]; then
     
     RUNTIME_DEPS="python3 libsdl2-2.0-0 ffmpeg libasound2 libmpv1 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6"
     APT_FLAGS="-y --allow-change-held-packages"
-    if [ "$REINSTALL_DEPS" = "1" ]; then APT_FLAGS="$APT_FLAGS --reinstall"; fi
+    if [ "$REINSTALL_DEPS" = "1" ]; then
+        APT_FLAGS="$APT_FLAGS --reinstall"
+        log_info "Forcing full system header & developer tools restore ritual..."
+        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev fonts-liberation"
+        apt-get install -y --reinstall $DEV_HEADERS || true
+    fi
     
     log_info "Running apt-get install..."
     apt-get install $APT_FLAGS $RUNTIME_DEPS || true
@@ -300,6 +305,21 @@ if [ "$DO_BINARY" -eq 1 ]; then
         if [ "${REINSTALL_DEPS:-0}" = "1" ]; then BUILD_APT_FLAGS="$BUILD_APT_FLAGS --reinstall"; fi
         log_info "Installing build dependencies..."
         apt-get install $BUILD_APT_FLAGS $BUILD_DEPS || true
+        
+        # Check for missing FreeType headers on filesystem (often deleted on handheld OS images)
+        if [ ! -f "/usr/include/freetype2/ft2build.h" ]; then
+            log_warn "FreeType headers (ft2build.h) missing from filesystem. Restoring libfreetype6-dev..."
+            apt-get install -y --reinstall libfreetype6-dev || true
+        fi
+        
+        # Check for missing core C/C++ or SDL2 headers on filesystem
+        if [ ! -f "/usr/include/features.h" ] || [ ! -f "/usr/include/SDL2/SDL.h" ]; then
+            log_warn "Core C/C++ or SDL2 development headers are missing from filesystem."
+            log_warn "Running header file restore ritual to repair the compilation environment..."
+            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev fonts-liberation"
+            apt-get install -y --reinstall $DEV_HEADERS || true
+        fi
+        
         cd "$SCRIPT_DIR"
         log_info "Running make native..."
         make native || true
