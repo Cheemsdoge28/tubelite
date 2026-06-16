@@ -229,8 +229,9 @@ if [ "$DO_DEPS" -eq 1 ]; then
     if [ "$REINSTALL_DEPS" = "1" ]; then
         APT_FLAGS="$APT_FLAGS --reinstall"
         log_info "Forcing full system header & developer tools restore ritual..."
-        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev fonts-liberation"
-        apt-get install -y --reinstall $DEV_HEADERS || true
+        # Note: --no-install-recommends prevents GNOME/X11 packages being pulled in as recommended deps
+        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev"
+        apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
     fi
     
     log_info "Running apt-get install..."
@@ -316,8 +317,9 @@ if [ "$DO_BINARY" -eq 1 ]; then
         if [ ! -f "/usr/include/features.h" ] || [ ! -f "/usr/include/SDL2/SDL.h" ]; then
             log_warn "Core C/C++ or SDL2 development headers are missing from filesystem."
             log_warn "Running header file restore ritual to repair the compilation environment..."
-            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev fonts-liberation"
-            apt-get install -y --reinstall $DEV_HEADERS || true
+            # Note: --no-install-recommends prevents GNOME/X11 packages being pulled in as recommended deps
+            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev"
+            apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
         fi
         
         cd "$SCRIPT_DIR"
