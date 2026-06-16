@@ -544,7 +544,7 @@ void runDaemon() {
                 if (success) {
                     mpv.play(url, sub_url);
                     if (daemon_start_position > 0.0) {
-                        mpv.seekAbsoluteExact(daemon_start_position);
+                        mpv.setPendingSeekPosition(daemon_start_position);
                         daemon_start_position = 0.0;
                     }
                     daemon_status = DaemonStatus::Playing;
@@ -704,8 +704,16 @@ void spawnDaemon() {
     close(2);
     
     open("/dev/null", O_RDONLY); // stdin
-    open("/dev/null", O_WRONLY); // stdout
-    open("/dev/null", O_WRONLY); // stderr
+    
+    int log_fd = open("tubelite_daemon.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (log_fd >= 0) {
+        dup2(log_fd, 1); // stdout
+        dup2(log_fd, 2); // stderr
+        close(log_fd);
+    } else {
+        open("/dev/null", O_WRONLY); // stdout
+        open("/dev/null", O_WRONLY); // stderr
+    }
     
     char* args[] = { (char*)exec_path.c_str(), (char*)"--daemon", nullptr };
     execvp(args[0], args);

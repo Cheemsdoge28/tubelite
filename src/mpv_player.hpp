@@ -60,6 +60,7 @@ public:
     double getDuration()     const { return duration_; }
     int64_t getPropertyInt(const std::string& name) const;
     bool checkAndClearEnded();
+    void setPendingSeekPosition(double pos) { pending_seek_position_ = pos; }
 
 
 private:
@@ -82,5 +83,6 @@ private:
 
     std::string pending_subtitle_url_;
     bool file_ended_ = false;
+    double pending_seek_position_ = -1.0;
 
 };

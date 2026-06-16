@@ -298,6 +298,10 @@ bool MpvPlayer::update() {
                 mpv_command_async(mpv_, 0, subCmd);
                 pending_subtitle_url_.clear();
             }
+            if (pending_seek_position_ >= 0.0) {
+                seekAbsoluteExact(pending_seek_position_);
+                pending_seek_position_ = -1.0;
+            }
         }
 
         if (ev->event_id == MPV_EVENT_END_FILE) {
