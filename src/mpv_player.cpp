@@ -204,7 +204,14 @@ bool MpvPlayer::initializeAudioOnly() {
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
     mpv_set_option_string(mpv_, "video",                  "no");
-    mpv_set_option_string(mpv_, "ao",                     "alsa");
+    // Use ALSA dmix so the daemon shares the audio device with other apps
+    // (EmulationStation sounds, notification sounds, etc.) instead of
+    // taking exclusive access. Fall back to pulse if dmix is unavailable.
+    mpv_set_option_string(mpv_, "ao",                     "alsa,pulse");
+    mpv_set_option_string(mpv_, "audio-device",           "alsa/dmix");
+    // Buffer slightly larger to smooth over scheduling jitter in a background process
+    mpv_set_option_string(mpv_, "audio-buffer",           "0.5");
+    mpv_set_option_string(mpv_, "gapless-audio",          "no");
     mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
     mpv_set_option_string(mpv_, "osc",                    "no");
     mpv_set_option_string(mpv_, "input-default-bindings", "no");
@@ -217,7 +224,29 @@ bool MpvPlayer::initializeAudioOnly() {
     mpv_set_option_string(mpv_, "ytdl-raw-options",       "no-check-certificate=");
 
     std::cerr << "[mpv] mpv_initialize...\n";
-    if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
+    if (mpv_initialize(mpv_) < 0) {
+        // dmix failed — retry without specifying device (let ALSA pick default)
+        std::cerr << "[mpv] mpv_initialize with dmix failed, retrying with default device...\n";
+        mpv_terminate_destroy(mpv_);
+        mpv_ = mpv_create();
+        if (!mpv_) return false;
+        mpv_set_option_string(mpv_, "video",                  "no");
+        mpv_set_option_string(mpv_, "ao",                     "alsa,pulse");
+        mpv_set_option_string(mpv_, "audio-buffer",           "0.5");
+        mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
+        mpv_set_option_string(mpv_, "osc",                    "no");
+        mpv_set_option_string(mpv_, "input-default-bindings", "no");
+        mpv_set_option_string(mpv_, "input-vo-keyboard",      "no");
+        mpv_set_option_string(mpv_, "cache",                  "yes");
+        mpv_set_option_string(mpv_, "network-timeout",        "5");
+        mpv_set_option_string(mpv_, "demuxer-max-bytes",      "50MiB");
+        mpv_set_option_string(mpv_, "demuxer-readahead-secs", "20");
+        mpv_set_option_string(mpv_, "user-agent",             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        if (mpv_initialize(mpv_) < 0) {
+            std::cerr << "[mpv] mpv_initialize failed\n";
+            return false;
+        }
+    }
 
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);

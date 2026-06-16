@@ -75,12 +75,11 @@ static int fb_height = 480;
 static int fb_bpp = 32;
 #endif
 
-// Background backup
+// Card overlay position (top-left corner of the overlay card drawn on /dev/fb0)
 static const int card_x = 160;
 static const int card_y = 12;
 static const int card_w = 320;
 static const int card_h = 76;
-static std::vector<uint8_t> bg_backup;
 
 // FreeType
 static FT_Library ft_lib;
@@ -193,6 +192,20 @@ static bool initFramebuffer() {
 #endif
 }
 
+// Wait for vertical blank before drawing to avoid tearing.
+// FBIO_WAITFORVSYNC = _IOW('F', 0x20, __u32) — defined in linux/fb.h but
+// not always present in older NDKs, so we define it manually if needed.
+#ifndef FBIO_WAITFORVSYNC
+#  define FBIO_WAITFORVSYNC _IOW('F', 0x20, __u32)
+#endif
+static void fbWaitVsync() {
+#ifndef _WIN32
+    if (fb_fd < 0) return;
+    uint32_t dummy = 0;
+    ioctl(fb_fd, FBIO_WAITFORVSYNC, &dummy);
+#endif
+}
+
 static void closeFramebuffer() {
 #ifndef _WIN32
     if (fb_ptr != MAP_FAILED) {
@@ -206,36 +219,12 @@ static void closeFramebuffer() {
 #endif
 }
 
-static void backupBackground() {
-#ifndef _WIN32
-    if (fb_ptr == (uint8_t*)MAP_FAILED) return;
-    int bytes_per_pixel = fb_bpp / 8;
-    bg_backup.resize(card_w * card_h * bytes_per_pixel);
-    
-    for (int y = 0; y < card_h; ++y) {
-        int fb_y = card_y + y;
-        if (fb_y < 0 || fb_y >= fb_height) continue;
-        uint8_t* src = fb_ptr + fb_y * fb_line_len + card_x * bytes_per_pixel;
-        uint8_t* dst = bg_backup.data() + y * card_w * bytes_per_pixel;
-        std::memcpy(dst, src, card_w * bytes_per_pixel);
-    }
-#endif
-}
-
-static void restoreBackground() {
-#ifndef _WIN32
-    if (fb_ptr == (uint8_t*)MAP_FAILED || bg_backup.empty()) return;
-    int bytes_per_pixel = fb_bpp / 8;
-    
-    for (int y = 0; y < card_h; ++y) {
-        int fb_y = card_y + y;
-        if (fb_y < 0 || fb_y >= fb_height) continue;
-        uint8_t* dst = fb_ptr + fb_y * fb_line_len + card_x * bytes_per_pixel;
-        uint8_t* src = bg_backup.data() + y * card_w * bytes_per_pixel;
-        std::memcpy(dst, src, card_w * bytes_per_pixel);
-    }
-#endif
-}
+// backupBackground / restoreBackground have been removed.
+// The daemon no longer tries to save/restore framebuffer pixels because
+// other apps (e.g. EmulationStation) continuously redraw the framebuffer at
+// their own rate, making any saved copy immediately stale and causing flicker.
+// Instead, the overlay is redrawn on top every loop iteration while it is
+// active; when it expires the other app's next redraw naturally erases it.
 
 static void writePixel(int x, int y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 #ifndef _WIN32
@@ -676,23 +665,23 @@ void runDaemon() {
         }
 #endif
 
-        // Manage overlay visibility and rendering
+        // Manage overlay visibility and rendering.
+        // Strategy: while the overlay timer is active, redraw the card on top
+        // of whatever the framebuffer currently shows on every loop tick.
+        // We do NOT try to save/restore the background — ES continuously
+        // redraws its own content, so any backup is stale within one frame.
+        // When the timer expires, we simply stop drawing; the next ES frame
+        // will naturally paint over our card.
         if (daemon_overlay_timer > 0.0f) {
             daemon_overlay_timer -= dt;
-            if (!overlay_visible) {
-                backupBackground();
-                overlay_visible = true;
-                daemon_needs_redraw = true;
-            }
-            
-            if (daemon_needs_redraw) {
-                restoreBackground();
-                renderCard(mpv);
-                daemon_needs_redraw = false;
-            }
+            overlay_visible = true;
+            // Sync to vsync before drawing to minimise tearing.
+            fbWaitVsync();
+            renderCard(mpv);
+            daemon_needs_redraw = false;
         } else {
             if (overlay_visible) {
-                restoreBackground();
+                // Stop drawing. The next app redraw will erase the card.
                 overlay_visible = false;
             }
         }
@@ -703,7 +692,8 @@ void runDaemon() {
             progress_timer += dt;
             if (progress_timer >= 0.25f) {
                 progress_timer = 0.0f;
-                daemon_needs_redraw = true;
+                // No explicit daemon_needs_redraw needed — we redraw every tick.
+                progress_timer = 0.0f;
             }
         }
         
