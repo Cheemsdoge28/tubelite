@@ -78,7 +78,7 @@ To completely remove TubeLite:
 - If dependencies are missing, run a dependencies reinstall: `sudo bash Install-TubeLite.sh --reinstall-deps`.
 
 ### No Audio or Video
-- If audio or video decoding fails, ensure you have `libmpv1` and `ffmpeg` installed. You can reinstall them via the installer script.
+- If audio or video decoding fails, ensure you have `libmpv1` installed. You can reinstall it via the installer script.
 
 ---
 
