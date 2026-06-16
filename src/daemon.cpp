@@ -20,8 +20,10 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
-#include <linux/fb.h>
 #include <signal.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm/drm_fourcc.h>
 #endif
 
 #include <ft2build.h>
@@ -55,30 +57,27 @@ static std::mutex daemon_resolved_mutex;
 
 static float daemon_overlay_timer = 0.0f;
 
-// Framebuffer parameters
-#ifndef _WIN32
-static int fb_fd = -1;
-static uint8_t* fb_ptr = (uint8_t*)MAP_FAILED;
-static long int screensize = 0;
-static int fb_width = 0;
-static int fb_height = 0;
-static int fb_bpp = 0;
-static int fb_line_len = 0;
-static int fb_red_offset = 0;
-static int fb_green_offset = 0;
-static int fb_blue_offset = 0;
-static int fb_alpha_offset = -1;
-#else
-static int fb_width = 640;
-static int fb_height = 480;
-static int fb_bpp = 32;
-#endif
-
-// Card overlay position (top-left corner of the overlay card drawn on /dev/fb0)
+// Card overlay position (top-left corner of the overlay card)
 static const int card_x = 160;
 static const int card_y = 12;
 static const int card_w = 320;
 static const int card_h = 76;
+
+#ifndef _WIN32
+#define DRM_OVERLAY_PLANE_ID  61
+#define DRM_CRTC_ID           60
+#define OVERLAY_W  card_w   // reuse existing card_w (320)
+#define OVERLAY_H  card_h   // reuse existing card_h (76)
+
+static int      drm_fd     = -1;
+static uint32_t drm_fb_id  = 0;
+static uint32_t drm_handle = 0;
+static uint32_t drm_pitch  = 0;
+static uint64_t drm_size   = 0;
+static uint32_t* drm_map   = nullptr;
+static int      drm_screen_w = 640;
+static int      drm_screen_h = 480;
+#endif
 
 // FreeType
 static FT_Library ft_lib;
@@ -149,131 +148,137 @@ static void handleSignal(int sig) {
     }
 }
 
-static bool initFramebuffer() {
 #ifndef _WIN32
-    fb_fd = open("/dev/fb0", O_RDWR);
-    if (fb_fd < 0) {
-        std::cerr << "[daemon] Failed to open /dev/fb0\n";
-        return false;
+static bool initDrmOverlay() {
+    drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    if (drm_fd < 0) { perror("[daemon] open card0"); return false; }
+
+    drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+
+    // Query screen dimensions from active CRTC
+    drmModeRes* res = drmModeGetResources(drm_fd);
+    if (res) {
+        for (int i = 0; i < res->count_crtcs; i++) {
+            drmModeCrtc* crtc = drmModeGetCrtc(drm_fd, res->crtcs[i]);
+            if (crtc && crtc->mode_valid && crtc->crtc_id == DRM_CRTC_ID) {
+                drm_screen_w = crtc->mode.hdisplay;
+                drm_screen_h = crtc->mode.vdisplay;
+                drmModeFreeCrtc(crtc);
+                break;
+            }
+            if (crtc) drmModeFreeCrtc(crtc);
+        }
+        drmModeFreeResources(res);
     }
-    
-    struct fb_var_screeninfo vinfo;
-    struct fb_fix_screeninfo finfo;
-    
-    if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0 ||
-        ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
-        std::cerr << "[daemon] Failed to get screen info\n";
-        close(fb_fd);
-        fb_fd = -1;
-        return false;
+
+    struct drm_mode_create_dumb creq = {};
+    creq.width  = OVERLAY_W;
+    creq.height = OVERLAY_H;
+    creq.bpp    = 32;
+    if (drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0) {
+        perror("[daemon] CREATE_DUMB"); return false;
     }
-    
-    fb_width = vinfo.xres;
-    fb_height = vinfo.yres;
-    fb_bpp = vinfo.bits_per_pixel;
-    fb_line_len = finfo.line_length;
-    fb_red_offset = vinfo.red.offset;
-    fb_green_offset = vinfo.green.offset;
-    fb_blue_offset = vinfo.blue.offset;
-    fb_alpha_offset = vinfo.transp.offset;
-    
-    screensize = vinfo.yres_virtual * finfo.line_length;
-    fb_ptr = (uint8_t*)mmap(0, screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
-    if (fb_ptr == MAP_FAILED) {
-        std::cerr << "[daemon] Failed to mmap /dev/fb0\n";
-        close(fb_fd);
-        fb_fd = -1;
-        return false;
+    drm_handle = creq.handle;
+    drm_pitch  = creq.pitch;
+    drm_size   = creq.size;
+
+    uint32_t handles[4] = { drm_handle };
+    uint32_t pitches[4] = { drm_pitch  };
+    uint32_t offsets[4] = { 0 };
+    if (drmModeAddFB2(drm_fd, OVERLAY_W, OVERLAY_H,
+                      DRM_FORMAT_ARGB8888,
+                      handles, pitches, offsets,
+                      &drm_fb_id, 0) < 0) {
+        perror("[daemon] AddFB2"); return false;
     }
+
+    struct drm_mode_map_dumb mreq = {};
+    mreq.handle = drm_handle;
+    drmIoctl(drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
+    drm_map = (uint32_t*)mmap(nullptr, drm_size,
+                               PROT_READ | PROT_WRITE,
+                               MAP_SHARED, drm_fd, mreq.offset);
+    if (drm_map == MAP_FAILED) {
+        perror("[daemon] mmap drm"); return false;
+    }
+
+    memset(drm_map, 0, drm_size);
+    std::cerr << "[daemon] DRM overlay ready. Screen: "
+              << drm_screen_w << "x" << drm_screen_h << "\n";
     return true;
+}
+
+static void closeDrmOverlay() {
+    if (drm_fd < 0) return;
+    // Hide plane before releasing
+    drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (drm_map && drm_map != MAP_FAILED)
+        munmap(drm_map, drm_size);
+    if (drm_fb_id)
+        drmModeRmFB(drm_fd, drm_fb_id);
+    if (drm_handle) {
+        struct drm_mode_destroy_dumb dreq = {};
+        dreq.handle = drm_handle;
+        drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+    }
+    close(drm_fd);
+    drm_fd = -1;
+}
+
+static void commitOverlay() {
+    if (drm_fd < 0) return;
+    // Center card on screen
+    int dest_x = (drm_screen_w - OVERLAY_W) / 2;
+    int dest_y = card_y;
+    drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
+                    drm_fb_id, 0,
+                    dest_x, dest_y, OVERLAY_W, OVERLAY_H,
+                    0, 0, OVERLAY_W << 16, OVERLAY_H << 16);
+}
+
+static void hideOverlay() {
+    if (drm_fd < 0) return;
+    drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+}
 #else
-    return false;
+static bool initDrmOverlay() { return true; }
+static void closeDrmOverlay() {}
+static void commitOverlay() {}
+static void hideOverlay() {}
 #endif
-}
 
-// Wait for vertical blank before drawing to avoid tearing.
-// FBIO_WAITFORVSYNC = _IOW('F', 0x20, __u32) — defined in linux/fb.h but
-// not always present in older NDKs, so we define it manually if needed.
-#ifndef FBIO_WAITFORVSYNC
-#  define FBIO_WAITFORVSYNC _IOW('F', 0x20, __u32)
-#endif
-static void fbWaitVsync() {
+// Replaces writePixel — writes directly into DRM dumb buffer
+// argb = 0xAARRGGBB. Alpha is used by hardware for blending over primary plane.
+static inline void drmWritePixel(int x, int y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 #ifndef _WIN32
-    if (fb_fd < 0) return;
-    uint32_t dummy = 0;
-    ioctl(fb_fd, FBIO_WAITFORVSYNC, &dummy);
-#endif
-}
-
-static void closeFramebuffer() {
-#ifndef _WIN32
-    if (fb_ptr != MAP_FAILED) {
-        munmap(fb_ptr, screensize);
-        fb_ptr = (uint8_t*)MAP_FAILED;
+    if (!drm_map || (unsigned)x >= OVERLAY_W || (unsigned)y >= OVERLAY_H) return;
+    uint32_t* row = drm_map + y * (drm_pitch / 4);
+    if (a == 255) {
+        row[x] = (0xFF000000) | (r << 16) | (g << 8) | b;
+    } else if (a == 0) {
+        row[x] = 0; // fully transparent
+    } else {
+        // Software alpha blend against current pixel in buffer
+        uint32_t cur = row[x];
+        uint8_t cr = (cur >> 16) & 0xFF;
+        uint8_t cg = (cur >>  8) & 0xFF;
+        uint8_t cb = (cur >>  0) & 0xFF;
+        uint8_t nr = (r * a + cr * (255 - a)) / 255;
+        uint8_t ng = (g * a + cg * (255 - a)) / 255;
+        uint8_t nb = (b * a + cb * (255 - a)) / 255;
+        row[x] = (0xFF000000) | (nr << 16) | (ng << 8) | nb;
     }
-    if (fb_fd >= 0) {
-        close(fb_fd);
-        fb_fd = -1;
-    }
-#endif
-}
-
-// backupBackground / restoreBackground have been removed.
-// The daemon no longer tries to save/restore framebuffer pixels because
-// other apps (e.g. EmulationStation) continuously redraw the framebuffer at
-// their own rate, making any saved copy immediately stale and causing flicker.
-// Instead, the overlay is redrawn on top every loop iteration while it is
-// active; when it expires the other app's next redraw naturally erases it.
-
-static void writePixel(int x, int y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-#ifndef _WIN32
-    if (fb_ptr == (uint8_t*)MAP_FAILED) return;
-    if (x < 0 || x >= fb_width || y < 0 || y >= fb_height) return;
-    if (a == 0) return;
-    
-    int bytes_per_pixel = fb_bpp / 8;
-    uint8_t* dst = fb_ptr + y * fb_line_len + x * bytes_per_pixel;
-    
-    if (fb_bpp == 32) {
-        if (a == 255) {
-            dst[fb_red_offset/8] = r;
-            dst[fb_green_offset/8] = g;
-            dst[fb_blue_offset/8] = b;
-            if (fb_alpha_offset >= 0) dst[fb_alpha_offset/8] = 255;
-        } else {
-            uint8_t cur_r = dst[fb_red_offset/8];
-            uint8_t cur_g = dst[fb_green_offset/8];
-            uint8_t cur_b = dst[fb_blue_offset/8];
-            
-            dst[fb_red_offset/8] = (r * a + cur_r * (255 - a)) / 255;
-            dst[fb_green_offset/8] = (g * a + cur_g * (255 - a)) / 255;
-            dst[fb_blue_offset/8] = (b * a + cur_b * (255 - a)) / 255;
-            if (fb_alpha_offset >= 0) dst[fb_alpha_offset/8] = 255;
-        }
-    } else if (fb_bpp == 16) {
-        uint16_t* dst16 = (uint16_t*)dst;
-        if (a == 255) {
-            *dst16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-        } else {
-            uint16_t cur = *dst16;
-            uint8_t cur_r = ((cur >> 11) & 0x1F) << 3;
-            uint8_t cur_g = ((cur >> 5) & 0x3F) << 2;
-            uint8_t cur_b = (cur & 0x1F) << 3;
-            
-            uint8_t new_r = (r * a + cur_r * (255 - a)) / 255;
-            uint8_t new_g = (g * a + cur_g * (255 - a)) / 255;
-            uint8_t new_b = (b * a + cur_b * (255 - a)) / 255;
-            
-            *dst16 = ((new_r >> 3) << 11) | ((new_g >> 2) << 5) | (new_b >> 3);
-        }
-    }
+#else
+    (void)x; (void)y; (void)r; (void)g; (void)b; (void)a;
 #endif
 }
 
 static void drawRect(int rx, int ry, int rw, int rh, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     for (int y = ry; y < ry + rh; ++y) {
         for (int x = rx; x < rx + rw; ++x) {
-            writePixel(x, y, r, g, b, a);
+            drmWritePixel(x, y, r, g, b, a);
         }
     }
 }
@@ -294,12 +299,12 @@ static void drawRoundedRect(int rx, int ry, int rw, int rh, int radius, uint8_t 
                 if (dist > radius) continue;
                 else if (dist > radius - 1.0f) {
                     float alpha_factor = radius - dist;
-                    writePixel(x, y, r, g, b, static_cast<uint8_t>(a * alpha_factor));
+                    drmWritePixel(x, y, r, g, b, static_cast<uint8_t>(a * alpha_factor));
                 } else {
-                    writePixel(x, y, r, g, b, a);
+                    drmWritePixel(x, y, r, g, b, a);
                 }
             } else {
-                writePixel(x, y, r, g, b, a);
+                drmWritePixel(x, y, r, g, b, a);
             }
         }
     }
@@ -358,7 +363,7 @@ static void drawText(const std::string& text, int x, int y, int fontSize, uint8_
                 uint8_t alpha = glyph->bitmap.buffer[row * glyph->bitmap.pitch + col];
                 if (alpha > 0) {
                     uint16_t blend_alpha = (static_cast<uint16_t>(alpha) * a) / 255;
-                    writePixel(glyph_x + col, glyph_y + row, r, g, b, blend_alpha);
+                    drmWritePixel(glyph_x + col, glyph_y + row, r, g, b, blend_alpha);
                 }
             }
         }
@@ -413,27 +418,36 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 }
 
 static void renderCard(MpvPlayer& mpv) {
-    // 1. Drop shadow
-    drawRoundedRect(card_x + 3, card_y + 3, card_w, card_h, 8,  0,  0,  0, 90);
+#ifndef _WIN32
+    if (drm_map) {
+        memset(drm_map, 0, drm_size);  // clear to transparent each frame
+    }
+#endif
 
-    // 2. Red border (matches miniplayer outline in compositor)
-    drawRoundedRect(card_x - 1, card_y - 1, card_w + 2, card_h + 2, 9, 255, 48, 48, 200);
+    // 1. Drop shadow (inside 320x76, offset to bottom-right)
+    drawRoundedRect(3, 3, card_w - 4, card_h - 4, 8, 0, 0, 0, 90);
+
+    // 2. Red border (outlines the plane card boundary)
+    drawRoundedRect(0, 0, card_w, card_h, 9, 255, 48, 48, 200);
 
     // 3. Dark card fill — same {26,28,32} as compositor miniplayer strip
-    drawRoundedRect(card_x, card_y, card_w, card_h, 8, 26, 28, 32, 245);
+    drawRoundedRect(1, 1, card_w - 2, card_h - 2, 8, 26, 28, 32, 245);
 
     // 4. Thin red top accent inside the card
-    drawRect(card_x + 1, card_y + 1, card_w - 2, 2, 255, 48, 48, 160);
+    drawRect(2, 2, card_w - 4, 2, 255, 48, 48, 160);
 
     // Guard: need valid playlist entry
-    if (daemon_current_index < 0 || daemon_current_index >= static_cast<int>(daemon_playlist.size())) return;
+    if (daemon_current_index < 0 || daemon_current_index >= static_cast<int>(daemon_playlist.size())) {
+        commitOverlay();
+        return;
+    }
     const auto& video = daemon_playlist[daemon_current_index];
 
-    // 5. Title — {240,242,245} near-white (matches compositor title text)
-    drawText(truncateText(video.title, 32), card_x + 10, card_y + 8, 13, 240, 242, 245, 255);
+    // 5. Title — {240,242,245} near-white
+    drawText(truncateText(video.title, 32), 10, 8, 13, 240, 242, 245, 255);
 
-    // 6. Author — {154,165,184} muted blue-grey (matches compositor author text)
-    drawText(truncateText(video.author, 38), card_x + 10, card_y + 26, 11, 154, 165, 184, 255);
+    // 6. Author — {154,165,184} muted blue-grey
+    drawText(truncateText(video.author, 38), 10, 26, 11, 154, 165, 184, 255);
 
     // 7. Status badge (top-right)
     std::string statStr = "PLAYING";
@@ -448,15 +462,15 @@ static void renderCard(MpvPlayer& mpv) {
         statStr = "ERROR";
         sr = 255; sg = 48;  sb = 48;   // red
     }
-    drawText(statStr, card_x + card_w - 72, card_y + 8, 10, sr, sg, sb, 255);
+    drawText(statStr, card_w - 72, 8, 10, sr, sg, sb, 255);
 
-    // 8. Progress bar — same style as compositor (track + red fill)
+    // 8. Progress bar
     double pos  = mpv.getPlaybackTime();
     double dur  = mpv.getDuration() > 0.0 ? mpv.getDuration() : static_cast<double>(video.duration_seconds);
     double frac = (dur > 0.0) ? std::max(0.0, std::min(1.0, pos / dur)) : 0.0;
 
-    const int barX = card_x + 10;
-    const int barY = card_y + 46;
+    const int barX = 10;
+    const int barY = 46;
     const int barW = card_w - 20;
     const int barH = 4;
 
@@ -464,12 +478,14 @@ static void renderCard(MpvPlayer& mpv) {
     if (frac > 0.0)
         drawRect(barX, barY, static_cast<int>(barW * frac), barH, 255, 48, 48, 255); // fill
 
-    // 9. Time — {220,220,232} matches compositor timestamp color
+    // 9. Time
     std::string timeStr = formatTime(pos) + " / " + (video.duration_string.empty() ? formatTime(dur) : video.duration_string);
-    drawText(timeStr, card_x + 10, card_y + 55, 9, 220, 220, 232, 255);
+    drawText(timeStr, 10, 55, 9, 220, 220, 232, 255);
 
-    // 10. Key hints — {160,160,172} matches compositor hint text
-    drawText("SEL+A:PLAY  SEL+B:EXIT  SEL+\xE2\x96\xB6:NEXT", card_x + card_w - 196, card_y + 55, 9, 160, 160, 172, 255);
+    // 10. Key hints
+    drawText("SEL+A:PLAY  SEL+B:EXIT  SEL+\xE2\x96\xB6:NEXT", card_w - 196, 55, 9, 160, 160, 172, 255);
+
+    commitOverlay();
 }
 
 void runDaemon() {
@@ -511,7 +527,7 @@ void runDaemon() {
     
     YouTubeAPI yt;
     initFreetype();
-    initFramebuffer();
+    initDrmOverlay();
 
     // Show startup overlay immediately so user knows daemon is active.
     // FB is now open; set timer here so the first loop iteration draws the card.
@@ -659,15 +675,16 @@ void runDaemon() {
 #endif
 
         // Overlay management: redraw unconditionally every tick while the timer
-        // is active (spam-mode). We don't attempt save/restore — ES redraws
-        // continuously and will erase the card whenever overlay is gone.
+        // is active.
         if (daemon_overlay_timer > 0.0f) {
             daemon_overlay_timer -= dt;
             overlay_visible = true;
-            fbWaitVsync();
-            renderCard(mpv);   // unconditional — win the FB race every frame
+            renderCard(mpv);
         } else {
-            overlay_visible = false;  // ES next frame will paint over naturally
+            if (overlay_visible) {
+                hideOverlay();
+                overlay_visible = false;
+            }
         }
 
         // Adaptive sleep: go full crackhead (4 ms) while card is on screen,
@@ -679,7 +696,7 @@ void runDaemon() {
     std::cerr << "[daemon] Stopping daemon...\n";
     
     mpv.shutdown();
-    closeFramebuffer();
+    closeDrmOverlay();
 #ifndef _WIN32
     if (js_fd >= 0) close(js_fd);
 #endif
