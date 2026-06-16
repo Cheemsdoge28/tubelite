@@ -4,6 +4,35 @@
 #include "ui_framework.hpp"
 #include <algorithm>
 #include <chrono>
+static std::string truncateTextToWidth(const std::string& text, int scale, int maxWidth) {
+    int w = 0;
+    getTextSize(text, scale, &w, nullptr);
+    if (w <= maxWidth) return text;
+    
+    std::string ell = "...";
+    int ellW = 0;
+    getTextSize(ell, scale, &ellW, nullptr);
+    int targetW = maxWidth - ellW;
+    size_t len = utf8Length(text);
+    
+    size_t low = 0;
+    size_t high = len;
+    size_t best_len = 0;
+    while (low <= high) {
+        size_t mid = low + (high - low) / 2;
+        std::string temp = utf8Slice(text, 0, mid);
+        int tempW = 0;
+        getTextSize(temp, scale, &tempW, nullptr);
+        if (tempW <= targetW) {
+            best_len = mid;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+    return utf8Slice(text, 0, best_len) + ell;
+}
 
 void Compositor::render(App* app, int width, int height) {
     if (app->state_.currentScreen == TubeState::Screen::Playback) {
@@ -132,18 +161,18 @@ void Compositor::render(App* app, int width, int height) {
     //     through the layer) so we avoid the FBO / render-target conflict that
     //     caused the full-screen flicker in the first place.
     if (app->state_.miniplayerActive) {
-        const int mX  = width  - 252;
-        const int mY  = height - 210;
         const int mW  = 240;
         const int mVH = 135;   // video area height
-        const int mSH = 20;    // title strip height
+        const int mSH = 48;    // details/title strip height
         const int mH  = mVH + mSH;
+        const int mX  = width  - mW - 16;
+        const int mY  = height - 60 - mH - 12; // float above 60px bottom panel
 
         const SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
 
         // Clear the screen region to prevent card thumbnail bleed-through
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
+        SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // match background color
         SDL_RenderFillRect(renderer_, &miniplayerBounds);
 
         // ── Pass 1: chrome layer (dirty-cached) ───────────────────────────────
@@ -159,13 +188,12 @@ void Compositor::render(App* app, int width, int height) {
             miniplayer_layer_.init(renderer_, mW + 4, mH + 4, miniplayerBounds);
             miniplayer_layer_.begin(renderer_, {0, 0, 0, 0}); // fully transparent — video shows through
 
-            // Red accent border (around video area, not the strip)
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
-            SDL_Rect border1{1, 1, mW + 2, mVH + 2};
-            SDL_RenderDrawRect(renderer_, &border1);
-            SDL_Rect border2{0, 0, mW + 4, mVH + 4};
-            SDL_RenderDrawRect(renderer_, &border2);
+            // Unified sleek border around the entire miniplayer card
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            SDL_Rect borderOuter{0, 0, mW + 4, mH + 4};
+            drawRoundedRect(renderer_, borderOuter, 8, {255, 48, 48, 200}); // Red outline
+            SDL_Rect borderInner{1, 1, mW + 2, mH + 2};
+            drawRoundedRect(renderer_, borderInner, 7, {26, 28, 32, 100});
 
             // Pause icon (only shown when paused)
             if (!playing) {
@@ -182,35 +210,63 @@ void Compositor::render(App* app, int width, int height) {
                 SDL_RenderFillRect(renderer_, &pR);
             }
 
-            // ── Title strip ──────────────────────────────────────────────────
-            SDL_Rect strip{0, 2 + mVH, mW + 4, mSH + 2};
+            // ── Details strip background ─────────────────────────────────────
+            SDL_Rect stripBg{2, 2 + mVH, mW, mSH};
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer_, 14, 14, 18, 255);
-            SDL_RenderFillRect(renderer_, &strip);
-            SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 130);
-            SDL_Rect divider{0, 2 + mVH, mW + 4, 1};
+            SDL_SetRenderDrawColor(renderer_, 26, 28, 32, 255); // sleek card color
+            fillRoundedRect(renderer_, stripBg, 6, {26, 28, 32, 255});
+            // Keep top edges flat
+            SDL_Rect stripTopFlat{2, 2 + mVH, mW, 12};
+            SDL_RenderFillRect(renderer_, &stripTopFlat);
+
+            // Red divider between video and details
+            SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 160);
+            SDL_Rect divider{2, 2 + mVH, mW, 1};
             SDL_RenderFillRect(renderer_, &divider);
 
             // Truncate title to fit the strip (only computed on dirty)
-            std::string titleTxt = app->current_video_.title;
-            int maxTitleW = mW - 4;
-            int titleW = 0, titleH = 0;
-            getTextSize(titleTxt, 1, &titleW, &titleH);
-            if (titleW > maxTitleW) {
-                while (!titleTxt.empty() && titleW > maxTitleW - 12) {
-                    titleTxt = utf8Slice(titleTxt, 0, utf8Length(titleTxt) - 1);
-                    getTextSize(titleTxt + "...", 1, &titleW, &titleH);
-                }
-                titleTxt += "...";
-            }
-            int stripTextY = 2 + mVH + (mSH + 2 - titleH) / 2;
-            drawText(renderer_, 6, stripTextY, titleTxt, 1, {210, 210, 220, 255});
+            std::string titleTxt = truncateTextToWidth(app->current_video_.title, 1, mW - 16);
+            drawTextShadow(renderer_, 8, 2 + mVH + 6, titleTxt, 1, {240, 242, 245, 255});
 
-            // Hint text — right-aligned, depends on play-state (triggers dirty too)
-            std::string hintStr = std::string(playing ? "A:Pause" : "A:Play") + "  B:Close";
-            int hw = 0;
-            getTextSize(hintStr, 1, &hw, nullptr);
-            drawText(renderer_, mW + 4 - hw - 4, stripTextY, hintStr, 1, {130, 130, 140, 255});
+            // Channel name - left aligned in row 2
+            std::string authorTxt = truncateTextToWidth(app->current_video_.author, 1, 100);
+            drawText(renderer_, 8, 2 + mVH + 24, authorTxt, 1, {154, 165, 184, 255});
+
+            // Interactive button hints - right aligned in row 2
+            int rightX = mW + 4 - 8;
+            int row2Y = 2 + mVH + 24;
+
+            // Hint B: Close
+            std::string closeLabel = "Close";
+            int closeLabelW = 0;
+            getTextSize(closeLabel, 1, &closeLabelW, nullptr);
+            int badgeBW = 14;
+            int badgeBH = 12;
+            int badgeBX = rightX - closeLabelW - 4 - badgeBW;
+
+            SDL_Rect rectB{badgeBX, row2Y + 1, badgeBW, badgeBH};
+            fillRoundedRect(renderer_, rectB, 3, {255, 214, 64, 40});
+            drawRoundedRect(renderer_, rectB, 3, {255, 214, 64, 140});
+            int charBW = 0, charBH = 0;
+            getTextSize("B", 1, &charBW, &charBH);
+            drawText(renderer_, badgeBX + (badgeBW - charBW) / 2, row2Y + 1 + (badgeBH - charBH) / 2 - 1, "B", 1, {255, 214, 64, 255});
+            drawText(renderer_, badgeBX + badgeBW + 4, row2Y, closeLabel, 1, {160, 165, 175, 255});
+
+            // Hint A: Play/Pause
+            std::string playLabel = playing ? "Pause" : "Play";
+            int playLabelW = 0;
+            getTextSize(playLabel, 1, &playLabelW, nullptr);
+            int badgeAW = 14;
+            int badgeAH = 12;
+            int badgeAX = badgeBX - 8 - playLabelW - 4 - badgeAW;
+
+            SDL_Rect rectA{badgeAX, row2Y + 1, badgeAW, badgeAH};
+            fillRoundedRect(renderer_, rectA, 3, {255, 48, 48, 40});
+            drawRoundedRect(renderer_, rectA, 3, {255, 48, 48, 140});
+            int charAW = 0, charAH = 0;
+            getTextSize("A", 1, &charAW, &charAH);
+            drawText(renderer_, badgeAX + (badgeAW - charAW) / 2, row2Y + 1 + (badgeAH - charAH) / 2 - 1, "A", 1, {255, 48, 48, 255});
+            drawText(renderer_, badgeAX + badgeAW + 4, row2Y, playLabel, 1, {160, 165, 175, 255});
 
             miniplayer_layer_.end(renderer_);
 
@@ -225,6 +281,8 @@ void Compositor::render(App* app, int width, int height) {
         if (previewTex) {
             SDL_Rect videoDst{mX + 2, mY + 2, mW, mVH};
             SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
+            // Mask top rounded corners of the video frame to align with card corners
+            maskRoundedCornersTop(renderer_, videoDst, 6, {15, 15, 15, 255});
         }
 
         // Composite chrome layer on top of the live video
