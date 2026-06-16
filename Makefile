@@ -2,7 +2,7 @@
 # Supports: Windows (MinGW), ARM64 (aarch64-linux-gnu), Linux native
 
 TARGET ?= tubelite
-SRC := $(wildcard src/*.cpp)
+SRC := $(filter-out src/probe_planes.cpp, $(wildcard src/*.cpp))
 BUILD_DIR ?= build
 OBJ := $(SRC:src/%.cpp=$(BUILD_DIR)/%.o)
 DEP := $(OBJ:.o=.d)
@@ -96,13 +96,13 @@ check_compiler:
 	fi
 
 # Compile object files
-$(BUILD_DIR)/%.o: src/%.cpp check_compiler
+$(BUILD_DIR)/%.o: src/%.cpp
 	@mkdir -p $(BUILD_DIR)
 	@echo "  CXX $<"
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Link target
-$(BUILD_TARGET): $(OBJ) check_compiler
+$(BUILD_TARGET): $(OBJ)
 	@mkdir -p $(BUILD_DIR)
 	@echo "[$(PLATFORM)] Linking $(BUILD_TARGET)"
 	@echo "  CXX: $(CXX)"
@@ -133,17 +133,17 @@ clean:
 
 # Cross-compile for ARM64
 arm64: PLATFORM=arm64
-arm64: $(BUILD_TARGET)
+arm64: check_compiler $(BUILD_TARGET)
 	@echo "ARM64 build complete: $<"
 
 # Windows MinGW build
 windows: PLATFORM=windows
-windows: $(BUILD_TARGET)
+windows: check_compiler $(BUILD_TARGET)
 	@echo "Windows build complete: $<"
 
 # Native build (release: LTO + O3)
 native: PLATFORM=native
-native: $(BUILD_TARGET)
+native: check_compiler $(BUILD_TARGET)
 	@echo "Native build complete: $<"
 
 # Native dev build — fast iteration: no LTO, O1, parallel-safe
@@ -151,7 +151,7 @@ native: $(BUILD_TARGET)
 native-dev: PLATFORM=native
 native-dev: CXXFLAGS=-std=c++17 -O1 -Wall -Wextra -pthread -Isrc -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35
 native-dev: LDFLAGS=-lmpv -pthread
-native-dev: $(BUILD_TARGET)
+native-dev: check_compiler $(BUILD_TARGET)
 	@echo "Native dev build complete: $<"
 
 
