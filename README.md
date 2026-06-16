@@ -1,13 +1,25 @@
-# 🚀 Fire4ArkOS Browser
+# 📺 TubeLite
 
-A high-performance, framebuffer-optimized Firefox environment for ArkOS (R36S, RG351MP, RK3326).
+A high-performance, hardware-accelerated native YouTube client for ArkOS handhelds (R36S, RG351MP, Powkiddy RGB10, etc.) powered by the RK3326 SoC.
 
-![Downloads](https://img.shields.io/github/downloads/Cheemsdoge28/fire4arkos/total?style=for-the-badge&color=green)
-![Release](https://img.shields.io/github/v/release/Cheemsdoge28/fire4arkos?style=for-the-badge&color=blue)
-[![Sponsors](https://img.shields.io/github/sponsors/Cheemsdoge28?style=for-the-badge&color=ea4aaa&logo=github-sponsors)](https://github.com/sponsors/Cheemsdoge28)
+![Downloads](https://img.shields.io/github/downloads/Cheemsdoge28/r36tube/total?style=for-the-badge&color=green)
+![Release](https://img.shields.io/github/v/release/Cheemsdoge28/r36tube?style=for-the-badge&color=blue)
+
+Unlike web-based wrappers, **TubeLite** is written natively in C++ using SDL2, OpenGL ES 2.0 (via KMSDRM/EGL), and `libmpv` to achieve smooth, hardware-accelerated video/audio rendering directly on the Linux framebuffer without windowing overhead.
+
+---
+
+## ✨ Features
+- **rk3326-Optimized GLES2/EGL Compositor**: High-performance, low-overhead native rendering.
+- **Seamless Background Audio Player Daemon**: Exit the main application while playing a track, and the playback will seamlessly handover to an audio-only background daemon with controller hooks.
+- **On-Screen Controller Overlay**: The background daemon draws a beautiful, premium, semi-transparent card overlay over the screen to show track status, seek position, and buttons.
+- **Integrated Controller Keyboard**: Fully navigated virtual keyboard overlay to easily search for videos.
+- **Micro-animations & Vibrant Dark Themes**: Sleek UI designed for 4:3 handheld screens.
+
+---
 
 ## 📱 Supported Devices
-Fire4ArkOS is optimized specifically for **RK3326** based handhelds running **ArkOS**:
+TubeLite is optimized specifically for **RK3326** based handhelds running **ArkOS**:
 - **R36S** (Highly Recommended)
 - **RG351MP / RG351P / RG351M**
 - **Powkiddy RGB10 / RGB10S**
@@ -15,65 +27,70 @@ Fire4ArkOS is optimized specifically for **RK3326** based handhelds running **Ar
 - **Gameforce Chi**
 - Any other RK3326 device on ArkOS or similar OS
 
+---
+
 ## 🛠️ Installation
 
-**Fire4ArkOS v1.5.43** refines input bindings, adds smart focus stabilization, and introduces a cleaner UI style for RK3326-based devices.
-
-### 1. Download & Prepare
-- Download the latest `Fire4ArkOS.zip` from the [Releases](https://github.com/Cheemsdoge28/fire4arkos/releases) page.
-- Extract the zip file on your computer. You will see a `Fire4ArkOS` folder.
+### 1. Download & Extract
+- Download the latest `TubeLite.zip` from the [Releases](https://github.com/Cheemsdoge28/r36tube/releases) page.
+- Extract the zip file on your computer. You will see a `TubeLite` folder.
 
 ### 2. Copy to Handheld
 - Connect your ArkOS SD card (EASYROMS partition) to your computer.
-- Copy the `Fire4ArkOS` folder into the `tools` directory on your SD card.
-- Path: `EASYROMS/tools/Fire4ArkOS/`
+- Copy the entire `TubeLite` folder into the `tools` directory on your SD card.
+- Path: `EASYROMS/tools/TubeLite/`
 
-### 3. One-Click Install
+### 3. Setup via EmulationStation
 - Insert the SD card back into your device and boot ArkOS.
-- Navigate to the **Tools** (or Options) section in EmulationStation.
-- Find and run **Install-Fire4ArkOS.sh**.
-- Follow the on-screen prompts to choose your installation type (Full, Browser Only, or Theme Only).
-- Wait for the installer to finish, then **reboot your device**.
+- Navigate to the **Options** (or Tools) section in EmulationStation.
+- Select and run **Install-TubeLite.sh**.
+- Choose **Full Install** in the controller-friendly menu.
+- Once finished, **Restart EmulationStation** (Start Menu → Quit → Restart EmulationStation).
 
-Once rebooted, a new system named **"Fire4ArkOS"** will appear in your frontend list!
+A new system named **"TubeLite"** will now appear in your main frontend carousel!
 
-### 🔄 How to Upgrade
-Upgrading is easy and **will not delete your browser data** (bookmarks, history, etc.):
-1. Delete the old `Fire4ArkOS` folder from your SD card.
-2. Copy the new `Fire4ArkOS` folder to the same location.
-3. Run **Install-Fire4ArkOS.sh** and follow the prompts.
-4. Reboot your device.
-
-> **Audio Status**: While the audio pipeline is now "Ironclad" (Direct ALSA via apulse), some hardware revisions remain silent. We are currently investigating this as a kernel-level issue.
+---
 
 ## 🎮 Controls
 
+### Main App Controls
+
 | Button | Action |
 |--------|--------|
-| **Left Stick** | Mouse Cursor |
-| **A / L3** | Left Click (drag with hold using L3) |
-| **R3** | Right Click |
-| **B** | Back (Previous Page) |
-| **X** | Reload Page |
-| **Y** | URL Entry / Virtual Keyboard |
-| **L1** | Page Text Input |
-| **R1** | Toggle UI |
-| **L2 / R2** | Zoom Out / Zoom In |
-| **D-Pad** | Scroll Up/Down/Left/Right |
-| **Select + Start** | Exit Browser |
+| **D-Pad / Left Stick** | Navigate home grid / search results / virtual keyboard |
+| **A** | Click/Play video / Play & Pause during playback |
+| **B** | Back / Close Virtual Keyboard / Exit Playback screen |
+| **Y** | Open Virtual Keyboard (in grid) / Toggle Subtitles (during playback) |
+| **L2 / R2** | Volume Decrease / Increase (during playback) |
+| **D-Pad Left / Right** | Seek/Scrub backward/forward (during playback) |
+| **Select** | Toggle miniplayer mode |
+| **Start + Select** | Exit Main Application (Handover to Background Daemon) |
 
-- **Stability**: The browser uses a custom performance profile to ensure smooth operation on the RK3326 SoC. If a page feels unresponsive, give it a moment to process heavy JavaScript.
-- **Audio**: Audio is supported via a custom PulseAudio/apulse shim. Ensure your volume is turned up before launching.
-- **Manual Installation (SSH)**:
-   ```bash
-   cd /roms/ports/Fire4ArkOS
-   sudo bash Install-Fire4ArkOS.sh
-   ```
-- **Stick Drift**: If your cursor moves on its own, you can adjust the deadzone in `src/main.cpp` and run `sudo bash Install-Fire4ArkOS.sh --rebuild`.
+### Background Daemon Controls (Select Combination)
 
-## 🧾 Logs
-- `install.log` is created in the Fire4ArkOS folder during installation.
-- `firefox.log` is created alongside the app when the browser runs.
+Hold the **Select** button and press one of the following:
+
+| Combination | Action |
+|-------------|--------|
+| **Select + A** | Play / Pause audio |
+| **Select + B** | Exit background daemon completely |
+| **Select + R1 / D-Pad Right** | Skip to next track in queue |
+| **Select + L1 / D-Pad Left** | Go back to previous track |
+| **Select + D-Pad Up** | Show on-screen daemon overlay card (shows track status & position) |
+
+---
+
+## 🏗️ Development & Manual Compilation
+To compile TubeLite natively on your device, connect via SSH and run:
+```bash
+cd /roms/tools/TubeLite
+sudo bash Install-TubeLite.sh --rebuild
+```
+
+For release packaging:
+```bash
+./package-release.sh
+```
 
 ## 🤝 Support & Contribution
-Feel free to open an issue or pull request if you find bugs or want to improve the performance!
+Feel free to open an issue or pull request if you find bugs or want to improve performance!
