@@ -166,6 +166,35 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
 
+    // Now query the audio device list and find the best mixing device.
+    // This allows us to dynamically support ArkOS custom 'dmixer', Rockchip default dmix, or fall back to standard alsa default.
+    char* device_list_str = nullptr;
+    if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
+        std::string list(device_list_str);
+        std::string best_device = "alsa";
+        
+        if (list.find("alsa/dmixer") != std::string::npos) {
+            best_device = "alsa/dmixer";
+        } else {
+            size_t dmix_pos = list.find("alsa/dmix:");
+            if (dmix_pos != std::string::npos) {
+                size_t end_pos = list.find("\"", dmix_pos);
+                if (end_pos != std::string::npos) {
+                    best_device = list.substr(dmix_pos, end_pos - dmix_pos);
+                }
+            } else if (list.find("alsa/dmix") != std::string::npos) {
+                best_device = "alsa/dmix";
+            }
+        }
+        
+        std::cerr << "[mpv] Dynamic ALSA device selection: " << best_device << "\n";
+        mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
+        
+        mpv_free(device_list_str);
+    } else {
+        std::cerr << "[mpv] Failed to query audio-device-list, using default ALSA device\n";
+    }
+
     // ── Create GLES render context ────────────────────────────────────────────
     // Use eglGetProcAddress via dlopen — NOT SDL_GL_GetProcAddress.
     // SDL's wrapper can return bad pointers when called outside its render loop.
@@ -204,11 +233,8 @@ bool MpvPlayer::initializeAudioOnly() {
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
     mpv_set_option_string(mpv_, "video",                  "no");
-    // Use ALSA dmix so the daemon shares the audio device with other apps
-    // (EmulationStation sounds, notification sounds, etc.) instead of
-    // taking exclusive access. Fall back to pulse if dmix is unavailable.
-    mpv_set_option_string(mpv_, "ao",                     "alsa,pulse");
-    mpv_set_option_string(mpv_, "audio-device",           "alsa/dmix");
+    // Use ALSA so the daemon shares the audio device with other apps
+    mpv_set_option_string(mpv_, "ao",                     "alsa");
     // Buffer slightly larger to smooth over scheduling jitter in a background process
     mpv_set_option_string(mpv_, "audio-buffer",           "0.5");
     mpv_set_option_string(mpv_, "gapless-audio",          "no");
@@ -225,27 +251,37 @@ bool MpvPlayer::initializeAudioOnly() {
 
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) {
-        // dmix failed — retry without specifying device (let ALSA pick default)
-        std::cerr << "[mpv] mpv_initialize with dmix failed, retrying with default device...\n";
-        mpv_terminate_destroy(mpv_);
-        mpv_ = mpv_create();
-        if (!mpv_) return false;
-        mpv_set_option_string(mpv_, "video",                  "no");
-        mpv_set_option_string(mpv_, "ao",                     "alsa,pulse");
-        mpv_set_option_string(mpv_, "audio-buffer",           "0.5");
-        mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
-        mpv_set_option_string(mpv_, "osc",                    "no");
-        mpv_set_option_string(mpv_, "input-default-bindings", "no");
-        mpv_set_option_string(mpv_, "input-vo-keyboard",      "no");
-        mpv_set_option_string(mpv_, "cache",                  "yes");
-        mpv_set_option_string(mpv_, "network-timeout",        "5");
-        mpv_set_option_string(mpv_, "demuxer-max-bytes",      "50MiB");
-        mpv_set_option_string(mpv_, "demuxer-readahead-secs", "20");
-        mpv_set_option_string(mpv_, "user-agent",             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-        if (mpv_initialize(mpv_) < 0) {
-            std::cerr << "[mpv] mpv_initialize failed\n";
-            return false;
+        std::cerr << "[mpv] mpv_initialize failed\n";
+        return false;
+    }
+
+    // Now query the audio device list and find the best mixing device.
+    // This allows us to dynamically support ArkOS custom 'dmixer', Rockchip default dmix, or fall back to standard alsa default.
+    char* device_list_str = nullptr;
+    if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
+        std::string list(device_list_str);
+        std::string best_device = "alsa";
+        
+        if (list.find("alsa/dmixer") != std::string::npos) {
+            best_device = "alsa/dmixer";
+        } else {
+            size_t dmix_pos = list.find("alsa/dmix:");
+            if (dmix_pos != std::string::npos) {
+                size_t end_pos = list.find("\"", dmix_pos);
+                if (end_pos != std::string::npos) {
+                    best_device = list.substr(dmix_pos, end_pos - dmix_pos);
+                }
+            } else if (list.find("alsa/dmix") != std::string::npos) {
+                best_device = "alsa/dmix";
+            }
         }
+        
+        std::cerr << "[mpv] Dynamic ALSA device selection: " << best_device << "\n";
+        mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
+        
+        mpv_free(device_list_str);
+    } else {
+        std::cerr << "[mpv] Failed to query audio-device-list, using default ALSA device\n";
     }
 
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);

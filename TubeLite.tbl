@@ -9,15 +9,6 @@ for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     fi
 done
 
-# Dump ALSA diagnostics to help fix the dmix audio issue
-echo "=== aplay -l ===" > "$SCRIPT_DIR/alsa_info.txt"
-aplay -l >> "$SCRIPT_DIR/alsa_info.txt" 2>&1
-echo "=== aplay -L ===" >> "$SCRIPT_DIR/alsa_info.txt" 2>&1
-echo "=== /etc/asound.conf ===" >> "$SCRIPT_DIR/alsa_info.txt"
-cat /etc/asound.conf >> "$SCRIPT_DIR/alsa_info.txt" 2>&1
-echo "=== /proc/asound/cards ===" >> "$SCRIPT_DIR/alsa_info.txt"
-cat /proc/asound/cards >> "$SCRIPT_DIR/alsa_info.txt" 2>&1
-
 # Launch the app
 LOGFILE="$SCRIPT_DIR/tubelite.log"
 BINARIES=(
