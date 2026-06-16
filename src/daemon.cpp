@@ -59,8 +59,8 @@ static float overlay_alpha = 0.0f;
 static bool overlay_active = false;
 static float daemon_overlay_timer = 0.0f;
 
-static const int card_w = 320;
-static const int card_h = 96;
+static const int card_w = 360;
+static const int card_h = 110;
 static const int card_y = 12;  // vertical position on screen
 
 static inline uint8_t fade(uint8_t a)
@@ -404,14 +404,14 @@ static void renderCard(MpvPlayer& mpv) {
     // Drop shadow (offset 2px down-right, slightly inset)
     drawRoundedRect(2, 2, card_w - 2, card_h - 2, 8,  0,  0,  0,  fade(80));
 
-    // Red border
-    drawRoundedRect(0, 0, card_w,     card_h,     9, 255, 48, 48, fade(200));
+    // Red border (fully opaque to block background bleeding through)
+    drawRoundedRect(0, 0, card_w,     card_h,     9, 255, 48, 48, fade(255));
 
-    // Dark card fill (inset 1px from border)
-    drawRoundedRect(1, 1, card_w - 2, card_h - 2, 8,  26, 28, 32, fade(245));
+    // Dark card fill (inset 1px from border, fully opaque to block background bleeding through)
+    drawRoundedRect(1, 1, card_w - 2, card_h - 2, 8,  26, 28, 32, fade(255));
 
     // Thin red top accent
-    drawRect(2, 2, card_w - 4, 2, 255, 48, 48, fade(160));
+    drawRect(2, 2, card_w - 4, 2, 255, 48, 48, fade(255));
 
     if (daemon_current_index < 0 ||
         daemon_current_index >= (int)daemon_playlist.size()) {
@@ -421,9 +421,9 @@ static void renderCard(MpvPlayer& mpv) {
     const auto& video = daemon_playlist[daemon_current_index];
 
     // Title
-    drawText(truncateText(video.title,  32), 10, 8,  12, 240, 242, 245, fade(255));
+    drawText(truncateText(video.title,  32), 10, 10, 14, 240, 242, 245, fade(255));
     // Author
-    drawText(truncateText(video.author, 38), 10, 23, 10, 154, 165, 184, fade(255));
+    drawText(truncateText(video.author, 38), 10, 28, 11, 154, 165, 184, fade(255));
 
     // Status badge (top-right)
     std::string statStr = "PLAYING";
@@ -431,7 +431,7 @@ static void renderCard(MpvPlayer& mpv) {
     if      (daemon_status == DaemonStatus::Resolving) { statStr="LOADING"; sr=64;  sg=148; sb=255; }
     else if (daemon_status == DaemonStatus::Paused)    { statStr="PAUSED";  sr=255; sg=214; sb=64;  }
     else if (daemon_status == DaemonStatus::Error)     { statStr="ERROR";   sr=255; sg=48;  sb=48;  }
-    drawText(statStr, card_w - 65, 8, 10, sr, sg, sb, fade(255));
+    drawText(statStr, card_w - 75, 10, 11, sr, sg, sb, fade(255));
 
     // Progress bar
     double pos  = mpv.getPlaybackTime();
@@ -439,23 +439,23 @@ static void renderCard(MpvPlayer& mpv) {
                                            : (double)video.duration_seconds;
     double frac = (dur > 0.0) ? std::max(0.0, std::min(1.0, pos / dur)) : 0.0;
 
-    const int barX = 10, barY = 41, barW = card_w - 20, barH = 4;
-    drawRect(barX, barY, barW, barH, 42, 48, 56, fade(200));
+    const int barX = 10, barY = 47, barW = card_w - 20, barH = 5;
+    drawRect(barX, barY, barW, barH, 42, 48, 56, fade(255));
     if (frac > 0.0)
         drawRect(barX, barY, (int)(barW * frac), barH, 255, 48, 48, fade(255));
 
     // Timestamp
     std::string timeStr = formatTime(pos) + " / " +
         (video.duration_string.empty() ? formatTime(dur) : video.duration_string);
-    drawText(timeStr, 10, 49, 9, 220, 220, 232, fade(255));
+    drawText(timeStr, 10, 56, 10, 220, 220, 232, fade(255));
 
     // Button hint row 1
-    drawText("L3+A Pause      L3+B Exit",
-             10, 63, 9, 160, 160, 172, fade(255));
+    drawText("FN+A Pause      FN+B Exit",
+             10, 72, 10, 160, 160, 172, fade(255));
 
     // Button hint row 2
-    drawText("L3+L1 Prev      L3+R1 Next",
-             10, 77, 9, 160, 160, 172, fade(255));
+    drawText("FN+L1 Prev      FN+R1 Next",
+             10, 88, 10, 160, 160, 172, fade(255));
 
     commitOverlay();
 }
@@ -509,7 +509,7 @@ void runDaemon() {
     playCurrentTrack(mpv, yt);
 
     auto last_tick    = std::chrono::steady_clock::now();
-    bool l3_held      = false;
+    bool fn_held      = false;
     bool dpad_up_held = false;
 
     // Track last rendered progress to avoid unnecessary redraws while hidden
@@ -566,13 +566,13 @@ void runDaemon() {
                 if (ev.type == EV_KEY) {
                     bool down = (ev.value != 0);
 
-                    // Track L3 state (code 706)
-                    if (ev.code == 706) {
-                        l3_held = down;
+                    // Track Fn state (code 708)
+                    if (ev.code == 708) {
+                        fn_held = down;
                     }
 
                     // Hotkeys on button down (value == 1)
-                    if (down && l3_held) {
+                    if (down && fn_held) {
                         if (ev.code == 305) { // A → pause/resume
                             if (daemon_status == DaemonStatus::Playing) {
                                 mpv.pause();
@@ -597,13 +597,17 @@ void runDaemon() {
                                 (daemon_current_index + 1) % (int)daemon_playlist.size();
                             playCurrentTrack(mpv, yt);
                             last_render_pos = -1.0;
+                        } else if (ev.code == 103 || ev.code == 544) { // UP (KEY_UP = 103, BTN_DPAD_UP = 544) → show overlay
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
+                            last_render_pos = -1.0;
                         }
                     }
                 } else if (ev.type == EV_ABS) {
                     if (ev.code == 17) { // ABS_HAT0Y (DPAD vertical)
                         bool new_dpad_up = (ev.value < 0);
                         if (new_dpad_up && !dpad_up_held) { // transition to pressed
-                            if (l3_held) {
+                            if (fn_held) {
                                 daemon_overlay_timer = 5.0f;
                                 overlay_active = true;
                                 last_render_pos = -1.0;
@@ -657,7 +661,7 @@ void runDaemon() {
         if (overlay_alpha > 0.0f && overlay_alpha < 1.0f) {
             timeout = 16; // smooth fade animation
         } else if (overlay_active) {
-            timeout = 250; // overlay visible
+            timeout = 100; // overlay visible
         }
 
 #ifndef _WIN32
