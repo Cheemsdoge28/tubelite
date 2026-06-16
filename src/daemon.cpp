@@ -332,16 +332,16 @@ static void drawText(const std::string& text, int x, int y, int fontSize, uint8_
     int pen_y = y + fontSize;
     
     for (size_t i = 0; i < text.size(); ++i) {
-        uint32_t codepoint = text[i];
+        uint32_t codepoint = static_cast<uint8_t>(text[i]);
         if ((codepoint & 0x80) != 0) {
             if ((codepoint & 0xE0) == 0xC0) {
                 if (i + 1 < text.size()) {
-                    codepoint = ((codepoint & 0x1F) << 6) | (text[i+1] & 0x3F);
+                    codepoint = ((codepoint & 0x1F) << 6) | (static_cast<uint8_t>(text[i+1]) & 0x3F);
                     i += 1;
                 }
             } else if ((codepoint & 0xF0) == 0xE0) {
                 if (i + 2 < text.size()) {
-                    codepoint = ((codepoint & 0x0F) << 12) | ((text[i+1] & 0x3F) << 6) | (text[i+2] & 0x3F);
+                    codepoint = ((codepoint & 0x0F) << 12) | ((static_cast<uint8_t>(text[i+1]) & 0x3F) << 6) | (static_cast<uint8_t>(text[i+2]) & 0x3F);
                     i += 2;
                 }
             }
