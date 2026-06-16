@@ -166,6 +166,11 @@ config:
 	@echo "Target: $(BUILD_TARGET)"
 	@echo ""
 
-.PHONY: all strip install clean arm64 windows native config
+probe-planes: check_compiler
+	@mkdir -p $(BUILD_DIR)
+	$(CXX) -std=c++17 -O2 -Wall src/probe_planes.cpp $$(pkg-config --cflags --libs libdrm 2>/dev/null || echo "-I/usr/include/libdrm -ldrm") -o $(BUILD_DIR)/probe_planes
+	@echo "Build complete: $(BUILD_DIR)/probe_planes"
+
+.PHONY: all strip install clean arm64 windows native config probe-planes
 
 -include $(DEP)
