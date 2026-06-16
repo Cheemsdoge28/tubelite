@@ -236,11 +236,45 @@ if [ "$DO_DEPS" -eq 1 ]; then
     
     log_info "Verifying dependencies..."
     MISSING_DEPS=""
-    for dep in python3 yt-dlp; do
-        if ! command -v "$dep" &>/dev/null; then
-            MISSING_DEPS="$MISSING_DEPS $dep"
-        fi
-    done
+    
+    # Check python3
+    if ! command -v python3 &>/dev/null; then
+        MISSING_DEPS="python3"
+    fi
+    
+    # Check yt-dlp installation: prioritize the pre-included local version
+    YT_DLP_FOUND=0
+    if [ -f "$SCRIPT_DIR/bin/yt-dlp" ]; then
+        log_info "Installing pre-included stable yt-dlp (2026.03.13)..."
+        cp -f "$SCRIPT_DIR/bin/yt-dlp" /usr/local/bin/yt-dlp
+        chmod a+rx /usr/local/bin/yt-dlp
+        YT_DLP_FOUND=1
+    elif command -v yt-dlp &>/dev/null; then
+        YT_DLP_FOUND=1
+    elif [ -x "/usr/local/bin/yt-dlp" ]; then
+        YT_DLP_FOUND=1
+    elif [ -x "/usr/bin/yt-dlp" ]; then
+        YT_DLP_FOUND=1
+    fi
+    
+    if [ "$YT_DLP_FOUND" -eq 0 ]; then
+        # Try to install it automatically to /usr/local/bin/yt-dlp from the web if local copy is missing
+        log_info "yt-dlp not found. Downloading the latest version..."
+        wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp || \
+        curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+        chmod a+rx /usr/local/bin/yt-dlp
+    fi
+    
+    # Verify installation
+    if [ -x "/usr/local/bin/yt-dlp" ]; then
+        log_ok "yt-dlp verified at /usr/local/bin/yt-dlp"
+    elif command -v yt-dlp &>/dev/null; then
+        log_ok "yt-dlp verified in PATH"
+    elif [ -x "/usr/bin/yt-dlp" ]; then
+        log_ok "yt-dlp verified at /usr/bin/yt-dlp"
+    else
+        MISSING_DEPS="$MISSING_DEPS yt-dlp"
+    fi
     
     if [ -n "$MISSING_DEPS" ]; then
         log_err "Failed to verify some critical runtime dependencies:$MISSING_DEPS"
@@ -260,14 +294,24 @@ if [ "$DO_BINARY" -eq 1 ]; then
     fi
 
     if [ -z "$APP_BIN" ]; then
-        log_info "Compiling natively..."
+        log_info "No pre-built binary found. Compiling natively..."
         BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libfreetype6-dev libharfbuzz-dev libmpv-dev"
         BUILD_APT_FLAGS="-y"
         if [ "${REINSTALL_DEPS:-0}" = "1" ]; then BUILD_APT_FLAGS="$BUILD_APT_FLAGS --reinstall"; fi
+        log_info "Installing build dependencies..."
         apt-get install $BUILD_APT_FLAGS $BUILD_DEPS || true
         cd "$SCRIPT_DIR"
+        log_info "Running make native..."
         make native || true
-        APP_BIN="$SCRIPT_DIR/build/tubelite"
+        
+        if [ -f "$SCRIPT_DIR/build/tubelite" ]; then
+            APP_BIN="$SCRIPT_DIR/build/tubelite"
+        elif [ -f "$SCRIPT_DIR/build/tubelite.arm64" ]; then
+            APP_BIN="$SCRIPT_DIR/build/tubelite.arm64"
+        else
+            log_err "Compilation failed. Native binary could not be built."
+            exit 1
+        fi
     fi
     chmod +x "$APP_BIN" 2>/dev/null || true
     strip "$APP_BIN" 2>/dev/null || true

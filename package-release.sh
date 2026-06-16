@@ -37,6 +37,10 @@ BINARY_PATH="$(pick_binary)"
 copy_file "$SCRIPT_DIR/Install-TubeLite.sh" "$APP_DIR/Install-TubeLite.sh"
 copy_file "$SCRIPT_DIR/TubeLite.tbl" "$APP_DIR/TubeLite.tbl"
 copy_file "$BINARY_PATH" "$APP_DIR/bin/tubelite.arm64"
+if [ -f "$SCRIPT_DIR/bin/yt-dlp" ]; then
+    copy_file "$SCRIPT_DIR/bin/yt-dlp" "$APP_DIR/bin/yt-dlp"
+fi
+
 
 # Include controller menu scripts
 mkdir -p "$APP_DIR/scripts"
