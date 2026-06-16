@@ -192,6 +192,33 @@ void App::run() {
         
         processMainThreadQueue();
         
+        // Handle Playback HUD timeout and fadeout
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            double remaining = duration<float>(playback_ui_timeout_ - start).count();
+            if (state_.isLoadingVideo || state_.isScrubbing) {
+                playback_ui_timeout_ = start + seconds(5);
+                if (!state_.showUi) {
+                    state_.showUi = true;
+                    uiDirty_ = true;
+                }
+            } else {
+                if (remaining > 0.0f) {
+                    if (!state_.showUi) {
+                        state_.showUi = true;
+                        uiDirty_ = true;
+                    }
+                    if (remaining < 0.5f) {
+                        uiDirty_ = true;
+                    }
+                } else {
+                    if (state_.showUi && !state_.showDescriptionDrawer) {
+                        state_.showUi = false;
+                        uiDirty_ = true;
+                    }
+                }
+            }
+        }
+
         if (state_.currentScreen != TubeState::Screen::Playback) {
             if (image_manager_ && image_manager_->update()) {
                 uiDirty_ = true;
@@ -218,7 +245,7 @@ void App::run() {
             uiDirty_ = true;
         }
         
-        bool active = uiDirty_ || gridScrolling || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo;
+        bool active = uiDirty_ || gridScrolling || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo || (state_.currentScreen == TubeState::Screen::Playback && state_.showUi);
         if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
             active = true;
         }
@@ -766,6 +793,8 @@ void App::updateSticks(float dt) {
         } else {
             if (state_.isScrubbing) {
                 mpv_player_.seekAbsoluteKeyframes(state_.scrubTargetTime);
+                last_seek_time_ = state_.scrubTargetTime;
+                last_seek_time_point_ = std::chrono::steady_clock::now();
                 mpv_player_.resume();
                 play_flash_start_time_ = SDL_GetTicks();
                 state_.isScrubbing = false;
@@ -872,6 +901,9 @@ void App::handleKeyUp(SDL_Keycode key) {
 }
 
 void App::handleKey(SDL_Keycode key) {
+    if (state_.currentScreen == TubeState::Screen::Playback) {
+        showPlaybackUi();
+    }
     if (key == SDLK_TAB || key == SDLK_F3 || key == SDLK_LSHIFT) {
         select_held_ = true;
         select_action_triggered_ = false;
@@ -1047,6 +1079,9 @@ void App::handleKey(SDL_Keycode key) {
 }
 
 void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
+    if (down && state_.currentScreen == TubeState::Screen::Playback) {
+        showPlaybackUi();
+    }
     if (button == SDL_CONTROLLER_BUTTON_BACK) {
         select_held_ = down;
         if (down) {
@@ -1118,17 +1153,6 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         } else {
             openKeyboard();
         }
-    } else if (button == SDL_CONTROLLER_BUTTON_START) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            if (mpv_player_.isPlaying()) {
-                mpv_player_.pause();
-                showPlaybackToast("Paused");
-            } else {
-                mpv_player_.resume();
-                showPlaybackToast("Playing");
-            }
-            uiDirty_ = true;
-        }
     } else if (button == SDL_CONTROLLER_BUTTON_A) {
         if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.clickFocused();
@@ -1157,10 +1181,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_manager_.transitionTo(TubeState::Screen::Home);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleStatsOverlay();
-            showPlaybackToast("Stats Overlay");
-        } else if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
+        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
             if (state_.maxQualityHeight == 240) state_.maxQualityHeight = 360;
             else if (state_.maxQualityHeight == 360) state_.maxQualityHeight = 480;
             else if (state_.maxQualityHeight == 480) state_.maxQualityHeight = 720;
@@ -1179,8 +1200,13 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_LEFTSTICK) {
-        state_.showDebugOverlay = !state_.showDebugOverlay;
-        uiDirty_ = true;
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            mpv_player_.cycleStatsOverlay();
+            showPlaybackToast("Stats Overlay");
+        } else {
+            state_.showDebugOverlay = !state_.showDebugOverlay;
+            uiDirty_ = true;
+        }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showDescriptionDrawer) {

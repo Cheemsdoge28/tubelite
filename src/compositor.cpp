@@ -4,6 +4,7 @@
 #include "ui_framework.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 static std::string truncateTextToWidth(const std::string& text, int scale, int maxWidth) {
     int w = 0;
     getTextSize(text, scale, &w, nullptr);
@@ -232,12 +233,48 @@ void Compositor::render(App* app, int width, int height) {
             std::string authorTxt = truncateTextToWidth(app->current_video_.author, 1, mW - 16);
             drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 22, authorTxt, 1, {154, 165, 184, 255});
 
-            // Row 3: Interactive button hints (rendered centered using drawHintButtons)
-            std::vector<HintItem> miniHints = {
-                {"SEL+A", {255, 48, 48, 255}, playing ? "PAUSE" : "PLAY"},
-                {"SEL+B", {255, 214, 64, 255}, "CLOSE"}
-            };
-            drawHintButtons(renderer_, miniHints, 2 + mVH + 38, 18, 1, mW + 4, {42, 48, 56, 255}, {52, 58, 70, 255}, {214, 220, 230, 255});
+            // Row 3: Centered compact hint buttons
+            std::string btnB = "SEL+B";
+            std::string actB = "CLOSE";
+            std::string btnA = "SEL+A";
+            std::string actA = playing ? "PAUSE" : "PLAY";
+
+            int btnBW = 0, actBW = 0, btnAW = 0, actAW = 0;
+            int fh = 0;
+            getTextSize(btnB, 1, &btnBW, &fh);
+            getTextSize(actB, 1, &actBW, nullptr);
+            getTextSize(btnA, 1, &btnAW, nullptr);
+            getTextSize(actA, 1, &actAW, nullptr);
+
+            int pillPad = 6;
+            int labelGap = 4;
+            int buttonGap = 12;
+
+            int pillBW = btnBW + pillPad;
+            int pillAW = btnAW + pillPad;
+
+            int itemBW = pillBW + labelGap + actBW;
+            int itemAW = pillAW + labelGap + actAW;
+
+            int totalW = itemAW + buttonGap + itemBW;
+            int startX = (mW + 4 - totalW) / 2;
+            int row3Y = 2 + mVH + 38;
+            int pillH = 14;
+
+            // Draw SEL+A
+            SDL_Rect pillARect{startX, row3Y, pillAW, pillH};
+            fillRoundedRect(renderer_, pillARect, 3, {42, 48, 56, 255});
+            drawRoundedRect(renderer_, pillARect, 3, {52, 58, 70, 255});
+            drawText(renderer_, startX + pillPad / 2, row3Y + (pillH - fh) / 2 - 1, btnA, 1, {255, 48, 48, 255}); // Red
+            drawText(renderer_, startX + pillAW + labelGap, row3Y + (pillH - fh) / 2 - 1, actA, 1, {214, 220, 230, 255});
+
+            // Draw SEL+B
+            int startBX = startX + itemAW + buttonGap;
+            SDL_Rect pillBRect{startBX, row3Y, pillBW, pillH};
+            fillRoundedRect(renderer_, pillBRect, 3, {42, 48, 56, 255});
+            drawRoundedRect(renderer_, pillBRect, 3, {52, 58, 70, 255});
+            drawText(renderer_, startBX + pillPad / 2, row3Y + (pillH - fh) / 2 - 1, btnB, 1, {255, 214, 64, 255}); // Yellow
+            drawText(renderer_, startBX + pillBW + labelGap, row3Y + (pillH - fh) / 2 - 1, actB, 1, {214, 220, 230, 255});
 
             miniplayer_layer_.end(renderer_);
 
@@ -465,6 +502,20 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
 }
 
 void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
+    using namespace std::chrono;
+    auto now = steady_clock::now();
+    double remaining = duration<double>(app->playback_ui_timeout_ - now).count();
+    int opacity = 255;
+    if (app->state_.showDescriptionDrawer) {
+        opacity = 255;
+    } else if (remaining <= 0.0) {
+        opacity = 0;
+    } else if (remaining < 0.5) {
+        opacity = static_cast<int>(255.0 * (remaining / 0.5));
+        if (opacity < 0) opacity = 0;
+        if (opacity > 255) opacity = 255;
+    }
+
     double pos    = app->mpv_player_.getPlaybackTime();
     double dur    = app->mpv_player_.getDuration();
     bool   playing = app->mpv_player_.isPlaying();
@@ -479,7 +530,17 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         return buf;
     };
 
-    const double displayTime = app->state_.isScrubbing ? app->state_.scrubTargetTime : pos;
+    double displayTime = pos;
+    if (app->state_.isScrubbing) {
+        displayTime = app->state_.scrubTargetTime;
+    } else if (app->last_seek_time_.has_value()) {
+        auto elapsed_ms = duration_cast<milliseconds>(now - app->last_seek_time_point_).count();
+        if (elapsed_ms < 800 && std::abs(pos - app->last_seek_time_.value()) >= 1.0) {
+            displayTime = app->last_seek_time_.value();
+        } else {
+            app->last_seek_time_ = std::nullopt;
+        }
+    }
     const double frac        = (dur > 0.0) ? std::max(0.0, std::min(1.0, displayTime / dur)) : 0.0;
 
     // Initialize or resize HUD layer if needed
@@ -639,7 +700,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // Progress bar
     const int mg  = 14;
-    const int pbY = height - botH + 10;
+    const int pbY = height - botH + 5;
     const int pbH = 6;
     const int pbW = width - mg * 2;
 
@@ -782,26 +843,27 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     const SDL_Color blue{64, 148, 255, 255};
     const SDL_Color yellow{255, 214, 64, 255};
     const SDL_Color green{64, 214, 96, 255};
+    const SDL_Color purple{191, 64, 255, 255};
     const SDL_Color panel{24, 28, 34, 200};
 
     std::vector<HintItem> activeHints;
     if (app->state_.showDescriptionDrawer) {
         activeHints = {
-            {"START", red, playing ? "PAUSE" : "PLAY"},
+            {"A", red, playing ? "PAUSE" : "PLAY"},
             {"B", yellow, "CLOSE"},
             {"UP/DOWN", textColor, "SCROLL"},
-            {"FN+A", red, "TOGGLE DESC"},
+            {"FN+A", purple, "TOGGLE DESC"},
             {"L1/R1", textColor, "SPEED"},
             {"L2/R2", textColor, "VOL"}
         };
     } else {
         activeHints = {
-            {"START", red, playing ? "PAUSE" : "PLAY"},
+            {"A", red, playing ? "PAUSE" : "PLAY"},
             {"B", yellow, "EXIT"},
-            {"FN+A", red, "DESC"},
-            {"SELECT", textColor, "MINI"},
+            {"FN+A", purple, "DESC"},
+            {"SEL", textColor, "MINI"},
             {"Y", green, "SUBS"},
-            {"X", blue, "STATS"},
+            {"L3", blue, "STATS"},
             {"L1/R1", textColor, "SPEED"},
             {"L2/R2", textColor, "VOL"}
         };
@@ -812,6 +874,6 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     hud_layer_.end(renderer_);
 
-    // Copy HUD onto screen
-    hud_layer_.present(renderer_);
+    // Copy HUD onto screen with smooth fade-out opacity
+    hud_layer_.present(renderer_, opacity);
 }

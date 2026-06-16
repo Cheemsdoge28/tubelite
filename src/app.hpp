@@ -145,6 +145,8 @@ private:
     float current_fps_{0.0f};
     float render_latency_ms_{0.0f};
     VideoPlaybackMetadata active_video_metadata_;
+    std::optional<double> last_seek_time_;
+    std::chrono::steady_clock::time_point last_seek_time_point_;
     std::vector<std::string> wrapped_description_lines_;
     int description_scroll_row_{0};
     bool select_held_{false};
