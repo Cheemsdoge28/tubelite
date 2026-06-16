@@ -163,6 +163,12 @@ private:
     void loadHistory();
     void addToHistory(const YouTubeVideo& video);
 
+    void saveSettings();
+    void loadSettings();
+    void saveDaemonQueue();
+    void playNextTrack();
+    void playPreviousTrack();
+
     void saveHomeCache();
     bool loadHomeCache();
 

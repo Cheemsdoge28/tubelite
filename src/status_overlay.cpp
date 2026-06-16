@@ -76,6 +76,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     {"B", yellow, "BACK"},
                     {"Y", green, "SEARCH"},
                     {"X", blue, std::to_string(state.maxQualityHeight) + "P"},
+                    {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
                     {"R3", textColor, "RELOAD"},
                     {"R1", textColor, "UI"}
                 };

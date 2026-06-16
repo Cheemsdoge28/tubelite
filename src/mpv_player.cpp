@@ -198,6 +198,36 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     return true;
 }
 
+bool MpvPlayer::initializeAudioOnly() {
+    std::cerr << "[mpv] mpv_create (audio only)...\n";
+    mpv_ = mpv_create();
+    if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
+
+    mpv_set_option_string(mpv_, "video",                  "no");
+    mpv_set_option_string(mpv_, "ao",                     "alsa");
+    mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
+    mpv_set_option_string(mpv_, "osc",                    "no");
+    mpv_set_option_string(mpv_, "input-default-bindings", "no");
+    mpv_set_option_string(mpv_, "input-vo-keyboard",      "no");
+    mpv_set_option_string(mpv_, "cache",                  "yes");
+    mpv_set_option_string(mpv_, "network-timeout",        "5");
+    mpv_set_option_string(mpv_, "demuxer-max-bytes",      "50MiB");
+    mpv_set_option_string(mpv_, "demuxer-readahead-secs", "20");
+    mpv_set_option_string(mpv_, "user-agent",             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    mpv_set_option_string(mpv_, "ytdl-raw-options",       "no-check-certificate=");
+
+    std::cerr << "[mpv] mpv_initialize...\n";
+    if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
+
+    mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "pause",     MPV_FORMAT_FLAG);
+
+    std::cerr << "[mpv] audio-only initialize complete\n";
+    is_playing_ = true;
+    return true;
+}
+
 
 
 void MpvPlayer::shutdown() {

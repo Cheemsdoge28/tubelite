@@ -27,6 +27,7 @@ struct TubeState {
     bool showDebugOverlay{false};
     bool miniplayerActive{false};
     bool showDescriptionDrawer{false};
+    bool backgroundDaemonEnabled{true};
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};

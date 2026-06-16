@@ -165,6 +165,8 @@ bool App::initialize() {
         logError("MPV init failed");
         return false;
     }
+    loadSettings();
+    killExistingDaemon();
     loadHistory();
     loadHomeFeeds();
     SDL_StartTextInput();
@@ -308,7 +310,12 @@ void App::run() {
         
         // Clamp to prevent runaway accumulation during load stalls/crashes
         if (sleep_error_accum < -0.05f) sleep_error_accum = -0.05f;
-        if (sleep_error_accum > 0.05f)  sleep_error_accum = 0.05f;
+    }
+
+    saveSettings();
+    if (state_.backgroundDaemonEnabled && (mpv_player_.isPlaying() || state_.currentScreen == TubeState::Screen::Playback)) {
+        saveDaemonQueue();
+        spawnDaemon();
     }
 }
 
