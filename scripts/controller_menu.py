@@ -6,10 +6,10 @@ def main():
     
     options = [
         "Full Install (Recommended)",
-        "Browser Only (No Theme)",
+        "App Only (No Theme)",
         "Theme Only",
         "Uninstall Everything",
-        "Uninstall Browser Only",
+        "Uninstall App Only",
         "Uninstall Theme Only",
         "Exit"
     ]
@@ -29,7 +29,7 @@ def main():
     def print_menu():
         # Clear screen and print UI to stdout
         sys.stdout.write("\033[H\033[J")
-        sys.stdout.write("\033[1m=== Fire4ArkOS Installer ===\033[0m\n\n")
+        sys.stdout.write("\033[1m=== TubeLite Installer ===\033[0m\n\n")
         sys.stdout.write("Use DPAD to move, A to select.\n\n")
         for i, opt in enumerate(options):
             if i == selected:

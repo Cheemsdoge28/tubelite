@@ -5,10 +5,10 @@ import re
 import sys
 
 SYSTEM_BLOCK = '''  <system>
-    <name>fire4arkos</name>
-    <fullname>Fire4ArkOS Browser</fullname>
+    <name>tubelite</name>
+    <fullname>TubeLite YouTube Client</fullname>
     <path>{install_dir}</path>
-    <extension>.f4a</extension>
+    <extension>.tbl</extension>
     <command>bash %ROM%</command>
     <platform>{platform_tag}</platform>
     <theme>{theme_name}</theme>
@@ -16,18 +16,17 @@ SYSTEM_BLOCK = '''  <system>
 '''
 
 
-def insert_system(filename, install_dir, platform_tag='fire4arkos', theme_name='fire4arkos'):
+def insert_system(filename, install_dir, platform_tag='tubelite', theme_name='tubelite'):
     filename = Path(filename)
     with open(filename, encoding='utf-8') as fh:
         ctx = fh.read()
 
-    # Check if fire4arkos already exists and remove the old entry first
-    if re.search(r'<name>fire4arkos</name>', ctx):
-        print(f'fire4arkos already present in {filename} — removing old entry for update')
-        # Remove the old system block: from <!-- Fire4ArkOS to </system>
-        ctx = re.sub(r'\s*<!-- Fire4ArkOS.*?</system>', '', ctx, flags=re.DOTALL)
-        # Also try to remove with just name check in case no comment exists
-        ctx = re.sub(r'\s*<system>\s*<name>fire4arkos</name>.*?</system>', '', ctx, flags=re.DOTALL)
+    # Clean up both legacy fire4arkos and existing tubelite entries
+    for sys_name in ['fire4arkos', 'tubelite']:
+        if re.search(r'<name>' + sys_name + r'</name>', ctx):
+            print(f'{sys_name} already present in {filename} — removing old entry for update')
+            ctx = re.sub(r'\s*<!-- ' + sys_name.capitalize() + r'.*?</system>', '', ctx, flags=re.DOTALL)
+            ctx = re.sub(r'\s*<system>\s*<name>' + sys_name + r'</name>.*?</system>', '', ctx, flags=re.DOTALL)
 
     system_block = SYSTEM_BLOCK.format(
         install_dir=install_dir,
@@ -38,7 +37,7 @@ def insert_system(filename, install_dir, platform_tag='fire4arkos', theme_name='
     if not re.search(r'</systemList>', ctx):
         raise RuntimeError(f'Failed to find </systemList> in {filename}')
 
-    backup = filename.with_name(filename.name + '.bak.fire4arkos')
+    backup = filename.with_name(filename.name + '.bak.tubelite')
     filename.rename(backup)
 
     ctx = re.sub(r'</systemList>', system_block + r'\g<0>', ctx)
@@ -51,11 +50,11 @@ def insert_system(filename, install_dir, platform_tag='fire4arkos', theme_name='
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Insert Fire4ArkOS into EmulationStation config')
+    parser = argparse.ArgumentParser(description='Insert TubeLite into EmulationStation config')
     parser.add_argument('--cfg-file', dest='cfg_file', action='store', type=str, default='/etc/emulationstation/es_systems.cfg', help='cfg file to process')
-    parser.add_argument('--install-dir', dest='install_dir', action='store', type=str, default='/roms/tools/fire4arkos', help='Install directory for the Fire4ArkOS package')
-    parser.add_argument('--platform-tag', dest='platform_tag', action='store', type=str, default='fire4arkos', help='Platform tag to register')
-    parser.add_argument('--theme-name', dest='theme_name', action='store', type=str, default='fire4arkos', help='Theme name to register')
+    parser.add_argument('--install-dir', dest='install_dir', action='store', type=str, default='/roms/tools/tubelite', help='Install directory for the TubeLite package')
+    parser.add_argument('--platform-tag', dest='platform_tag', action='store', type=str, default='tubelite', help='Platform tag to register')
+    parser.add_argument('--theme-name', dest='theme_name', action='store', type=str, default='tubelite', help='Theme name to register')
     args = parser.parse_args()
 
     try:
