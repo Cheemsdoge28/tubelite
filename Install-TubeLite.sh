@@ -323,7 +323,7 @@ if [ "$DO_DEPS" -eq 1 ]; then
     if [ "$REINSTALL_DEPS" = "1" ]; then
         APT_FLAGS="$APT_FLAGS --reinstall"
         log_info "Forcing full system header & developer tools restore ritual..."
-        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev"
+        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev"
         apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
     fi
 
@@ -405,7 +405,7 @@ if [ "$DO_BINARY" -eq 1 ]; then
 
     if [ -z "$APP_BIN" ]; then
         log_info "No pre-built binary found. Compiling natively..."
-        BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libfreetype6-dev libharfbuzz-dev libmpv-dev"
+        BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libfreetype6-dev libharfbuzz-dev libmpv-dev libdrm-dev"
         # --no-install-recommends is CRITICAL: build tools have recommended deps that
         # can pull in full GNOME stacks (via ghostscript, libgs-dev chains).
         BUILD_APT_FLAGS="-y --no-install-recommends"
@@ -422,11 +422,17 @@ if [ "$DO_BINARY" -eq 1 ]; then
             apt-get install -y --no-install-recommends --reinstall libfreetype6-dev || true
         fi
 
+        # Check for missing DRM headers on filesystem (often deleted on handheld OS images)
+        if [ ! -f "/usr/include/libdrm/drm.h" ] || [ ! -f "/usr/include/xf86drm.h" ]; then
+            log_warn "DRM headers (drm.h/xf86drm.h) missing from filesystem. Restoring libdrm-dev..."
+            apt-get install -y --no-install-recommends --reinstall libdrm-dev || true
+        fi
+
         # Check for missing core C/C++ or SDL2 headers on filesystem
         if [ ! -f "/usr/include/features.h" ] || [ ! -f "/usr/include/SDL2/SDL.h" ]; then
             log_warn "Core C/C++ or SDL2 development headers are missing from filesystem."
             log_warn "Running header file restore ritual to repair the compilation environment..."
-            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev"
+            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev"
             apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
         fi
         
