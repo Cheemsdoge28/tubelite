@@ -163,7 +163,7 @@ void Compositor::render(App* app, int width, int height) {
     if (app->state_.miniplayerActive) {
         const int mW  = 240;
         const int mVH = 135;   // video area height
-        const int mSH = 48;    // details/title strip height
+        const int mSH = 60;    // details/title strip height
         const int mH  = mVH + mSH;
         const int mX  = width  - mW - 16;
         const int mY  = height - 60 - mH - 12; // float above 60px bottom panel
@@ -224,49 +224,20 @@ void Compositor::render(App* app, int width, int height) {
             SDL_Rect divider{2, 2 + mVH, mW, 1};
             SDL_RenderFillRect(renderer_, &divider);
 
-            // Truncate title to fit the strip (only computed on dirty)
+            // Row 1: Title (Truncated to fit, centered)
             std::string titleTxt = truncateTextToWidth(app->current_video_.title, 1, mW - 16);
-            drawTextShadow(renderer_, 8, 2 + mVH + 6, titleTxt, 1, {240, 242, 245, 255});
+            drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 6, titleTxt, 1, {240, 242, 245, 255}, true);
 
-            // Channel name - left aligned in row 2
-            std::string authorTxt = truncateTextToWidth(app->current_video_.author, 1, 100);
-            drawText(renderer_, 8, 2 + mVH + 24, authorTxt, 1, {154, 165, 184, 255});
+            // Row 2: Channel name (Truncated, centered)
+            std::string authorTxt = truncateTextToWidth(app->current_video_.author, 1, mW - 16);
+            drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 22, authorTxt, 1, {154, 165, 184, 255});
 
-            // Interactive button hints - right aligned in row 2
-            int rightX = mW + 4 - 8;
-            int row2Y = 2 + mVH + 24;
-
-            // Hint B: Close
-            std::string closeLabel = "Close";
-            int closeLabelW = 0;
-            getTextSize(closeLabel, 1, &closeLabelW, nullptr);
-            int badgeBW = 14;
-            int badgeBH = 12;
-            int badgeBX = rightX - closeLabelW - 4 - badgeBW;
-
-            SDL_Rect rectB{badgeBX, row2Y + 1, badgeBW, badgeBH};
-            fillRoundedRect(renderer_, rectB, 3, {255, 214, 64, 40});
-            drawRoundedRect(renderer_, rectB, 3, {255, 214, 64, 140});
-            int charBW = 0, charBH = 0;
-            getTextSize("B", 1, &charBW, &charBH);
-            drawText(renderer_, badgeBX + (badgeBW - charBW) / 2, row2Y + 1 + (badgeBH - charBH) / 2 - 1, "B", 1, {255, 214, 64, 255});
-            drawText(renderer_, badgeBX + badgeBW + 4, row2Y, closeLabel, 1, {160, 165, 175, 255});
-
-            // Hint A: Play/Pause
-            std::string playLabel = playing ? "Pause" : "Play";
-            int playLabelW = 0;
-            getTextSize(playLabel, 1, &playLabelW, nullptr);
-            int badgeAW = 14;
-            int badgeAH = 12;
-            int badgeAX = badgeBX - 8 - playLabelW - 4 - badgeAW;
-
-            SDL_Rect rectA{badgeAX, row2Y + 1, badgeAW, badgeAH};
-            fillRoundedRect(renderer_, rectA, 3, {255, 48, 48, 40});
-            drawRoundedRect(renderer_, rectA, 3, {255, 48, 48, 140});
-            int charAW = 0, charAH = 0;
-            getTextSize("A", 1, &charAW, &charAH);
-            drawText(renderer_, badgeAX + (badgeAW - charAW) / 2, row2Y + 1 + (badgeAH - charAH) / 2 - 1, "A", 1, {255, 48, 48, 255});
-            drawText(renderer_, badgeAX + badgeAW + 4, row2Y, playLabel, 1, {160, 165, 175, 255});
+            // Row 3: Interactive button hints (rendered centered using drawHintButtons)
+            std::vector<HintItem> miniHints = {
+                {"SEL+A", {255, 48, 48, 255}, playing ? "PAUSE" : "PLAY"},
+                {"SEL+B", {255, 214, 64, 255}, "CLOSE"}
+            };
+            drawHintButtons(renderer_, miniHints, 2 + mVH + 38, 18, 1, mW + 4, {42, 48, 56, 255}, {52, 58, 70, 255}, {214, 220, 230, 255});
 
             miniplayer_layer_.end(renderer_);
 
@@ -280,7 +251,27 @@ void Compositor::render(App* app, int width, int height) {
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mVH);
         if (previewTex) {
             SDL_Rect videoDst{mX + 2, mY + 2, mW, mVH};
-            SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
+            
+            // Calculate 16:9 source crop from the fullscreen texture to prevent stretching/squashing
+            int texW = 0, texH = 0;
+            SDL_QueryTexture(previewTex, nullptr, nullptr, &texW, &texH);
+            
+            SDL_Rect srcRect{0, 0, texW, texH};
+            if (texW > 0 && texH > 0) {
+                if (texW * 9 > texH * 16) {
+                    // Pillarboxed: crop width
+                    int cropW = texH * 16 / 9;
+                    srcRect.x = (texW - cropW) / 2;
+                    srcRect.w = cropW;
+                } else if (texW * 9 < texH * 16) {
+                    // Letterboxed: crop height
+                    int cropH = texW * 9 / 16;
+                    srcRect.y = (texH - cropH) / 2;
+                    srcRect.h = cropH;
+                }
+            }
+            
+            SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
             // Mask top rounded corners of the video frame to align with card corners
             maskRoundedCornersTop(renderer_, videoDst, 6, {15, 15, 15, 255});
         }
@@ -796,7 +787,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     std::vector<HintItem> activeHints;
     if (app->state_.showDescriptionDrawer) {
         activeHints = {
-            {"A", red, playing ? "PAUSE" : "PLAY"},
+            {"START", red, playing ? "PAUSE" : "PLAY"},
             {"B", yellow, "CLOSE"},
             {"UP/DOWN", textColor, "SCROLL"},
             {"FN+A", red, "TOGGLE DESC"},
@@ -805,7 +796,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         };
     } else {
         activeHints = {
-            {"A", red, playing ? "PAUSE" : "PLAY"},
+            {"START", red, playing ? "PAUSE" : "PLAY"},
             {"B", yellow, "EXIT"},
             {"FN+A", red, "DESC"},
             {"SELECT", textColor, "MINI"},

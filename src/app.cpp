@@ -1061,9 +1061,27 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
 
     if (down && select_held_) {
         if (button == SDL_CONTROLLER_BUTTON_A) {
-            if (state_.currentScreen == TubeState::Screen::Playback) {
+            if (state_.miniplayerActive) {
+                if (mpv_player_.isPlaying()) {
+                    mpv_player_.pause();
+                    showPlaybackToast("Paused");
+                } else {
+                    mpv_player_.resume();
+                    showPlaybackToast("Playing");
+                }
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            } else if (state_.currentScreen == TubeState::Screen::Playback) {
                 state_.showDescriptionDrawer = !state_.showDescriptionDrawer;
                 description_scroll_row_ = 0;
+                select_action_triggered_ = true;
+                uiDirty_ = true;
+                return;
+            }
+        } else if (button == SDL_CONTROLLER_BUTTON_B) {
+            if (state_.miniplayerActive) {
+                leavePlayback();
                 select_action_triggered_ = true;
                 uiDirty_ = true;
                 return;
@@ -1101,7 +1119,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             openKeyboard();
         }
     } else if (button == SDL_CONTROLLER_BUTTON_START) {
-        if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
+        if (state_.currentScreen == TubeState::Screen::Playback) {
             if (mpv_player_.isPlaying()) {
                 mpv_player_.pause();
                 showPlaybackToast("Paused");
@@ -1125,7 +1143,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_B) {
-        if (state_.miniplayerActive || state_.currentScreen == TubeState::Screen::Playback) {
+        if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showDescriptionDrawer) {
                 state_.showDescriptionDrawer = false;
                 uiDirty_ = true;
