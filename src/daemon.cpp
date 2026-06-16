@@ -501,7 +501,12 @@ void runDaemon() {
     YouTubeAPI yt;
     initFreetype();
     initFramebuffer();
-    
+
+    // Show startup overlay immediately so user knows daemon is active.
+    // FB is now open; set timer here so the first loop iteration draws the card.
+    daemon_overlay_timer = 5.0f;
+    daemon_needs_redraw = true;
+
     // Open controller input
     int js_fd = -1;
 #ifndef _WIN32
@@ -566,14 +571,23 @@ void runDaemon() {
         if (js_fd >= 0) {
             JoystickEvent ev;
             while (read(js_fd, &ev, sizeof(ev)) > 0) {
-                if (ev.type == 1) { // Button
+                // Strip the JS_EVENT_INIT flag so init-state events
+                // are treated the same as real events.
+                uint8_t ev_type = ev.type & ~0x80;
+
+                if (ev_type == 1) { // JS_EVENT_BUTTON
                     bool down = (ev.value != 0);
-                    if (ev.number == 12 || ev.number == 16 || ev.number == 6) {
+                    // SELECT button — common mappings across ArkOS RG351 variants:
+                    //   js button 6  (most RG351 ArkOS builds)
+                    //   js button 8  (some gamepad remaps)
+                    //   js button 12 / 16 (legacy)
+                    if (ev.number == 6 || ev.number == 8 ||
+                        ev.number == 12 || ev.number == 16) {
                         select_held = down;
                     }
                     if (down) {
                         if (select_held) {
-                            if (ev.number == 1) { // A -> Play/Pause
+                            if (ev.number == 0 || ev.number == 1) { // A (east) -> Play/Pause
                                 if (daemon_status == DaemonStatus::Playing) {
                                     mpv.pause();
                                     daemon_status = DaemonStatus::Paused;
@@ -583,19 +597,57 @@ void runDaemon() {
                                 }
                                 daemon_overlay_timer = 5.0f;
                                 daemon_needs_redraw = true;
-                            } else if (ev.number == 0) { // B -> Exit
+                            } else if (ev.number == 1 || ev.number == 2) { // B (south) -> Exit
                                 daemon_running = false;
-                            } else if (ev.number == 11 || ev.number == 5) { // DPAD_RIGHT / R1 -> Next
+                            } else if (ev.number == 5) { // R1 -> Next
                                 daemon_current_index = (daemon_current_index + 1) % daemon_playlist.size();
                                 playCurrentTrack(mpv, yt);
-                            } else if (ev.number == 10 || ev.number == 4) { // DPAD_LEFT / L1 -> Prev
+                            } else if (ev.number == 4) { // L1 -> Prev
                                 daemon_current_index = (daemon_current_index - 1 + daemon_playlist.size()) % daemon_playlist.size();
                                 playCurrentTrack(mpv, yt);
-                            } else if (ev.number == 8) { // DPAD_UP -> Show
+                            }
+                        }
+                        // Show overlay on any button press (convenience)
+                        daemon_overlay_timer = 5.0f;
+                        daemon_needs_redraw = true;
+                    }
+                } else if (ev_type == 2) { // JS_EVENT_AXIS — DPAD on RG351MP
+                    // On RG351MP with ArkOS, the D-pad is reported as hat axes:
+                    //   Axis 6: horizontal  (-32767=left,  0=center, +32767=right)
+                    //   Axis 7: vertical    (-32767=up,    0=center, +32767=down)
+                    // Threshold to avoid accidental analog-stick triggering:
+                    const int16_t DPAD_THRESH = 16384;
+
+                    // Only act if SELECT is held
+                    if (select_held && std::abs(ev.value) >= DPAD_THRESH) {
+                        if (ev.number == 6) { // Horizontal hat
+                            if (ev.value > 0) { // DPAD Right -> Next
+                                daemon_current_index = (daemon_current_index + 1) % daemon_playlist.size();
+                                playCurrentTrack(mpv, yt);
+                            } else { // DPAD Left -> Prev
+                                daemon_current_index = (daemon_current_index - 1 + daemon_playlist.size()) % daemon_playlist.size();
+                                playCurrentTrack(mpv, yt);
+                            }
+                        } else if (ev.number == 7) { // Vertical hat
+                            if (ev.value < 0) { // DPAD Up -> Show overlay
+                                daemon_overlay_timer = 5.0f;
+                                daemon_needs_redraw = true;
+                            } else { // DPAD Down -> Play/Pause toggle
+                                if (daemon_status == DaemonStatus::Playing) {
+                                    mpv.pause();
+                                    daemon_status = DaemonStatus::Paused;
+                                } else if (daemon_status == DaemonStatus::Paused) {
+                                    mpv.resume();
+                                    daemon_status = DaemonStatus::Playing;
+                                }
                                 daemon_overlay_timer = 5.0f;
                                 daemon_needs_redraw = true;
                             }
                         }
+                    } else if (std::abs(ev.value) >= DPAD_THRESH) {
+                        // Any DPAD movement without SELECT -> just show overlay
+                        daemon_overlay_timer = 5.0f;
+                        daemon_needs_redraw = true;
                     }
                 }
             }

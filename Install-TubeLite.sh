@@ -59,6 +59,64 @@ log_info() { echo -e "  $1"; }
 
 LOG_FILE="$SCRIPT_DIR/install.log"
 
+# ============================================================================
+# Guard: purge any display manager packages apt may have installed as side
+# effects and restore ArkOS's native KMSDRM / EmulationStation autostart.
+# Call this after EVERY apt-get install block.
+# ============================================================================
+purge_display_managers() {
+    local DM_PKGS="gdm3 gdm gdm-core lightdm sddm xdm wdm nodm"
+    local TO_PURGE=""
+    for pkg in $DM_PKGS; do
+        if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+            TO_PURGE="$TO_PURGE $pkg"
+        fi
+    done
+
+    if [ -n "$TO_PURGE" ]; then
+        log_warn "Display manager side-effects detected:$TO_PURGE — purging..."
+        # Also purge common GNOME deps that only exist because of the DM
+        GNOME_DRAG="gnome-shell gnome-shell-common gnome-session gnome-session-bin"
+        GNOME_DRAG="$GNOME_DRAG mutter mutter-common gir1.2-mutter-3 gnome-settings-daemon"
+        GNOME_DRAG="$GNOME_DRAG ubuntu-session gnome-desktop3-data"
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y --no-install-recommends \
+            $TO_PURGE $GNOME_DRAG 2>/dev/null || true
+        DEBIAN_FRONTEND=noninteractive apt-get autoremove -y \
+            --no-install-recommends 2>/dev/null || true
+        log_ok "Display manager packages purged"
+    fi
+
+    # Remove the display-manager.service symlink — ArkOS does not use one.
+    # gdm3 install creates this symlink and it prevents ES from getting DRM master.
+    if [ -L "/etc/systemd/system/display-manager.service" ]; then
+        rm -f "/etc/systemd/system/display-manager.service"
+        log_ok "Removed stale display-manager.service symlink"
+    fi
+
+    # Stop and mask gdm/lightdm units in case they're still running.
+    for svc in gdm gdm3 lightdm display-manager; do
+        systemctl stop   "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+        systemctl mask   "$svc" 2>/dev/null || true
+    done
+
+    # Re-enable ArkOS EmulationStation autostart if the unit file exists.
+    for es_unit in emulationstation emulationstation.service; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${es_unit}"; then
+            systemctl enable  "$es_unit" 2>/dev/null || true
+            log_ok "Re-enabled ArkOS ES unit: $es_unit"
+        fi
+    done
+
+    # ArkOS uses getty autologin for the ark user to reach ES.
+    # Make sure it is still enabled on tty1.
+    if [ -f "/lib/systemd/system/getty@.service" ]; then
+        systemctl enable "getty@tty1.service" 2>/dev/null || true
+    fi
+
+    systemctl daemon-reload 2>/dev/null || true
+}
+
 DO_DEPS=1
 DO_BINARY=1
 DO_FILES=1
@@ -89,6 +147,28 @@ if [ "${TUBELITE_FROM_ES:-0}" = "1" ]; then
 fi
 
 # ---------- Uninstall ----------
+# ---------- Emergency display-manager repair ----------
+# Use this if a previous bad install broke EmulationStation's ability to start:
+#   sudo bash Install-TubeLite.sh --fix-display
+if [ "$1" = "--fix-display" ]; then
+    echo -e "${BOLD}${APP_NAME} — Emergency Display Repair${NC}"
+    echo ""
+    log_step "1/3" "Purging display manager packages..."
+    purge_display_managers
+    log_step "2/3" "Checking ArkOS ES autostart..."
+    # ArkOS typically auto-starts ES via a getty autologin or custom service.
+    # Show what's currently enabled so the user can confirm.
+    systemctl list-unit-files --type=service 2>/dev/null | grep -E 'emulation|getty@tty1' || true
+    # If /etc/systemd/system/display-manager.service still exists, nuke it.
+    rm -f /etc/systemd/system/display-manager.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    log_step "3/3" "Done. Rebooting in 5 seconds..."
+    log_ok "After reboot EmulationStation should start normally."
+    sleep 5
+    reboot
+    exit 0
+fi
+
 if [ "$1" = "--uninstall" ] || [ "$1" = "--uninstall-app" ] || [ "$1" = "--uninstall-theme" ]; then
     echo -e "${BOLD}${APP_NAME} Uninstaller${NC}"
     echo ""
@@ -223,20 +303,27 @@ if [ "$DO_DEPS" -eq 1 ]; then
     apt-get update -qq || true
     
     apt-mark unhold libsdl2-2.0-0 libasound2 libmpv1 2>/dev/null || true
-    
-    RUNTIME_DEPS="python3 libsdl2-2.0-0 ffmpeg libasound2 libmpv1 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6"
-    APT_FLAGS="-y --allow-change-held-packages"
+
+    # NOTE: ffmpeg binary intentionally omitted — mpv handles all decoding internally.
+    # Including ffmpeg pulls in ghostscript → gnome-shell → gdm3 via recommended deps,
+    # which hijacks the KMSDRM display and breaks EmulationStation on ArkOS.
+    RUNTIME_DEPS="python3 libsdl2-2.0-0 libasound2 libmpv1 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6"
+    # --no-install-recommends is CRITICAL on ArkOS: recommended deps often drag in
+    # entire GNOME stacks (gdm3, gnome-shell) which steal DRM master from ES.
+    APT_FLAGS="-y --no-install-recommends --allow-change-held-packages"
     if [ "$REINSTALL_DEPS" = "1" ]; then
         APT_FLAGS="$APT_FLAGS --reinstall"
         log_info "Forcing full system header & developer tools restore ritual..."
-        # Note: --no-install-recommends prevents GNOME/X11 packages being pulled in as recommended deps
         DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev"
         apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
     fi
-    
+
     log_info "Running apt-get install..."
     apt-get install $APT_FLAGS $RUNTIME_DEPS || true
-    
+
+    # Guard: purge any display manager that snuck in as a side effect.
+    purge_display_managers
+
     log_info "Protecting SDL and Audio libraries..."
     apt-mark hold libsdl2-2.0-0 libasound2 2>/dev/null || true
     
@@ -302,22 +389,26 @@ if [ "$DO_BINARY" -eq 1 ]; then
     if [ -z "$APP_BIN" ]; then
         log_info "No pre-built binary found. Compiling natively..."
         BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libfreetype6-dev libharfbuzz-dev libmpv-dev"
-        BUILD_APT_FLAGS="-y"
+        # --no-install-recommends is CRITICAL: build tools have recommended deps that
+        # can pull in full GNOME stacks (via ghostscript, libgs-dev chains).
+        BUILD_APT_FLAGS="-y --no-install-recommends"
         if [ "${REINSTALL_DEPS:-0}" = "1" ]; then BUILD_APT_FLAGS="$BUILD_APT_FLAGS --reinstall"; fi
         log_info "Installing build dependencies..."
         apt-get install $BUILD_APT_FLAGS $BUILD_DEPS || true
-        
+
+        # Guard: purge any display manager that snuck in as a build dep side effect.
+        purge_display_managers
+
         # Check for missing FreeType headers on filesystem (often deleted on handheld OS images)
         if [ ! -f "/usr/include/freetype2/ft2build.h" ]; then
             log_warn "FreeType headers (ft2build.h) missing from filesystem. Restoring libfreetype6-dev..."
-            apt-get install -y --reinstall libfreetype6-dev || true
+            apt-get install -y --no-install-recommends --reinstall libfreetype6-dev || true
         fi
-        
+
         # Check for missing core C/C++ or SDL2 headers on filesystem
         if [ ! -f "/usr/include/features.h" ] || [ ! -f "/usr/include/SDL2/SDL.h" ]; then
             log_warn "Core C/C++ or SDL2 development headers are missing from filesystem."
             log_warn "Running header file restore ritual to repair the compilation environment..."
-            # Note: --no-install-recommends prevents GNOME/X11 packages being pulled in as recommended deps
             DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev"
             apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
         fi
@@ -416,9 +507,14 @@ if [ "$DO_ES" -eq 1 ]; then
 fi
 
 if [ "$DO_VERIFY" -eq 1 ]; then
-    log_step "7/7" "Verification complete."
+    log_step "7/7" "Final display-manager safety check..."
+    # One last sweep — ensures nothing snuck in during ES/theme steps.
+    purge_display_managers
     echo -e "${GREEN}${BOLD}Installation Finished!${NC}"
     echo "Restart EmulationStation to see TubeLite."
+    echo ""
+    echo -e "  ${YELLOW}NOTE:${NC} If EmulationStation does not start after reboot,"
+    echo -e "  run: ${BOLD}sudo bash Install-TubeLite.sh --fix-display${NC}"
 fi
 
 echo ""
