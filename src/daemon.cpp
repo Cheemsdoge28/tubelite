@@ -672,6 +672,15 @@ void killExistingDaemon() {
 
 void spawnDaemon() {
 #ifndef _WIN32
+    std::string exec_path = "./tubelite";
+    try {
+        if (std::filesystem::exists("/proc/self/exe")) {
+            exec_path = std::filesystem::read_symlink("/proc/self/exe").string();
+        }
+    } catch (...) {
+        // Fallback to "./tubelite"
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         std::cerr << "[daemon] fork failed\n";
@@ -698,7 +707,7 @@ void spawnDaemon() {
     open("/dev/null", O_WRONLY); // stdout
     open("/dev/null", O_WRONLY); // stderr
     
-    char* args[] = { (char*)"./tubelite", (char*)"--daemon", nullptr };
+    char* args[] = { (char*)exec_path.c_str(), (char*)"--daemon", nullptr };
     execvp(args[0], args);
     exit(1);
 #endif
