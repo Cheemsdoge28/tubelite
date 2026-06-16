@@ -701,9 +701,6 @@ void runDaemon() {
     }
     
     std::cerr << "[daemon] Stopping daemon...\n";
-    if (overlay_visible) {
-        restoreBackground();
-    }
     
     mpv.shutdown();
     closeFramebuffer();
