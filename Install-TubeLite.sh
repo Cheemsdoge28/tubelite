@@ -302,15 +302,24 @@ if [ "$DO_DEPS" -eq 1 ]; then
     dpkg --configure -a || true
     apt-get update -qq || true
     
-    apt-mark unhold libsdl2-2.0-0 libasound2 libmpv1 2>/dev/null || true
-
     # NOTE: ffmpeg binary intentionally omitted — mpv handles all decoding internally.
     # Including ffmpeg pulls in ghostscript → gnome-shell → gdm3 via recommended deps,
     # which hijacks the KMSDRM display and breaks EmulationStation on ArkOS.
-    RUNTIME_DEPS="python3 libsdl2-2.0-0 libasound2 libmpv1 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6"
+    # To protect ArkOS custom/optimized held libraries (like libsdl2-2.0-0, libasound2, libmpv1),
+    # we check each dependency and only invoke apt-get install for those that are missing.
+    CRITICAL_DEPS="python3 libsdl2-2.0-0 libasound2 libmpv1 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6"
+    RUNTIME_DEPS=""
+    for pkg in $CRITICAL_DEPS; do
+        if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+            log_info "Dependency $pkg is already installed. Keeping stock version."
+        else
+            RUNTIME_DEPS="$RUNTIME_DEPS $pkg"
+        fi
+    done
+
     # --no-install-recommends is CRITICAL on ArkOS: recommended deps often drag in
     # entire GNOME stacks (gdm3, gnome-shell) which steal DRM master from ES.
-    APT_FLAGS="-y --no-install-recommends --allow-change-held-packages"
+    APT_FLAGS="-y --no-install-recommends"
     if [ "$REINSTALL_DEPS" = "1" ]; then
         APT_FLAGS="$APT_FLAGS --reinstall"
         log_info "Forcing full system header & developer tools restore ritual..."
@@ -318,14 +327,15 @@ if [ "$DO_DEPS" -eq 1 ]; then
         apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
     fi
 
-    log_info "Running apt-get install..."
-    apt-get install $APT_FLAGS $RUNTIME_DEPS || true
+    if [ -n "$RUNTIME_DEPS" ]; then
+        log_info "Running apt-get install for missing dependencies:$RUNTIME_DEPS..."
+        apt-get install $APT_FLAGS $RUNTIME_DEPS || true
+    else
+        log_info "All runtime dependencies are already installed."
+    fi
 
     # Guard: purge any display manager that snuck in as a side effect.
     purge_display_managers
-
-    log_info "Protecting SDL and Audio libraries..."
-    apt-mark hold libsdl2-2.0-0 libasound2 2>/dev/null || true
     
     log_info "Verifying dependencies..."
     MISSING_DEPS=""
