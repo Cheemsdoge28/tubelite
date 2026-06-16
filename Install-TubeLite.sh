@@ -346,14 +346,22 @@ if [ "$DO_DEPS" -eq 1 ]; then
     fi
     
     # Check yt-dlp installation:
-    # First, try to download the latest version from GitHub to ensure extraction compatibility.
+    # First, try to download the latest standalone version from GitHub to ensure extraction compatibility.
+    # Standalone binaries include their own Python interpreter and work on EOL systems (like ArkOS on Python 3.7).
     # If the device is offline or download fails, fall back to the pre-included local version.
     YT_DLP_UPDATED=0
-    log_info "Attempting to download latest yt-dlp from GitHub..."
-    if wget -q --timeout=10 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp || \
-       curl -fsL --connect-timeout 10 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp; then
+    YTDLP_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        YTDLP_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64"
+    elif [ "$ARCH" = "x86_64" ]; then
+        YTDLP_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
+    fi
+
+    log_info "Attempting to download latest standalone yt-dlp from GitHub..."
+    if wget -q --timeout=10 "$YTDLP_URL" -O /usr/local/bin/yt-dlp || \
+       curl -fsL --connect-timeout 10 "$YTDLP_URL" -o /usr/local/bin/yt-dlp; then
         chmod a+rx /usr/local/bin/yt-dlp
-        log_ok "Successfully updated to latest yt-dlp from GitHub"
+        log_ok "Successfully updated to latest standalone yt-dlp from GitHub"
         YT_DLP_UPDATED=1
     else
         log_warn "Failed to download from GitHub (offline?). Checking for local/existing copy..."
