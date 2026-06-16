@@ -65,6 +65,7 @@ private:
     void showPlaybackUi();
     bool isInputLocked() const;
     std::shared_ptr<ui::GridContainer> activeGrid() const;
+    std::shared_ptr<ui::GridContainer> getPlaybackGrid() const;
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
     std::optional<std::string> getCachedStreamUrl(const std::string& key);
     void setCachedStreamUrl(const std::string& key, const std::string& url);

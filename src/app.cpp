@@ -314,7 +314,12 @@ void App::run() {
     }
 
     saveSettings();
-    if (state_.backgroundDaemonEnabled && (mpv_player_.isPlaying() || state_.currentScreen == TubeState::Screen::Playback)) {
+    // Spawn daemon if audio is playing OR if the user is in miniplayer/fullscreen mode
+    // (covers paused state and search-screen miniplayer where isPlaying() may be false).
+    bool daemonEligible = mpv_player_.isPlaying()
+        || state_.miniplayerActive
+        || state_.currentScreen == TubeState::Screen::Playback;
+    if (state_.backgroundDaemonEnabled && daemonEligible && !current_video_.id.empty()) {
         saveDaemonQueue();
         spawnDaemon();
     }
@@ -418,6 +423,14 @@ std::shared_ptr<ui::GridContainer> App::activeGrid() const {
     if (state_.currentScreen == TubeState::Screen::Search) return search_grid_;
     if (state_.currentScreen == TubeState::Screen::Home) return home_grid_;
     return nullptr;
+}
+
+std::shared_ptr<ui::GridContainer> App::getPlaybackGrid() const {
+    TubeState::Screen browseScreen = state_.currentScreen;
+    if (browseScreen == TubeState::Screen::Playback) {
+        browseScreen = state_manager_.getPreviousBrowseScreen();
+    }
+    return (browseScreen == TubeState::Screen::Search) ? search_grid_ : home_grid_;
 }
 
 bool App::isInputLocked() const {
@@ -622,7 +635,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     if (cachedOpt.has_value() && !cachedOpt.value().empty()) {
         state_.isLoadingVideo = false;
         if (keepMiniplayer) {
-            state_manager_.transitionTo(state_manager_.getPreviousBrowseScreen());
+            state_manager_.transitionTo(state_.currentScreen);
             state_manager_.setMiniplayerActive(true);
             state_.showUi = true;
         } else {
@@ -663,7 +676,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                 wrapped_description_lines_ = wrapText(meta.description, 280, 1);
                 setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
                 if (keepMiniplayer) {
-                    state_manager_.transitionTo(state_manager_.getPreviousBrowseScreen());
+                    state_manager_.transitionTo(state_.currentScreen);
                     state_manager_.setMiniplayerActive(true);
                     state_.showUi = true;
                 } else {
@@ -1682,7 +1695,7 @@ void App::loadSettings() {
 void App::saveDaemonQueue() {
     try {
         nlohmann::json j;
-        std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+        std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
         if (!grid || grid->cards.empty()) {
             nlohmann::json v;
             v["id"] = current_video_.id;
@@ -1746,7 +1759,7 @@ void App::saveDaemonQueue() {
 
 
 void App::playNextTrack() {
-    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
     if (grid && !grid->cards.empty()) {
         for (size_t i = 0; i < grid->cards.size(); ++i) {
             if (grid->cards[i]->video.id == current_video_.id) {
@@ -1765,7 +1778,7 @@ void App::playNextTrack() {
 }
 
 void App::playPreviousTrack() {
-    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
     if (grid && !grid->cards.empty()) {
         for (size_t i = 0; i < grid->cards.size(); ++i) {
             if (grid->cards[i]->video.id == current_video_.id) {
@@ -1919,7 +1932,7 @@ bool App::loadHomeCache() {
 }
 
 void App::handleVideoEnded() {
-    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
     bool playedNext = false;
     
     if (grid && !grid->cards.empty()) {
@@ -1947,7 +1960,7 @@ void App::prefetchNextVideo() {
     if (prefetched_next_video_id_ == current_video_.id) return;
     
     // Find the next video in the active grid
-    std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;
+    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
     if (!grid || grid->cards.empty()) return;
     
     YouTubeVideo nextVideo;

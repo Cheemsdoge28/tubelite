@@ -54,7 +54,6 @@ static std::string daemon_subtitle_url;
 static std::mutex daemon_resolved_mutex;
 
 static float daemon_overlay_timer = 0.0f;
-static bool daemon_needs_redraw = false;
 
 // Framebuffer parameters
 #ifndef _WIN32
@@ -377,7 +376,6 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
     auto& video = daemon_playlist[daemon_current_index];
 
     daemon_overlay_timer = 5.0f;
-    daemon_needs_redraw = true;
 
     // Fast path: use pre-resolved URL written by the app into daemon_queue.json.
     // This avoids a full yt-dlp re-resolve on startup and gives instant audio.
@@ -415,61 +413,63 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 }
 
 static void renderCard(MpvPlayer& mpv) {
-    // 1. Draw shadow
-    drawRoundedRect(card_x + 2, card_y + 2, card_w, card_h, 8, 0, 0, 0, 80);
-    
-    // 2. Draw card base
-    drawRoundedRect(card_x, card_y, card_w, card_h, 8, 16, 18, 22, 220);
-    
-    // 3. Top accent line
-    drawRect(card_x, card_y, card_w, 3, 255, 48, 48, 220);
-    
-    // Get metadata of current index
+    // 1. Drop shadow
+    drawRoundedRect(card_x + 3, card_y + 3, card_w, card_h, 8,  0,  0,  0, 90);
+
+    // 2. Red border (matches miniplayer outline in compositor)
+    drawRoundedRect(card_x - 1, card_y - 1, card_w + 2, card_h + 2, 9, 255, 48, 48, 200);
+
+    // 3. Dark card fill — same {26,28,32} as compositor miniplayer strip
+    drawRoundedRect(card_x, card_y, card_w, card_h, 8, 26, 28, 32, 245);
+
+    // 4. Thin red top accent inside the card
+    drawRect(card_x + 1, card_y + 1, card_w - 2, 2, 255, 48, 48, 160);
+
+    // Guard: need valid playlist entry
     if (daemon_current_index < 0 || daemon_current_index >= static_cast<int>(daemon_playlist.size())) return;
     const auto& video = daemon_playlist[daemon_current_index];
-    
-    // 4. Render title & author
-    drawText(truncateText(video.title, 32), card_x + 10, card_y + 8, 13, 255, 255, 255, 255);
-    drawText(truncateText(video.author, 36), card_x + 10, card_y + 26, 11, 140, 140, 158, 255);
-    
-    // 5. Draw status tag at top right
+
+    // 5. Title — {240,242,245} near-white (matches compositor title text)
+    drawText(truncateText(video.title, 32), card_x + 10, card_y + 8, 13, 240, 242, 245, 255);
+
+    // 6. Author — {154,165,184} muted blue-grey (matches compositor author text)
+    drawText(truncateText(video.author, 38), card_x + 10, card_y + 26, 11, 154, 165, 184, 255);
+
+    // 7. Status badge (top-right)
     std::string statStr = "PLAYING";
-    uint8_t sr = 64, sg = 214, sb = 96; // green
+    uint8_t sr = 64, sg = 214, sb = 96;  // green
     if (daemon_status == DaemonStatus::Resolving) {
-        statStr = "RESOLVING";
-        sr = 64; sg = 148; sb = 255; // blue
+        statStr = "LOADING";
+        sr = 64;  sg = 148; sb = 255;   // blue
     } else if (daemon_status == DaemonStatus::Paused) {
         statStr = "PAUSED";
-        sr = 255; sg = 214; sb = 64; // yellow
+        sr = 255; sg = 214; sb = 64;   // yellow
     } else if (daemon_status == DaemonStatus::Error) {
         statStr = "ERROR";
-        sr = 255; sg = 48; sb = 48; // red
+        sr = 255; sg = 48;  sb = 48;   // red
     }
-    drawText(statStr, card_x + card_w - 75, card_y + 8, 10, sr, sg, sb, 255);
-    
-    // 6. Draw progress bar
-    double pos = mpv.getPlaybackTime();
-    double dur = mpv.getDuration() > 0.0 ? mpv.getDuration() : static_cast<double>(video.duration_seconds);
+    drawText(statStr, card_x + card_w - 72, card_y + 8, 10, sr, sg, sb, 255);
+
+    // 8. Progress bar — same style as compositor (track + red fill)
+    double pos  = mpv.getPlaybackTime();
+    double dur  = mpv.getDuration() > 0.0 ? mpv.getDuration() : static_cast<double>(video.duration_seconds);
     double frac = (dur > 0.0) ? std::max(0.0, std::min(1.0, pos / dur)) : 0.0;
-    
-    int barX = card_x + 10;
-    int barY = card_y + 45;
-    int barW = card_w - 20;
-    int barH = 4;
-    
-    // Progress bg
-    drawRect(barX, barY, barW, barH, 42, 48, 56, 180);
-    // Progress fill
-    if (frac > 0.0) {
-        drawRect(barX, barY, static_cast<int>(barW * frac), barH, 255, 48, 48, 255);
-    }
-    
-    // 7. Time string
+
+    const int barX = card_x + 10;
+    const int barY = card_y + 46;
+    const int barW = card_w - 20;
+    const int barH = 4;
+
+    drawRect(barX, barY, barW, barH, 42, 48, 56, 200);   // track
+    if (frac > 0.0)
+        drawRect(barX, barY, static_cast<int>(barW * frac), barH, 255, 48, 48, 255); // fill
+
+    // 9. Time — {220,220,232} matches compositor timestamp color
     std::string timeStr = formatTime(pos) + " / " + (video.duration_string.empty() ? formatTime(dur) : video.duration_string);
-    drawText(timeStr, card_x + 10, card_y + 54, 9, 180, 180, 190, 255);
-    
-    // 8. Key hints at bottom right
-    drawText("SEL+A: PLAY  SEL+B: EXIT  SEL+R1: NEXT", card_x + card_w - 200, card_y + 54, 9, 120, 120, 135, 255);
+    drawText(timeStr, card_x + 10, card_y + 55, 9, 220, 220, 232, 255);
+
+    // 10. Key hints — {160,160,172} matches compositor hint text
+    drawText("SEL+A:PLAY  SEL+B:EXIT  SEL+\xE2\x96\xB6:NEXT", card_x + card_w - 196, card_y + 55, 9, 160, 160, 172, 255);
 }
 
 void runDaemon() {
@@ -516,7 +516,6 @@ void runDaemon() {
     // Show startup overlay immediately so user knows daemon is active.
     // FB is now open; set timer here so the first loop iteration draws the card.
     daemon_overlay_timer = 5.0f;
-    daemon_needs_redraw = true;
 
     // Open controller input
     int js_fd = -1;
@@ -567,7 +566,6 @@ void runDaemon() {
                 } else {
                     daemon_status = DaemonStatus::Error;
                 }
-                daemon_needs_redraw = true;
             }
         }
         
@@ -607,7 +605,6 @@ void runDaemon() {
                                     daemon_status = DaemonStatus::Playing;
                                 }
                                 daemon_overlay_timer = 5.0f;
-                                daemon_needs_redraw = true;
                             } else if (ev.number == 1 || ev.number == 2) { // B (south) -> Exit
                                 daemon_running = false;
                             } else if (ev.number == 5) { // R1 -> Next
@@ -620,7 +617,6 @@ void runDaemon() {
                         }
                         // Show overlay on any button press (convenience)
                         daemon_overlay_timer = 5.0f;
-                        daemon_needs_redraw = true;
                     }
                 } else if (ev_type == 2) { // JS_EVENT_AXIS — DPAD on RG351MP
                     // On RG351MP with ArkOS, the D-pad is reported as hat axes:
@@ -642,7 +638,6 @@ void runDaemon() {
                         } else if (ev.number == 7) { // Vertical hat
                             if (ev.value < 0) { // DPAD Up -> Show overlay
                                 daemon_overlay_timer = 5.0f;
-                                daemon_needs_redraw = true;
                             } else { // DPAD Down -> Play/Pause toggle
                                 if (daemon_status == DaemonStatus::Playing) {
                                     mpv.pause();
@@ -652,52 +647,33 @@ void runDaemon() {
                                     daemon_status = DaemonStatus::Playing;
                                 }
                                 daemon_overlay_timer = 5.0f;
-                                daemon_needs_redraw = true;
                             }
                         }
                     } else if (std::abs(ev.value) >= DPAD_THRESH) {
                         // Any DPAD movement without SELECT -> just show overlay
                         daemon_overlay_timer = 5.0f;
-                        daemon_needs_redraw = true;
                     }
                 }
             }
         }
 #endif
 
-        // Manage overlay visibility and rendering.
-        // Strategy: while the overlay timer is active, redraw the card on top
-        // of whatever the framebuffer currently shows on every loop tick.
-        // We do NOT try to save/restore the background — ES continuously
-        // redraws its own content, so any backup is stale within one frame.
-        // When the timer expires, we simply stop drawing; the next ES frame
-        // will naturally paint over our card.
+        // Overlay management: redraw unconditionally every tick while the timer
+        // is active (spam-mode). We don't attempt save/restore — ES redraws
+        // continuously and will erase the card whenever overlay is gone.
         if (daemon_overlay_timer > 0.0f) {
             daemon_overlay_timer -= dt;
             overlay_visible = true;
-            // Sync to vsync before drawing to minimise tearing.
             fbWaitVsync();
-            renderCard(mpv);
-            daemon_needs_redraw = false;
+            renderCard(mpv);   // unconditional — win the FB race every frame
         } else {
-            if (overlay_visible) {
-                // Stop drawing. The next app redraw will erase the card.
-                overlay_visible = false;
-            }
+            overlay_visible = false;  // ES next frame will paint over naturally
         }
-        
-        // Periodically refresh card progress (every 250ms)
-        static float progress_timer = 0.0f;
-        if (daemon_status == DaemonStatus::Playing && overlay_visible) {
-            progress_timer += dt;
-            if (progress_timer >= 0.25f) {
-                progress_timer = 0.0f;
-                // No explicit daemon_needs_redraw needed — we redraw every tick.
-                progress_timer = 0.0f;
-            }
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        // Adaptive sleep: go full crackhead (4 ms) while card is on screen,
+        // drop to 50 ms when hidden to save CPU in the idle case.
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(overlay_visible ? 4 : 50));
     }
     
     std::cerr << "[daemon] Stopping daemon...\n";
