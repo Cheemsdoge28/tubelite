@@ -345,27 +345,26 @@ if [ "$DO_DEPS" -eq 1 ]; then
         MISSING_DEPS="python3"
     fi
     
-    # Check yt-dlp installation: prioritize the pre-included local version
-    YT_DLP_FOUND=0
-    if [ -f "$SCRIPT_DIR/bin/yt-dlp" ]; then
-        log_info "Installing pre-included stable yt-dlp (2026.03.13)..."
-        cp -f "$SCRIPT_DIR/bin/yt-dlp" /usr/local/bin/yt-dlp
+    # Check yt-dlp installation:
+    # First, try to download the latest version from GitHub to ensure extraction compatibility.
+    # If the device is offline or download fails, fall back to the pre-included local version.
+    YT_DLP_UPDATED=0
+    log_info "Attempting to download latest yt-dlp from GitHub..."
+    if wget -q --timeout=10 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp || \
+       curl -fsL --connect-timeout 10 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp; then
         chmod a+rx /usr/local/bin/yt-dlp
-        YT_DLP_FOUND=1
-    elif command -v yt-dlp &>/dev/null; then
-        YT_DLP_FOUND=1
-    elif [ -x "/usr/local/bin/yt-dlp" ]; then
-        YT_DLP_FOUND=1
-    elif [ -x "/usr/bin/yt-dlp" ]; then
-        YT_DLP_FOUND=1
+        log_ok "Successfully updated to latest yt-dlp from GitHub"
+        YT_DLP_UPDATED=1
+    else
+        log_warn "Failed to download from GitHub (offline?). Checking for local/existing copy..."
     fi
-    
-    if [ "$YT_DLP_FOUND" -eq 0 ]; then
-        # Try to install it automatically to /usr/local/bin/yt-dlp from the web if local copy is missing
-        log_info "yt-dlp not found. Downloading the latest version..."
-        wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp || \
-        curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-        chmod a+rx /usr/local/bin/yt-dlp
+
+    if [ "$YT_DLP_UPDATED" -eq 0 ]; then
+        if [ -f "$SCRIPT_DIR/bin/yt-dlp" ]; then
+            log_info "Installing pre-included local yt-dlp..."
+            cp -f "$SCRIPT_DIR/bin/yt-dlp" /usr/local/bin/yt-dlp
+            chmod a+rx /usr/local/bin/yt-dlp
+        fi
     fi
     
     # Verify installation
