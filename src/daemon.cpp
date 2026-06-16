@@ -246,16 +246,28 @@ static void hideOverlay() {}
 // ARGB value directly. For text glyphs the glyph alpha modulates the pixel's
 // A channel so the hardware blends it correctly against the game beneath.
 
+static uint32_t card_backbuffer[card_w * card_h];
+
 static inline void drmPutPixel(int x, int y, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-#ifndef _WIN32
-    if (!drm_map || (unsigned)x >= (unsigned)card_w || (unsigned)y >= (unsigned)card_h) return;
-    drm_map[y * (drm_pitch / 4) + x] = ((uint32_t)a << 24) |
-                                         ((uint32_t)r << 16) |
-                                         ((uint32_t)g <<  8) |
-                                          (uint32_t)b;
-#else
-    (void)x; (void)y; (void)r; (void)g; (void)b; (void)a;
-#endif
+    if ((unsigned)x >= (unsigned)card_w || (unsigned)y >= (unsigned)card_h) return;
+    int index = y * card_w + x;
+    uint32_t dst = card_backbuffer[index];
+    uint8_t dst_a = (dst >> 24) & 0xff;
+    uint8_t dst_r = (dst >> 16) & 0xff;
+    uint8_t dst_g = (dst >> 8) & 0xff;
+    uint8_t dst_b = dst & 0xff;
+
+    // Standard alpha blending
+    uint32_t out_a = a + (uint32_t)dst_a * (255 - a) / 255;
+    if (out_a > 0) {
+        uint8_t out_r = ((uint32_t)r * a + (uint32_t)dst_r * dst_a * (255 - a) / 255) / out_a;
+        uint8_t out_g = ((uint32_t)g * a + (uint32_t)dst_g * dst_a * (255 - a) / 255) / out_a;
+        uint8_t out_b = ((uint32_t)b * a + (uint32_t)dst_b * dst_a * (255 - a) / 255) / out_a;
+        card_backbuffer[index] = ((uint32_t)out_a << 24) |
+                                 ((uint32_t)out_r << 16) |
+                                 ((uint32_t)out_g <<  8) |
+                                  (uint32_t)out_b;
+    }
 }
 
 static void drawRect(int rx, int ry, int rw, int rh,
@@ -397,9 +409,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 // Hardware composites this plane over the primary at commitOverlay() time.
 
 static void renderCard(MpvPlayer& mpv) {
-#ifndef _WIN32
-    if (drm_map) memset(drm_map, 0, drm_size);  // fully transparent baseline
-#endif
+    memset(card_backbuffer, 0, sizeof(card_backbuffer));
 
     // Drop shadow (offset 2px down-right, slightly inset)
     drawRoundedRect(2, 2, card_w - 2, card_h - 2, 8,  0,  0,  0,  fade(80));
@@ -415,6 +425,13 @@ static void renderCard(MpvPlayer& mpv) {
 
     if (daemon_current_index < 0 ||
         daemon_current_index >= (int)daemon_playlist.size()) {
+#ifndef _WIN32
+        if (drm_map) {
+            for (int y = 0; y < card_h; ++y) {
+                memcpy(drm_map + y * (drm_pitch / 4), card_backbuffer + y * card_w, card_w * 4);
+            }
+        }
+#endif
         commitOverlay();
         return;
     }
@@ -457,6 +474,13 @@ static void renderCard(MpvPlayer& mpv) {
     drawText("FN+L1 Prev      FN+R1 Next",
              10, 88, 10, 160, 160, 172, fade(255));
 
+#ifndef _WIN32
+    if (drm_map) {
+        for (int y = 0; y < card_h; ++y) {
+            memcpy(drm_map + y * (drm_pitch / 4), card_backbuffer + y * card_w, card_w * 4);
+        }
+    }
+#endif
     commitOverlay();
 }
 
