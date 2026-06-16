@@ -24,6 +24,8 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <drm/drm_fourcc.h>
+#include <poll.h>
+#include <linux/input.h>
 #endif
 
 #include <ft2build.h>
@@ -53,11 +55,18 @@ static std::string daemon_resolved_url;
 static std::string daemon_subtitle_url;
 static std::mutex daemon_resolved_mutex;
 
+static float overlay_alpha = 0.0f;
+static bool overlay_active = false;
 static float daemon_overlay_timer = 0.0f;
 
 static const int card_w = 320;
-static const int card_h = 76;
+static const int card_h = 96;
 static const int card_y = 12;  // vertical position on screen
+
+static inline uint8_t fade(uint8_t a)
+{
+    return (uint8_t)(a * overlay_alpha);
+}
 
 #ifndef _WIN32
 #define DRM_OVERLAY_PLANE_ID  61
@@ -77,14 +86,7 @@ static FT_Library ft_lib;
 static FT_Face    ft_face;
 static bool       ft_ok = false;
 
-#ifndef _WIN32
-struct JoystickEvent {
-    uint32_t time;
-    int16_t  value;
-    uint8_t  type;
-    uint8_t  number;
-};
-#endif
+// JoystickEvent struct removed as we migrated to standard evdev input_event
 
 static std::string getAppDataPath(const std::string& filename) {
 #ifdef _WIN32
@@ -355,6 +357,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 
     auto& video = daemon_playlist[daemon_current_index];
     daemon_overlay_timer = 5.0f;
+    overlay_active = true;
 
     if (!video.stream_url.empty()) {
         std::cerr << "[daemon] Using pre-resolved URL for " << video.id << "\n";
@@ -399,16 +402,16 @@ static void renderCard(MpvPlayer& mpv) {
 #endif
 
     // Drop shadow (offset 2px down-right, slightly inset)
-    drawRoundedRect(2, 2, card_w - 2, card_h - 2, 8,  0,  0,  0,  80);
+    drawRoundedRect(2, 2, card_w - 2, card_h - 2, 8,  0,  0,  0,  fade(80));
 
     // Red border
-    drawRoundedRect(0, 0, card_w,     card_h,     9, 255, 48, 48, 200);
+    drawRoundedRect(0, 0, card_w,     card_h,     9, 255, 48, 48, fade(200));
 
     // Dark card fill (inset 1px from border)
-    drawRoundedRect(1, 1, card_w - 2, card_h - 2, 8,  26, 28, 32, 245);
+    drawRoundedRect(1, 1, card_w - 2, card_h - 2, 8,  26, 28, 32, fade(245));
 
     // Thin red top accent
-    drawRect(2, 2, card_w - 4, 2, 255, 48, 48, 160);
+    drawRect(2, 2, card_w - 4, 2, 255, 48, 48, fade(160));
 
     if (daemon_current_index < 0 ||
         daemon_current_index >= (int)daemon_playlist.size()) {
@@ -418,9 +421,9 @@ static void renderCard(MpvPlayer& mpv) {
     const auto& video = daemon_playlist[daemon_current_index];
 
     // Title
-    drawText(truncateText(video.title,  32), 10, 8,  13, 240, 242, 245, 255);
+    drawText(truncateText(video.title,  32), 10, 8,  12, 240, 242, 245, fade(255));
     // Author
-    drawText(truncateText(video.author, 38), 10, 26, 11, 154, 165, 184, 255);
+    drawText(truncateText(video.author, 38), 10, 23, 10, 154, 165, 184, fade(255));
 
     // Status badge (top-right)
     std::string statStr = "PLAYING";
@@ -428,7 +431,7 @@ static void renderCard(MpvPlayer& mpv) {
     if      (daemon_status == DaemonStatus::Resolving) { statStr="LOADING"; sr=64;  sg=148; sb=255; }
     else if (daemon_status == DaemonStatus::Paused)    { statStr="PAUSED";  sr=255; sg=214; sb=64;  }
     else if (daemon_status == DaemonStatus::Error)     { statStr="ERROR";   sr=255; sg=48;  sb=48;  }
-    drawText(statStr, card_w - 72, 8, 10, sr, sg, sb, 255);
+    drawText(statStr, card_w - 65, 8, 10, sr, sg, sb, fade(255));
 
     // Progress bar
     double pos  = mpv.getPlaybackTime();
@@ -436,19 +439,23 @@ static void renderCard(MpvPlayer& mpv) {
                                            : (double)video.duration_seconds;
     double frac = (dur > 0.0) ? std::max(0.0, std::min(1.0, pos / dur)) : 0.0;
 
-    const int barX = 10, barY = 46, barW = card_w - 20, barH = 4;
-    drawRect(barX, barY, barW, barH, 42, 48, 56, 200);
+    const int barX = 10, barY = 41, barW = card_w - 20, barH = 4;
+    drawRect(barX, barY, barW, barH, 42, 48, 56, fade(200));
     if (frac > 0.0)
-        drawRect(barX, barY, (int)(barW * frac), barH, 255, 48, 48, 255);
+        drawRect(barX, barY, (int)(barW * frac), barH, 255, 48, 48, fade(255));
 
     // Timestamp
     std::string timeStr = formatTime(pos) + " / " +
         (video.duration_string.empty() ? formatTime(dur) : video.duration_string);
-    drawText(timeStr, 10, 55, 9, 220, 220, 232, 255);
+    drawText(timeStr, 10, 49, 9, 220, 220, 232, fade(255));
 
-    // Key hints — now includes SEL+↑ for overlay toggle
-    drawText("SEL+\xE2\x86\x91:SHOW  SEL+A:PAUSE  SEL+\xE2\x96\xB6:NEXT  SEL+B:EXIT",
-             8, 55, 9, 160, 160, 172, 255);
+    // Button hint row 1
+    drawText("L3+A Pause      L3+B Exit",
+             10, 63, 9, 160, 160, 172, fade(255));
+
+    // Button hint row 2
+    drawText("L3+L1 Prev      L3+R1 Next",
+             10, 77, 9, 160, 160, 172, fade(255));
 
     commitOverlay();
 }
@@ -491,18 +498,19 @@ void runDaemon() {
     initDrmOverlay();
 
     daemon_overlay_timer = 5.0f;
+    overlay_active = true;
 
     int js_fd = -1;
 #ifndef _WIN32
-    js_fd = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
-    if (js_fd < 0) std::cerr << "[daemon] Warning: no js0\n";
+    js_fd = open("/dev/input/event2", O_RDONLY | O_NONBLOCK);
+    if (js_fd < 0) std::cerr << "[daemon] Warning: no event2\n";
 #endif
 
     playCurrentTrack(mpv, yt);
 
     auto last_tick    = std::chrono::steady_clock::now();
-    bool select_held  = false;
-    bool overlay_visible = false;
+    bool l3_held      = false;
+    bool dpad_up_held = false;
 
     // Track last rendered progress to avoid unnecessary redraws while hidden
     // or when nothing changed.
@@ -553,21 +561,19 @@ void runDaemon() {
 
 #ifndef _WIN32
         if (js_fd >= 0) {
-            JoystickEvent ev;
+            struct input_event ev;
             while (read(js_fd, &ev, sizeof(ev)) > 0) {
-                uint8_t ev_type = ev.type & ~0x80;  // strip JS_EVENT_INIT
-
-                if (ev_type == 1) {  // button
+                if (ev.type == EV_KEY) {
                     bool down = (ev.value != 0);
 
-                    // SELECT held tracking (buttons 6, 8, 12, 16 across variants)
-                    if (ev.number == 6 || ev.number == 8 ||
-                        ev.number == 12 || ev.number == 16) {
-                        select_held = down;
+                    // Track L3 state (code 706)
+                    if (ev.code == 706) {
+                        l3_held = down;
                     }
 
-                    if (down && select_held) {
-                        if (ev.number == 0 || ev.number == 1) {  // A → pause/resume
+                    // Hotkeys on button down (value == 1)
+                    if (down && l3_held) {
+                        if (ev.code == 305) { // A → pause/resume
                             if (daemon_status == DaemonStatus::Playing) {
                                 mpv.pause();
                                 daemon_status = DaemonStatus::Paused;
@@ -576,91 +582,96 @@ void runDaemon() {
                                 daemon_status = DaemonStatus::Playing;
                             }
                             daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
                             last_render_pos = -1.0;
-                        } else if (ev.number == 1 || ev.number == 2) {  // B → exit
+                        } else if (ev.code == 304) { // B → exit
                             daemon_running = false;
-                        } else if (ev.number == 5) {  // R1 → next
-                            daemon_current_index =
-                                (daemon_current_index + 1) % (int)daemon_playlist.size();
-                            playCurrentTrack(mpv, yt);
-                            last_render_pos = -1.0;
-                        } else if (ev.number == 4) {  // L1 → prev
+                        } else if (ev.code == 310) { // L1 → prev
                             daemon_current_index =
                                 (daemon_current_index - 1 + (int)daemon_playlist.size())
                                 % (int)daemon_playlist.size();
                             playCurrentTrack(mpv, yt);
                             last_render_pos = -1.0;
-                        }
-                    }
-                    // No bare-button overlay reveal — require SELECT+↑ for that
-                }
-
-                else if (ev_type == 2) {  // axis
-                    const int16_t THRESH = 16384;
-                    if (std::abs(ev.value) < THRESH) continue;  // ignore release / center
-
-                    if (select_held) {
-                        if (ev.number == 6) {  // DPAD horizontal
-                            int dir = (ev.value > 0) ? 1 : -1;
+                        } else if (ev.code == 311) { // R1 → next
                             daemon_current_index =
-                                ((daemon_current_index + dir) + (int)daemon_playlist.size())
-                                % (int)daemon_playlist.size();
+                                (daemon_current_index + 1) % (int)daemon_playlist.size();
                             playCurrentTrack(mpv, yt);
                             last_render_pos = -1.0;
-                        } else if (ev.number == 7) {
-                            if (ev.value < 0) {          // DPAD up → show/refresh overlay
+                        }
+                    }
+                } else if (ev.type == EV_ABS) {
+                    if (ev.code == 17) { // ABS_HAT0Y (DPAD vertical)
+                        bool new_dpad_up = (ev.value < 0);
+                        if (new_dpad_up && !dpad_up_held) { // transition to pressed
+                            if (l3_held) {
                                 daemon_overlay_timer = 5.0f;
-                                last_render_pos = -1.0;
-                            } else {                      // DPAD down → pause/resume
-                                if (daemon_status == DaemonStatus::Playing) {
-                                    mpv.pause();
-                                    daemon_status = DaemonStatus::Paused;
-                                } else if (daemon_status == DaemonStatus::Paused) {
-                                    mpv.resume();
-                                    daemon_status = DaemonStatus::Playing;
-                                }
-                                daemon_overlay_timer = 5.0f;
+                                overlay_active = true;
                                 last_render_pos = -1.0;
                             }
                         }
+                        dpad_up_held = new_dpad_up;
                     }
-                    // Bare DPAD (no SELECT) → intentionally does nothing
                 }
             }
         }
 #endif
 
-        // Overlay timer and conditional redraw
+        // Update overlay alpha based on active state
+        if (overlay_active) {
+            overlay_alpha += dt * 5.0f; // 200ms fade in time
+            if (overlay_alpha > 1.0f) overlay_alpha = 1.0f;
+        } else {
+            overlay_alpha -= dt * 5.0f; // 200ms fade out time
+            if (overlay_alpha < 0.0f) overlay_alpha = 0.0f;
+        }
+
+        // Timer logic
         if (daemon_overlay_timer > 0.0f) {
             daemon_overlay_timer -= dt;
-
-            if (!overlay_visible) {
-                // Just became visible — force an immediate draw
-                overlay_visible = true;
-                last_render_pos = -1.0;
+            if (daemon_overlay_timer <= 0.0f) {
+                overlay_active = false;
             }
+        }
 
-            // Only redraw if playback position moved by ≥1s or something changed
-            double cur_pos = mpv.getPlaybackTime();
-            bool pos_changed = std::abs(cur_pos - last_render_pos) >= 1.0;
+        // Rendering logic
+        bool animating = overlay_alpha > 0.0f && overlay_alpha < 1.0f;
+        double cur_pos = mpv.getPlaybackTime();
+        bool pos_changed = std::abs(cur_pos - last_render_pos) >= 1.0;
+        bool forced_redraw = (last_render_pos < 0.0);
 
-            if (pos_changed || last_render_pos < 0.0) {
+        if (overlay_alpha > 0.0f) {
+            if (animating || pos_changed || forced_redraw) {
                 renderCard(mpv);
                 last_render_pos = cur_pos;
             }
         } else {
-            if (overlay_visible) {
+            if (!overlay_active && overlay_alpha <= 0.01f) {
                 hideOverlay();
-                overlay_visible  = false;
-                last_render_pos  = -1.0;
+                overlay_alpha = 0.0f;
+                last_render_pos = -1.0;
             }
         }
 
-        // Sleep strategy:
-        //   visible   → 500ms (DRM plane persists; only redrawing on 1s pos ticks)
-        //   hidden    → 50ms  (responsive to input, almost no CPU)
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(overlay_visible ? 500 : 50));
+        // Poll waiting strategy
+        int timeout = 500; // default hidden idle state
+        if (overlay_alpha > 0.0f && overlay_alpha < 1.0f) {
+            timeout = 16; // smooth fade animation
+        } else if (overlay_active) {
+            timeout = 250; // overlay visible
+        }
+
+#ifndef _WIN32
+        if (js_fd >= 0) {
+            struct pollfd pfd{};
+            pfd.fd = js_fd;
+            pfd.events = POLLIN;
+            poll(&pfd, 1, timeout);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
+        }
+#else
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
+#endif
     }
 
     std::cerr << "[daemon] Stopping...\n";
