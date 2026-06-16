@@ -1690,21 +1690,48 @@ void App::saveDaemonQueue() {
             v["author"] = current_video_.author;
             v["duration_seconds"] = current_video_.duration_seconds;
             v["duration_string"] = current_video_.duration_string;
+            // Pass the already-resolved stream URL so the daemon can start instantly.
+            auto cached = getCachedStreamUrl(streamCacheKey(current_video_.id, 360));
+            if (cached) {
+                std::string url = *cached;
+                auto pipe_pos = url.find('|');
+                std::string sub_url = "";
+                if (pipe_pos != std::string::npos) {
+                    sub_url = url.substr(pipe_pos + 1);
+                    url = url.substr(0, pipe_pos);
+                }
+                v["stream_url"] = url;
+                v["subtitle_url"] = sub_url;
+            }
             j["videos"].push_back(v);
             j["current_index"] = 0;
         } else {
             int current_idx = 0;
             for (size_t i = 0; i < grid->cards.size(); ++i) {
                 nlohmann::json v;
-                v["id"] = grid->cards[i]->video.id;
-                v["title"] = grid->cards[i]->video.title;
-                v["author"] = grid->cards[i]->video.author;
-                v["duration_seconds"] = grid->cards[i]->video.duration_seconds;
-                v["duration_string"] = grid->cards[i]->video.duration_string;
-                j["videos"].push_back(v);
-                if (grid->cards[i]->video.id == current_video_.id) {
+                const auto& vid = grid->cards[i]->video;
+                v["id"] = vid.id;
+                v["title"] = vid.title;
+                v["author"] = vid.author;
+                v["duration_seconds"] = vid.duration_seconds;
+                v["duration_string"] = vid.duration_string;
+                // Pass the already-resolved URL for the currently-playing track only.
+                if (vid.id == current_video_.id) {
+                    auto cached = getCachedStreamUrl(streamCacheKey(vid.id, 360));
+                    if (cached) {
+                        std::string url = *cached;
+                        auto pipe_pos = url.find('|');
+                        std::string sub_url = "";
+                        if (pipe_pos != std::string::npos) {
+                            sub_url = url.substr(pipe_pos + 1);
+                            url = url.substr(0, pipe_pos);
+                        }
+                        v["stream_url"] = url;
+                        v["subtitle_url"] = sub_url;
+                    }
                     current_idx = static_cast<int>(i);
                 }
+                j["videos"].push_back(v);
             }
             j["current_index"] = current_idx;
         }
@@ -1716,6 +1743,7 @@ void App::saveDaemonQueue() {
         }
     } catch (...) {}
 }
+
 
 void App::playNextTrack() {
     std::shared_ptr<ui::GridContainer> grid = (state_manager_.getPreviousBrowseScreen() == TubeState::Screen::Search) ? search_grid_ : home_grid_;

@@ -35,6 +35,9 @@ struct DaemonVideo {
     std::string author;
     int duration_seconds = 0;
     std::string duration_string;
+    // Pre-resolved stream URL from the app — avoids yt-dlp re-resolve on startup.
+    std::string stream_url;
+    std::string subtitle_url;
 };
 
 // State variables
@@ -129,6 +132,8 @@ static bool loadDaemonQueue() {
                 v.author = item.value("author", "");
                 v.duration_seconds = item.value("duration_seconds", 0);
                 v.duration_string = item.value("duration_string", "");
+                v.stream_url = item.value("stream_url", "");
+                v.subtitle_url = item.value("subtitle_url", "");
                 daemon_playlist.push_back(v);
             }
         }
@@ -381,7 +386,27 @@ static std::string truncateText(const std::string& text, size_t maxLen) {
 static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
     if (daemon_current_index < 0 || daemon_current_index >= static_cast<int>(daemon_playlist.size())) return;
     auto& video = daemon_playlist[daemon_current_index];
-    
+
+    daemon_overlay_timer = 5.0f;
+    daemon_needs_redraw = true;
+
+    // Fast path: use pre-resolved URL written by the app into daemon_queue.json.
+    // This avoids a full yt-dlp re-resolve on startup and gives instant audio.
+    if (!video.stream_url.empty()) {
+        std::cerr << "[daemon] Using pre-resolved URL for " << video.id << "\n";
+        mpv.play(video.stream_url, video.subtitle_url);
+        if (daemon_start_position > 0.0) {
+            mpv.setPendingSeekPosition(daemon_start_position);
+            daemon_start_position = 0.0;
+        }
+        daemon_status = DaemonStatus::Playing;
+        // Clear so next/prev tracks go through the normal resolve path.
+        video.stream_url.clear();
+        video.subtitle_url.clear();
+        return;
+    }
+
+    // Slow path: resolve via yt-dlp (for tracks other than the currently-playing one).
     {
         std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
         daemon_status = DaemonStatus::Resolving;
@@ -390,10 +415,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         daemon_resolved_url = "";
         daemon_subtitle_url = "";
     }
-    
-    daemon_overlay_timer = 5.0f;
-    daemon_needs_redraw = true;
-    
+
     yt.getStreamUrl(video.id, 360, [](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
         std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
         daemon_resolved_url = url;
