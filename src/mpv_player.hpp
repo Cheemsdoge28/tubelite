@@ -21,6 +21,7 @@ public:
 
     // Call AFTER SDL_CreateRenderer. Primes the EGL context then inits mpv.
     bool initialize(SDL_Window* window, SDL_Renderer* renderer);
+    bool initializeAudioOnly();
     void shutdown();
 
     // Render the latest video frame by rendering it offscreen to texture and copying it to the screen.
