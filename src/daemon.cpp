@@ -413,7 +413,22 @@ static void drawHRule(int rx, int ry, int rw,
 
 // ── FreeType ──────────────────────────────────────────────────────────────────
 
+// Coverage gamma LUT. Small anti-aliased text on a dark surface renders thin
+// and washed-out because linear AA coverage under-weights partially-covered
+// edge pixels. A sub-1.0 gamma lifts those mid values, fattening strokes just
+// enough to read crisply at 9-14px. Built once; a plain table lookup at draw.
+static uint8_t cov_lut[256];
+static void initCoverageLut() {
+    for (int i = 0; i < 256; ++i) {
+        float c = i / 255.0f;
+        c = powf(c, 0.70f);                 // < 1.0 => brighten/thicken edges
+        int v = (int)(c * 255.0f + 0.5f);
+        cov_lut[i] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+    }
+}
+
 static void initFreetype() {
+    initCoverageLut();
     if (FT_Init_FreeType(&ft_lib) != 0) return;
     for (const auto& p : {
             "res/fonts/AtkinsonHyperlegible-Regular.ttf",
@@ -467,7 +482,8 @@ static void drawText(const std::string& text, int x, int y, int fontSize,
                 i += 2;
             }
         }
-        if (FT_Load_Char(ft_face, cp, FT_LOAD_RENDER) != 0) continue;
+        // Light autohint target keeps small glyphs crisp without over-snapping.
+        if (FT_Load_Char(ft_face, cp, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) continue;
         FT_GlyphSlot gl = ft_face->glyph;
         int gx = pen_x + gl->bitmap_left;
         int gy = pen_y - gl->bitmap_top;
@@ -475,7 +491,7 @@ static void drawText(const std::string& text, int x, int y, int fontSize,
             for (unsigned col = 0; col < gl->bitmap.width; ++col) {
                 int px = gx + (int)col;
                 if (px >= clip_x2) continue;
-                uint8_t ga = gl->bitmap.buffer[row * gl->bitmap.pitch + col];
+                uint8_t ga = cov_lut[gl->bitmap.buffer[row * gl->bitmap.pitch + col]];
                 if (ga == 0) continue;
                 drmPutPixel(px, gy + (int)row, r, g, b,
                             (uint8_t)((uint16_t)ga * a / 255));
@@ -632,7 +648,7 @@ static void renderCard(MpvPlayer& mpv) {
 
     // ── 7. Author (11px) + timestamp right-aligned (same baseline) ───────────
     drawText(truncateText(video.author, 40), ML, 27, 11,
-             C_AU_R, C_AU_G, C_AU_B, fade(200));
+             C_AU_R, C_AU_G, C_AU_B, fade(230));
 
     double pos  = mpv.getPlaybackTime();
     double dur  = mpv.getDuration() > 0.0 ? mpv.getDuration()
@@ -642,7 +658,7 @@ static void renderCard(MpvPlayer& mpv) {
     std::string timeStr = formatTime(pos) + " / " +
         (video.duration_string.empty() ? formatTime(dur) : video.duration_string);
     drawTextRight(timeStr, card_w - MR, 27, 10,
-                  C_TM_R, C_TM_G, C_TM_B, fade(175));
+                  C_TM_R, C_TM_G, C_TM_B, fade(215));
 
     // ── 8. Separator hairline above progress bar ──────────────────────────────
     drawHRule(ML, 42, card_w - ML - MR, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, fade(90));
@@ -681,19 +697,20 @@ static void renderCard(MpvPlayer& mpv) {
     }
 
     // ── 10. Hint row + track index ────────────────────────────────────────────
-    // Single line with middle-dot separators; track index right-aligned
-    // U+00B7 = middle dot ·   U+2190/2192 = ← →
+    // Single line with middle-dot separators; track index right-aligned.
+    // Use plain "L/R" for the shoulder-button skip (the font has no ←/→ arrow
+    // glyphs, which previously rendered as tofu). U+00B7 middle dot is present.
     const std::string hints =
-        "FN+A Pause  \xC2\xB7  FN+\xE2\x86\x90\xE2\x86\x92 Skip  \xC2\xB7  FN+B Exit";
-    drawText(hints, ML, 62, 9, C_HN_R, C_HN_G, C_HN_B, fade(155));
+        "FN+A Pause  \xC2\xB7  FN+L/R Skip  \xC2\xB7  FN+B Exit";
+    drawText(hints, ML, 62, 9, C_HN_R, C_HN_G, C_HN_B, fade(205));
 
     if ((int)daemon_playlist.size() > 1) {
-        // U+2044 = fraction slash ⁄
+        // Plain ASCII slash — the font lacks the U+2044 fraction slash glyph.
         std::string idx = std::to_string(daemon_current_index + 1)
-                        + " \xE2\x81\x84 "
+                        + " / "
                         + std::to_string(daemon_playlist.size());
         drawTextRight(idx, card_w - MR, 62, 9,
-                      C_HN_R, C_HN_G, C_HN_B, fade(110));
+                      C_HN_R, C_HN_G, C_HN_B, fade(175));
     }
 
     // ── 11. Flush to DRM dumb buffer ─────────────────────────────────────────
