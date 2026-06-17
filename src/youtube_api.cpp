@@ -222,8 +222,12 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
 
         json req = {{"op", "stream"}, {"id", video_id}, {"max_height", max_height}};
+        if (isPreview) req["preview"] = true;
         json resp;
-        bool ok = tubedRequest(req, resp, 25000);
+        // Previews use a shorter ceiling so a stale one releases its socket
+        // quickly; tubed sees the disconnect and kills the underlying yt-dlp
+        // instead of resolving a stream the user already scrolled past.
+        bool ok = tubedRequest(req, resp, isPreview ? 12000 : 25000);
 
         if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
 

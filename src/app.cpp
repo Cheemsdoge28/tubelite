@@ -1552,13 +1552,13 @@ void App::loadMoreHomeFeeds() {
             }
             
             if (!results.empty()) {
+                // Build id set once (O(history)) rather than scanning per card (O(history×cards)).
+                std::unordered_set<std::string> historyIds;
+                historyIds.reserve(playback_history_.size());
+                for (const auto& hv : playback_history_) historyIds.insert(hv.id);
                 for (const auto& v : results) {
-                    bool inHistory = false;
-                    for (const auto& hv : playback_history_) {
-                        if (hv.id == v.id) { inHistory = true; break; }
-                    }
-                    if (inHistory) continue;
-                    
+                    if (historyIds.count(v.id)) continue;
+
                     auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
                     card->onClick = [this, v]() { playVideo(v); };
                     home_grid_->addCard(card);

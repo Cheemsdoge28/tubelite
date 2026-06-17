@@ -34,4 +34,18 @@ private:
     std::string last_miniplayer_video_id_;
     bool last_miniplayer_playing_{false};
     bool miniplayer_strip_dirty_{true};
+
+    // Playback HUD string cache.  The truncated title, author, and stats string
+    // are all static during playback (they change only when the video or its
+    // loaded metadata changes).  Caching them eliminates O(title_len +
+    // author_len) getTextSize calls that the per-character shrink loops
+    // previously issued every frame.
+    std::string  hud_cache_id_;
+    int          hud_cache_width_{-1};
+    bool         hud_cache_speed_{false};    // speed-badge visible last frame
+    long long    hud_cache_views_{-2};       // sentinel: -2 = never populated
+    std::string  hud_title_;                 // pre-truncated title
+    std::string  hud_author_;                // pre-truncated author
+    std::string  hud_stats_;                 // formatted stats line
+    int          hud_stats_w_{0};            // pre-measured stats width
 };

@@ -563,12 +563,17 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     }
     const double frac        = (dur > 0.0) ? std::max(0.0, std::min(1.0, displayTime / dur)) : 0.0;
 
-    // Initialize or resize HUD layer if needed
-    if (!hud_layer_.getTexture() || hud_layer_.getWidth() != width || hud_layer_.getHeight() != height) {
-        hud_layer_.init(renderer_, width, height, {0, 0, width, height});
+    // Use the FBO only during the short fade-out window (opacity < 255).  For
+    // the common case (HUD fully visible, opacity == 255) we render directly to
+    // the screen render target and save the two SDL_SetRenderTarget calls that
+    // would otherwise force two tile-flush/restore cycles on the Mali-G31.
+    const bool use_fbo = (opacity < 255);
+    if (use_fbo) {
+        if (!hud_layer_.getTexture() || hud_layer_.getWidth() != width || hud_layer_.getHeight() != height) {
+            hud_layer_.init(renderer_, width, height, {0, 0, width, height});
+        }
+        hud_layer_.begin(renderer_, {0, 0, 0, 0});
     }
-
-    hud_layer_.begin(renderer_, {0, 0, 0, 0});
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
@@ -582,24 +587,50 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     SDL_RenderFillRect(renderer_, &topBorder);
     
     {
-        std::string titleTxt = app->current_video_.title;
-        int maxTitleW = width - 28;
-        if (app->state_.speed != 1.0) {
-            maxTitleW -= 60;
-        }
-        int titleW = 0, titleH = 0;
-        getTextSize(titleTxt, 2, &titleW, &titleH);
-        if (titleW > maxTitleW) {
-            while (!titleTxt.empty() && titleW > maxTitleW - 16) {
-                titleTxt = utf8Slice(titleTxt, 0, utf8Length(titleTxt) - 1);
-                getTextSize(titleTxt + "...", 2, &titleW, &titleH);
+        // Recompute truncated title, author, and stats only when the video ID,
+        // display width, speed-badge visibility, or loaded view count changes.
+        // During steady playback none of these change, so this block is a
+        // no-op every frame.  truncateTextToWidth uses binary search (O(log n)
+        // getTextSize calls) instead of the previous per-character shrink loop.
+        const bool hasBadge = (app->state_.speed != 1.0);
+        const long long curViews = app->active_video_metadata_.view_count;
+        if (hud_cache_id_    != app->current_video_.id ||
+            hud_cache_width_ != width                   ||
+            hud_cache_speed_ != hasBadge                ||
+            hud_cache_views_ != curViews) {
+
+            hud_cache_id_    = app->current_video_.id;
+            hud_cache_width_ = width;
+            hud_cache_speed_ = hasBadge;
+            hud_cache_views_ = curViews;
+
+            // Title (line 1, left)
+            int maxTitleW = width - 28 - (hasBadge ? 60 : 0);
+            hud_title_ = truncateTextToWidth(app->current_video_.title, 2, maxTitleW);
+
+            // Stats string (line 2, right)
+            const auto& meta = app->active_video_metadata_;
+            if (meta.view_count > 0 || meta.like_count > 0) {
+                hud_stats_ = formatStatsNumber(meta.view_count) + " VIEWS   •   " +
+                             formatStatsNumber(meta.like_count) + " LIKES";
+                if (meta.subscriber_count > 0)
+                    hud_stats_ += "   •   " + formatStatsNumber(meta.subscriber_count) + " SUBS";
+                if (meta.comment_count > 0)
+                    hud_stats_ += "   •   " + formatStatsNumber(meta.comment_count) + " COMMENTS";
+            } else {
+                hud_stats_ = "LOADING STATS...";
             }
-            titleTxt += "...";
+            getTextSize(hud_stats_, 1, &hud_stats_w_, nullptr);
+
+            // Author (line 2, left — truncated to fit beside stats)
+            int maxAuthorW = width - 28 - hud_stats_w_ - 20;
+            hud_author_ = truncateTextToWidth(app->current_video_.author, 1, maxAuthorW);
         }
-        drawTextShadow(renderer_, 14, 6, titleTxt, 2, theme::WHITE);
+
+        drawTextShadow(renderer_, 14, 6, hud_title_, 2, theme::WHITE);
 
         // Speed badge (top right)
-        if (app->state_.speed != 1.0) {
+        if (hasBadge) {
             char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
             int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
             SDL_Rect badge{width - sw - 20, 10, sw + 12, sh + 6};
@@ -607,40 +638,9 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, theme::WHITE);
         }
 
-        // Stats string formatted on the right of Line 2
-        std::string statsStr = "";
-        if (app->active_video_metadata_.view_count > 0 || app->active_video_metadata_.like_count > 0) {
-            statsStr = formatStatsNumber(app->active_video_metadata_.view_count) + " VIEWS   •   " +
-                       formatStatsNumber(app->active_video_metadata_.like_count) + " LIKES";
-            if (app->active_video_metadata_.subscriber_count > 0) {
-                statsStr += "   •   " + formatStatsNumber(app->active_video_metadata_.subscriber_count) + " SUBS";
-            }
-            if (app->active_video_metadata_.comment_count > 0) {
-                statsStr += "   •   " + formatStatsNumber(app->active_video_metadata_.comment_count) + " COMMENTS";
-            }
-        } else {
-            statsStr = "LOADING STATS...";
-        }
-
-        int statsW = 0, statsH = 0;
-        getTextSize(statsStr, 1, &statsW, &statsH);
-        drawText(renderer_, width - 14 - statsW, 32, statsStr, 1, theme::TEXT_ON.a8(200));
-
-        // Channel Author on the left of Line 2
-        if (!app->current_video_.author.empty()) {
-            std::string author = app->current_video_.author;
-            int maxAuthorW = width - 28 - statsW - 20;
-            int authW = 0, authH = 0;
-            getTextSize(author, 1, &authW, &authH);
-            if (authW > maxAuthorW) {
-                while (!author.empty() && authW > maxAuthorW - 12) {
-                    author = utf8Slice(author, 0, utf8Length(author) - 1);
-                    getTextSize(author + "...", 1, &authW, &authH);
-                }
-                author += "...";
-            }
-            drawText(renderer_, 14, 32, author, 1, theme::ACCENT);
-        }
+        drawText(renderer_, width - 14 - hud_stats_w_, 32, hud_stats_, 1, theme::TEXT_ON.a8(200));
+        if (!hud_author_.empty())
+            drawText(renderer_, 14, 32, hud_author_, 1, theme::ACCENT);
     }
 
     // ── Centre pause/play icon ─────────────────────────────────────────────────
@@ -892,8 +892,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     // Hint bar sits inside the 60px bottom panel, below the timestamp row
     drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(180), textColor);
 
-    hud_layer_.end(renderer_);
-
-    // Copy HUD onto screen with smooth fade-out opacity
-    hud_layer_.present(renderer_, opacity);
+    if (use_fbo) {
+        hud_layer_.end(renderer_);
+        hud_layer_.present(renderer_, opacity);
+    }
 }

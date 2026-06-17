@@ -156,6 +156,22 @@ _work_sem = threading.BoundedSemaphore(MAX_WORKERS)
 _active_procs = set()
 _active_lock = threading.Lock()
 
+# Per-request liveness hook. The socket Handler stashes a callable here (scoped to
+# the handler thread) that reports whether the requesting client is still
+# connected. yt-dlp work checks it so we can bail the moment the app gives up on a
+# request — e.g. the user scrolled past a card whose preview was mid-resolve —
+# instead of grinding a stream nobody is waiting for any more.
+_req_ctx = threading.local()
+
+def _client_is_alive():
+    fn = getattr(_req_ctx, "is_alive", None)
+    if fn is None:
+        return True          # no hook (e.g. internal call) — assume wanted
+    try:
+        return fn()
+    except Exception:
+        return True
+
 def _kill_proc_group(p):
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -236,17 +252,31 @@ def _run_ytdlp(args, timeout):
         return ""
     with _active_lock:
         _active_procs.add(p)
-    try:
-        out, _ = p.communicate(timeout=timeout)
-        return out.decode("utf-8", "replace") if out else ""
-    except subprocess.TimeoutExpired:
-        log("yt-dlp timed out; killing process group")
+
+    def _reap(reason):
+        log(reason)
         _kill_proc_group(p)
         try:
             p.communicate(timeout=2)
         except Exception:
             pass
         return ""
+
+    try:
+        # Poll instead of one blocking communicate() so we can cut the work short
+        # when the client disconnects. Granularity is 0.5s, so an abandoned
+        # request is dropped within half a second of the app closing its socket.
+        deadline = time.time() + timeout
+        while True:
+            try:
+                out, _ = p.communicate(timeout=0.5)
+                return out.decode("utf-8", "replace") if out else ""
+            except subprocess.TimeoutExpired:
+                pass
+            if not _client_is_alive():
+                return _reap("client disconnected; killing yt-dlp")
+            if time.time() >= deadline:
+                return _reap("yt-dlp timed out; killing process group")
     except Exception as ex:
         log("yt-dlp run failed:", ex)
         _kill_proc_group(p)
@@ -436,12 +466,23 @@ def _parse_stream_info(info):
     return stream_url, _best_subtitle_url(info), meta
 
 
-def _extract_stream(video_id, max_height):
+def _extract_stream(video_id, max_height, preview=False):
     url = f"https://www.youtube.com/watch?v={video_id}"
     fmt = (f"best[height<={max_height}][vcodec^=avc1]"
            f"/best[height<={max_height}]"
            f"/best")
-    for clients in _CLIENT_CHAIN:
+    # Previews are best-effort eye-candy: only try the single fastest client with
+    # a short timeout, and don't walk the fallback chain. This caps a preview at
+    # one quick yt-dlp run (~seconds) instead of up to ~100s of chained attempts
+    # the user has usually scrolled past anyway. A real "play" (preview=False)
+    # still gets the full reliability chain.
+    chain = [["ios"]] if preview else _CLIENT_CHAIN
+    run_timeout = 12 if preview else 25
+    for clients in chain:
+        # If the requester already gave up (scrolled away), stop before spawning
+        # another yt-dlp for a result no one will read.
+        if not _client_is_alive():
+            raise RuntimeError("client gone")
         # player_skip=webpage,configs avoids the extra watch-page + config HTTP
         # round-trips the default path makes — a real chunk of first-play latency.
         ea = "youtube:skip=dash,hls;player_skip=webpage,configs"
@@ -452,7 +493,7 @@ def _extract_stream(video_id, max_height):
             "--no-playlist", "--youtube-skip-dash-manifest", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ]
-        out = _run_ytdlp(args, timeout=25)
+        out = _run_ytdlp(args, timeout=run_timeout)
         for line in out.splitlines():
             line = line.strip()
             if not line:
@@ -472,6 +513,7 @@ def _extract_stream(video_id, max_height):
 def op_stream(req):
     vid = (req.get("id") or "").strip()
     h = int(req.get("max_height") or 360)
+    preview = bool(req.get("preview", False))
     if not vid:
         return {"ok": False, "error": "missing id"}
 
@@ -485,8 +527,11 @@ def op_stream(req):
         cached = CACHE.get(ck)
         if cached is not None:
             return {"ok": True, **cached}
+        # The client may have moved on while we waited for the worker slot.
+        if not _client_is_alive():
+            return {"ok": False, "error": "client gone"}
         try:
-            url, sub, meta = _extract_stream(vid, h)
+            url, sub, meta = _extract_stream(vid, h, preview=preview)
         except Exception as ex:
             return {"ok": False, "error": str(ex)}
 
@@ -528,15 +573,32 @@ class Handler(socketserver.StreamRequestHandler):
             if not fn:
                 self._send({"ok": False, "error": f"unknown op: {op}"})
                 return
+            # Expose client liveness to the op (and the yt-dlp it runs) so long
+            # resolves can bail when the app disconnects. Scoped to this thread.
+            _req_ctx.is_alive = self._client_alive
             try:
                 resp = fn(req)
             except Exception as ex:
                 log("op", op, "crashed:", ex)
                 resp = {"ok": False, "error": str(ex)}
+            finally:
+                _req_ctx.is_alive = None
             self._send(resp)
             _last_activity = time.time()
         except Exception as ex:
             log("handler error:", ex)
+
+    def _client_alive(self):
+        # Peek the socket without consuming: b'' means the peer closed the
+        # connection; BlockingIOError means it's still open with nothing pending
+        # (the normal case while we resolve). The client never sends a second
+        # line, so a non-empty peek isn't expected.
+        try:
+            return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) != b""
+        except (BlockingIOError, InterruptedError):
+            return True
+        except OSError:
+            return False
 
     def _send(self, obj):
         try:
