@@ -680,49 +680,33 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             return;
         }
 
-        // ── Playback path (explicit, user-initiated, infrequent) ──────────────
-        // Race every resolver concurrently; first usable muxed URL wins. The
-        // burst of processes is bounded to a single play action.
-        auto race = std::make_shared<ResolveRace>();
-        auto spawn = [race](std::function<bool(std::string&, std::string&, VideoPlaybackMetadata&)> fn) {
-            { std::lock_guard<std::mutex> lk(race->m); ++race->remaining; }
-            std::thread([race, fn]() {
-                std::string u, sub; VideoPlaybackMetadata m;
-                bool ok = false;
-                try { ok = fn(u, sub, m); } catch (...) { ok = false; }
-                race->finish(ok, u, sub, m);
-            }).detach();
-        };
-
-        for (const auto& inst : kInvidious) {
-            spawn([inst, safeId, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
-                (void)s; return fetchInvidiousInstance(inst, safeId, max_height, u, m);
-            });
+        // ── Playback path (explicit, user-initiated) ──────────────────────────
+        // Resolve via yt-dlp FIRST. It returns a single muxed H.264 stream that
+        // reliably hardware-decodes on the RK3326 — this is the URL that
+        // actually plays. The public instances are tried only as a fallback:
+        // they are frequently down, and the stream URLs they hand back are
+        // often bound to the instance's own IP (so they 403 for mpv) — letting
+        // one of those "win" was exactly why playback silently failed.
+        // This is also faster than the original, which wasted ~15s walking a
+        // chain of dead instances before ever reaching yt-dlp.
+        if (stillWanted()) {
+            runYtDlp(watchUrl, max_height, url, subtitle_url, meta);
         }
-        for (const auto& inst : kPiped) {
-            spawn([inst, safeId, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
-                (void)s; return fetchPipedInstance(inst, safeId, max_height, u, m);
-            });
+        if (url.empty()) {
+            for (const auto& inst : kInvidious) {
+                if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+                if (fetchInvidiousInstance(inst, safeId, max_height, url, meta)) break;
+            }
         }
-        spawn([watchUrl, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
-            return runYtDlp(watchUrl, max_height, u, s, m);
-        });
-
-        // Wait for the first winner, or until everyone has finished — capped so
-        // a stalled network can't wedge the request forever.
-        bool ok = false;
-        {
-            std::unique_lock<std::mutex> lk(race->m);
-            race->cv.wait_for(lk, std::chrono::seconds(20),
-                              [&]{ return race->done || race->remaining == 0; });
-            ok           = race->success;
-            url          = race->url;
-            subtitle_url = race->subtitle_url;
-            meta         = race->meta;
+        if (url.empty()) {
+            for (const auto& inst : kPiped) {
+                if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+                if (fetchPipedInstance(inst, safeId, max_height, url, meta)) break;
+            }
         }
 
-        if (!ok || url.empty()) {
-            appendLog("resolve: no URL found", "All resolvers failed or were superseded.");
+        if (url.empty()) {
+            appendLog("resolve: no URL found", "yt-dlp and all public instances failed.");
             callback(false, "", "", VideoPlaybackMetadata());
             return;
         }
