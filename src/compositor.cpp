@@ -546,73 +546,85 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     }
     const double frac        = (dur > 0.0) ? std::max(0.0, std::min(1.0, displayTime / dur)) : 0.0;
 
-    // Use the FBO only during the short fade-out window (opacity < 255).  For
-    // the common case (HUD fully visible, opacity == 255) we render directly to
-    // the screen render target and save the two SDL_SetRenderTarget calls that
-    // would otherwise force two tile-flush/restore cycles on the Mali-G31.
-    const bool use_fbo = (opacity < 255);
-    if (use_fbo) {
-        if (!hud_layer_.getTexture() || hud_layer_.getWidth() != width || hud_layer_.getHeight() != height) {
-            hud_layer_.init(renderer_, width, height, {0, 0, width, height});
+    // ── Text-cache update (cheap, no SDL state changes) ───────────────────────
+    // Recompute truncated title/author/stats only when the inputs change.
+    // truncateTextToWidth uses binary search (O(log n) getTextSize calls).
+    const bool hasBadge = (app->state_.speed != 1.0);
+    const long long curViews = app->active_video_metadata_.view_count;
+    if (hud_cache_id_    != app->current_video_.id ||
+        hud_cache_width_ != width                   ||
+        hud_cache_speed_ != hasBadge                ||
+        hud_cache_views_ != curViews) {
+
+        hud_cache_id_    = app->current_video_.id;
+        hud_cache_width_ = width;
+        hud_cache_speed_ = hasBadge;
+        hud_cache_views_ = curViews;
+
+        int maxTitleW = width - 28 - (hasBadge ? 60 : 0);
+        hud_title_ = truncateTextToWidth(app->current_video_.title, 2, maxTitleW);
+
+        const auto& meta = app->active_video_metadata_;
+        if (meta.view_count > 0 || meta.like_count > 0) {
+            hud_stats_ = formatStatsNumber(meta.view_count) + " VIEWS   •   " +
+                         formatStatsNumber(meta.like_count) + " LIKES";
+            if (meta.subscriber_count > 0)
+                hud_stats_ += "   •   " + formatStatsNumber(meta.subscriber_count) + " SUBS";
+            if (meta.comment_count > 0)
+                hud_stats_ += "   •   " + formatStatsNumber(meta.comment_count) + " COMMENTS";
+        } else {
+            hud_stats_ = "LOADING STATS...";
         }
-        hud_layer_.begin(renderer_, {0, 0, 0, 0});
+        getTextSize(hud_stats_, 1, &hud_stats_w_, nullptr);
+
+        int maxAuthorW = width - 28 - hud_stats_w_ - 20;
+        hud_author_ = truncateTextToWidth(app->current_video_.author, 1, maxAuthorW);
+
+        hud_static_dirty_ = true;
     }
 
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    // ── Static-decoration layer cache ─────────────────────────────────────────
+    // Bar backgrounds, title/author/stats text, speed badge, hint buttons —
+    // anything that doesn't move from one frame to the next — lives in a
+    // cached SDL texture.  We pay ONE SDL_SetRenderTarget (Mali tile flush) at
+    // rebuild time, then composite the whole HUD chrome with a single
+    // SDL_RenderCopy every frame thereafter.
+    const bool drawerOpen   = app->state_.showDescriptionDrawer;
+    const bool playingState = playing;
+    if (!hud_static_layer_.getTexture() ||
+        hud_static_layer_.getWidth()  != width  ||
+        hud_static_layer_.getHeight() != height ||
+        hud_static_w_                 != width  ||
+        hud_static_h_                 != height ||
+        hud_static_video_id_          != app->current_video_.id ||
+        hud_static_speed_badge_       != hasBadge ||
+        hud_static_views_             != curViews ||
+        hud_static_drawer_open_       != drawerOpen ||
+        hud_static_playing_           != playingState) {
+        hud_static_dirty_ = true;
+    }
 
-    // ── Top Panel ─────────────────────────────────────────────────────────────
-    SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 220);
-    SDL_Rect topPanel{0, 0, width, 56};
-    SDL_RenderFillRect(renderer_, &topPanel);
-
-    SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 220);
-    SDL_Rect topBorder{0, 56, width, 2};
-    SDL_RenderFillRect(renderer_, &topBorder);
-    
-    {
-        // Recompute truncated title, author, and stats only when the video ID,
-        // display width, speed-badge visibility, or loaded view count changes.
-        // During steady playback none of these change, so this block is a
-        // no-op every frame.  truncateTextToWidth uses binary search (O(log n)
-        // getTextSize calls) instead of the previous per-character shrink loop.
-        const bool hasBadge = (app->state_.speed != 1.0);
-        const long long curViews = app->active_video_metadata_.view_count;
-        if (hud_cache_id_    != app->current_video_.id ||
-            hud_cache_width_ != width                   ||
-            hud_cache_speed_ != hasBadge                ||
-            hud_cache_views_ != curViews) {
-
-            hud_cache_id_    = app->current_video_.id;
-            hud_cache_width_ = width;
-            hud_cache_speed_ = hasBadge;
-            hud_cache_views_ = curViews;
-
-            // Title (line 1, left)
-            int maxTitleW = width - 28 - (hasBadge ? 60 : 0);
-            hud_title_ = truncateTextToWidth(app->current_video_.title, 2, maxTitleW);
-
-            // Stats string (line 2, right)
-            const auto& meta = app->active_video_metadata_;
-            if (meta.view_count > 0 || meta.like_count > 0) {
-                hud_stats_ = formatStatsNumber(meta.view_count) + " VIEWS   •   " +
-                             formatStatsNumber(meta.like_count) + " LIKES";
-                if (meta.subscriber_count > 0)
-                    hud_stats_ += "   •   " + formatStatsNumber(meta.subscriber_count) + " SUBS";
-                if (meta.comment_count > 0)
-                    hud_stats_ += "   •   " + formatStatsNumber(meta.comment_count) + " COMMENTS";
-            } else {
-                hud_stats_ = "LOADING STATS...";
-            }
-            getTextSize(hud_stats_, 1, &hud_stats_w_, nullptr);
-
-            // Author (line 2, left — truncated to fit beside stats)
-            int maxAuthorW = width - 28 - hud_stats_w_ - 20;
-            hud_author_ = truncateTextToWidth(app->current_video_.author, 1, maxAuthorW);
+    if (hud_static_dirty_) {
+        if (!hud_static_layer_.getTexture() ||
+            hud_static_layer_.getWidth()  != width ||
+            hud_static_layer_.getHeight() != height) {
+            hud_static_layer_.init(renderer_, width, height, {0, 0, width, height});
         }
+        hud_static_layer_.begin(renderer_, {0, 0, 0, 0});
+
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+        // ── Top Panel ─────────────────────────────────────────────────────────
+        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 220);
+        SDL_Rect topPanel{0, 0, width, 56};
+        SDL_RenderFillRect(renderer_, &topPanel);
+
+        SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 220);
+        SDL_Rect topBorder{0, 56, width, 2};
+        SDL_RenderFillRect(renderer_, &topBorder);
 
         drawTextShadow(renderer_, 14, 6, hud_title_, 2, theme::WHITE);
 
-        // Speed badge (top right)
         if (hasBadge) {
             char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
             int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
@@ -624,7 +636,84 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         drawText(renderer_, width - 14 - hud_stats_w_, 32, hud_stats_, 1, theme::TEXT_ON.a8(200));
         if (!hud_author_.empty())
             drawText(renderer_, 14, 32, hud_author_, 1, theme::ACCENT);
+
+        // ── Bottom Panel (background + border + hint buttons; progress bar
+        //    and timestamps stay dynamic) ──────────────────────────────────────
+        const int botH = 60;
+        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 225);
+        SDL_Rect botPanel{0, height - botH, width, botH};
+        SDL_RenderFillRect(renderer_, &botPanel);
+
+        SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
+        SDL_Rect botBorder{0, height - botH, width, 1};
+        SDL_RenderFillRect(renderer_, &botBorder);
+
+        // Hint buttons (the row of pills along the bottom — same content every
+        // frame for a given drawer/playing state, so safe to cache).
+        SDL_Color textColor    = theme::TEXT_ON;
+        const SDL_Color red    = theme::ACCENT;
+        const SDL_Color blue   = theme::BLUE;
+        const SDL_Color yellow = theme::YELLOW;
+        const SDL_Color green  = theme::GREEN;
+        const SDL_Color purple = theme::PURPLE;
+        const SDL_Color panel  = theme::PANEL.a8(200);
+
+        std::vector<HintItem> activeHints;
+        if (drawerOpen) {
+            activeHints = {
+                {"A", red, playingState ? "PAUSE" : "PLAY"},
+                {"B", yellow, "CLOSE"},
+                {"UP/DOWN", textColor, "SCROLL"},
+                {"FN+A", purple, "TOGGLE DESC"},
+                {"L1/R1", textColor, "SPEED"},
+                {"L2/R2", textColor, "VOL"}
+            };
+        } else {
+            activeHints = {
+                {"A", red, playingState ? "PAUSE" : "PLAY"},
+                {"B", yellow, "EXIT"},
+                {"FN+A", purple, "DESC"},
+                {"SEL", textColor, "MINI"},
+                {"Y", green, "SUBS"},
+                {"L3", blue, "STATS"},
+                {"L1/R1", textColor, "SPEED"},
+                {"L2/R2", textColor, "VOL"}
+            };
+        }
+        drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(180), textColor);
+
+        hud_static_layer_.end(renderer_);
+
+        hud_static_dirty_       = false;
+        hud_static_w_           = width;
+        hud_static_h_           = height;
+        hud_static_video_id_    = app->current_video_.id;
+        hud_static_speed_badge_ = hasBadge;
+        hud_static_views_       = curViews;
+        hud_static_drawer_open_ = drawerOpen;
+        hud_static_playing_     = playingState;
     }
+
+    // ── Pick the per-frame draw target ────────────────────────────────────────
+    // Common case (opacity == 255): draw dynamic parts straight to the screen
+    // and composite the cached static layer.  Fade-out case: route everything
+    // through hud_layer_ so the whole HUD fades as a unit.
+    const bool use_fbo = (opacity < 255);
+    if (use_fbo) {
+        if (!hud_layer_.getTexture() || hud_layer_.getWidth() != width || hud_layer_.getHeight() != height) {
+            hud_layer_.init(renderer_, width, height, {0, 0, width, height});
+        }
+        hud_layer_.begin(renderer_, {0, 0, 0, 0});
+    }
+
+    // Blit the cached static decoration first (covers both panels + their text).
+    if (hud_static_layer_.getTexture()) {
+        SDL_SetTextureBlendMode(hud_static_layer_.getTexture(), SDL_BLENDMODE_BLEND);
+        SDL_Rect full{0, 0, width, height};
+        SDL_RenderCopy(renderer_, hud_static_layer_.getTexture(), nullptr, &full);
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
     // ── Centre pause/play icon ─────────────────────────────────────────────────
     bool showPlayFlash = false;

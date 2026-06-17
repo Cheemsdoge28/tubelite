@@ -20,6 +20,7 @@ private:
     
     Layer header_layer_;
     Layer hud_layer_;
+    Layer hud_static_layer_;   // cached static HUD decoration (bars + text + hint buttons)
     Layer miniplayer_layer_;
 
     // Cache invalidation state for the browse header
@@ -48,4 +49,23 @@ private:
     std::string  hud_author_;                // pre-truncated author
     std::string  hud_stats_;                 // formatted stats line
     int          hud_stats_w_{0};            // pre-measured stats width
+
+    // Static-decoration cache for the playback HUD.  All non-animated parts
+    // of the HUD (top/bottom bar backgrounds, title, author, stats, hint
+    // buttons, speed badge) are rasterised ONCE into hud_static_layer_ and
+    // composited every frame with a single SDL_RenderCopy.  Only the
+    // truly dynamic parts (progress bar, timestamps, centre play/pause
+    // icon, scrub thumbnail, description drawer) are redrawn per-frame.
+    //
+    // This is the equivalent of a DRM hardware-overlay HUD plane done at
+    // the SDL layer — we get the same "no per-frame GLES decoration cost"
+    // win without needing DRM_MASTER arbitration with SDL2's KMSDRM backend.
+    bool         hud_static_dirty_{true};
+    int          hud_static_w_{-1};
+    int          hud_static_h_{-1};
+    std::string  hud_static_video_id_;
+    bool         hud_static_drawer_open_{false};
+    bool         hud_static_playing_{false};
+    bool         hud_static_speed_badge_{false};
+    long long    hud_static_views_{-2};
 };
