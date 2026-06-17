@@ -7,6 +7,8 @@
 #include <ctime>
 #include <filesystem>
 #include <cstdio>
+#include <condition_variable>
+#include <chrono>
 
 // Since nlohmann/json is a single-header library, we include it here.
 #include "json.hpp"
@@ -468,6 +470,109 @@ bool YouTubeAPI::fetchFromPiped(const std::string& video_id, int max_height, std
     return false;
 }
 
+// ── Parallel resolve plumbing ───────────────────────────────────────────────
+// Run a shell command and capture stdout (free function so worker threads
+// don't share mutable state on the API object).
+static std::string execCapture(const std::string& cmd) {
+    std::array<char, 256> buffer{};
+    std::string result;
+#ifdef _WIN32
+    std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cmd.c_str(), "r"), _pclose);
+#else
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
+#endif
+    if (!pipe) return result;
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) result += buffer.data();
+    return result;
+}
+
+// Resolve against ONE Invidious instance. Returns true on a usable muxed URL.
+static bool fetchInvidiousInstance(const std::string& instance, const std::string& video_id,
+                                   int max_height, std::string& out_url, VideoPlaybackMetadata& out_meta) {
+    std::string cmd = "curl -k -s -m 4 \"" + instance + "/api/v1/videos/" + video_id + "\"";
+    std::string response = execCapture(cmd);
+    if (response.empty()) return false;
+    try {
+        auto j = json::parse(response);
+        if (!j.is_object() || !j.contains("formatStreams")) return false;
+        std::string best_url; int best_height = 0;
+        for (const auto& s : j["formatStreams"]) {
+            std::string res = s.value("resolution", "");
+            int w = 0, h = 0;
+            if (std::sscanf(res.c_str(), "%dx%d", &w, &h) == 2 && h > 0 && h <= max_height) {
+                std::string container = s.value("container", "");
+                if (container == "mp4" || best_url.empty() || h > best_height) {
+                    best_url = s.value("url", "");
+                    best_height = h;
+                }
+            }
+        }
+        if (best_url.empty()) return false;
+        out_url = best_url;
+        out_meta.description      = j.value("description", "");
+        out_meta.view_count       = j.value("viewCount", 0LL);
+        out_meta.like_count       = j.value("likeCount", 0LL);
+        out_meta.subscriber_count = j.value("subCount", 0LL);
+        return true;
+    } catch (...) { return false; }
+}
+
+// Resolve against ONE Piped instance. Returns true on a usable muxed URL.
+static bool fetchPipedInstance(const std::string& instance, const std::string& video_id,
+                               int max_height, std::string& out_url, VideoPlaybackMetadata& out_meta) {
+    std::string cmd = "curl -k -s -m 4 \"" + instance + "/streams/" + video_id + "\"";
+    std::string response = execCapture(cmd);
+    if (response.empty()) return false;
+    try {
+        auto j = json::parse(response);
+        if (!j.is_object() || !j.contains("videoStreams")) return false;
+        std::string best_url; int best_height = 0;
+        for (const auto& s : j["videoStreams"]) {
+            if (s.value("videoOnly", false)) continue;
+            std::string quality = s.value("quality", "");
+            int height = 0;
+            if (std::sscanf(quality.c_str(), "%dp", &height) == 1 && height > 0 && height <= max_height) {
+                std::string codec = s.value("codec", "");
+                if (codec.find("avc1") != std::string::npos || best_url.empty() || height > best_height) {
+                    best_url = s.value("url", "");
+                    best_height = height;
+                }
+            }
+        }
+        if (best_url.empty()) return false;
+        out_url = best_url;
+        out_meta.description = j.value("description", "");
+        out_meta.view_count  = j.value("views", 0LL);
+        out_meta.like_count  = j.value("likes", 0LL);
+        return true;
+    } catch (...) { return false; }
+}
+
+// Shared result for the resolver race. The first worker to produce a usable
+// URL wins; the rest finish and harmlessly discard their work. Held by a
+// shared_ptr so it outlives any worker that is still in flight.
+namespace {
+struct ResolveRace {
+    std::mutex m;
+    std::condition_variable cv;
+    bool   done    = false;   // a winner has been recorded
+    bool   success = false;
+    int    remaining = 0;     // workers still running
+    std::string url;
+    std::string subtitle_url;
+    VideoPlaybackMetadata meta;
+
+    void finish(bool ok, const std::string& u, const std::string& sub, const VideoPlaybackMetadata& mt) {
+        std::lock_guard<std::mutex> lk(m);
+        if (ok && !u.empty() && !done) {
+            done = true; success = true; url = u; subtitle_url = sub; meta = mt;
+        }
+        --remaining;
+        cv.notify_all();
+    }
+};
+} // namespace
+
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta)> callback,
     bool isPreview,
@@ -484,155 +589,116 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     }
 
     std::thread([this, video_id, max_height, callback, req_id, isPreview, parent_focus_id]() {
-        try {
+      try {
+        // Cancellation predicate: a newer request (or a different focused card
+        // for previews) supersedes this one.
+        auto stillWanted = [this, req_id, isPreview, parent_focus_id]() -> bool {
             if (isPreview) {
-                if (!parent_focus_id.empty()) {
-                    std::lock_guard<std::mutex> lock(preview_mutex_);
-                    if (current_preview_focus_id_ != parent_focus_id) {
-                        callback(false, "", "", VideoPlaybackMetadata());
-                        return;
-                    }
-                }
-            } else {
-                if (req_id != current_stream_request_id_) {
-                    callback(false, "", "", VideoPlaybackMetadata());
-                    return;
-                }
+                if (parent_focus_id.empty()) return true;
+                std::lock_guard<std::mutex> lock(preview_mutex_);
+                return current_preview_focus_id_ == parent_focus_id;
             }
+            return req_id == current_stream_request_id_;
+        };
 
-            const std::string safeId  = sanitizeShellText(video_id);
-            const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
+        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
 
-            // --- FIRST PASS: Try fast public API resolution (Invidious / Piped) ---
-            std::string url;
-            std::string subtitle_url;
-            VideoPlaybackMetadata meta;
-            bool resolved_via_api = false;
+        const std::string safeId   = sanitizeShellText(video_id);
+        const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
 
-            try {
-                if (fetchFromInvidious(safeId, max_height, url, meta)) {
-                    resolved_via_api = true;
-                } else if (fetchFromPiped(safeId, max_height, url, meta)) {
-                    resolved_via_api = true;
-                }
-            } catch (...) {
-                // ignore and fallback
-            }
+        // Race every resolver concurrently; first usable muxed URL wins.
+        auto race = std::make_shared<ResolveRace>();
+        auto spawn = [race](std::function<bool(std::string&, std::string&, VideoPlaybackMetadata&)> fn) {
+            { std::lock_guard<std::mutex> lk(race->m); ++race->remaining; }
+            std::thread([race, fn]() {
+                std::string u, sub; VideoPlaybackMetadata m;
+                bool ok = false;
+                try { ok = fn(u, sub, m); } catch (...) { ok = false; }
+                race->finish(ok, u, sub, m);
+            }).detach();
+        };
 
-            if (resolved_via_api) {
-                bool should_callback = true;
-                if (isPreview) {
-                    if (!parent_focus_id.empty()) {
-                        std::lock_guard<std::mutex> lock(preview_mutex_);
-                        if (current_preview_focus_id_ != parent_focus_id) {
-                            should_callback = false;
-                        }
-                    }
-                } else {
-                    if (req_id != current_stream_request_id_) {
-                        should_callback = false;
-                    }
-                }
-
-                if (should_callback) {
-                    callback(true, url, subtitle_url, meta);
-                    return;
-                }
-            }
-
-            // --- SECOND PASS: Fallback to local yt-dlp ---
-            // Use muxed-only format selectors (no bestvideo+bestaudio) because
-            // skip=dash,hls means DASH merging is unavailable. We want a single
-            // H.264 muxed stream for reliable hardware decode on ARM.
+        static const std::vector<std::string> kInvidious = {
+            "https://invidious.projectsegfau.lt", "https://yewtu.be", "https://invidious.flokinet.to"
+        };
+        static const std::vector<std::string> kPiped = {
+            "https://pipedapi.kavin.rocks", "https://piped-api.lunar.icu", "https://pipedapi.colt.top"
+        };
+        for (const auto& inst : kInvidious) {
+            spawn([inst, safeId, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
+                (void)s; return fetchInvidiousInstance(inst, safeId, max_height, u, m);
+            });
+        }
+        for (const auto& inst : kPiped) {
+            spawn([inst, safeId, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
+                (void)s; return fetchPipedInstance(inst, safeId, max_height, u, m);
+            });
+        }
+        // yt-dlp: slowest but most reliable. Raced alongside the APIs (not after),
+        // so a slow public instance no longer adds latency on top of it.
+        spawn([watchUrl, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) -> bool {
             const std::string fmtMain =
                 "best[height<=" + std::to_string(max_height) + "][vcodec^=avc1]"
                 "/best[height<=" + std::to_string(max_height) + "]"
                 "/best";
-
             const std::string cmd =
                 "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
                 "--no-check-certificate --force-ipv4 --no-playlist --no-call-home --no-check-formats "
-                "--youtube-skip-dash-manifest "
+                "--youtube-skip-dash-manifest --socket-timeout 10 "
                 "--cache-dir \"build/cache\" "
                 "--extractor-args \"youtube:player_client=ios,android;skip=dash,hls\" "
-                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>&1";
-
-
-
-            bool should_execute = true;
-            if (isPreview) {
-                if (!parent_focus_id.empty()) {
-                    std::lock_guard<std::mutex> lock(preview_mutex_);
-                    if (current_preview_focus_id_ != parent_focus_id) {
-                        should_execute = false;
+                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>/dev/null";
+            const std::string output = execCapture(cmd);
+            std::istringstream iss(output);
+            std::string line;
+            while (std::getline(iss, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+                try {
+                    auto j = json::parse(line);
+                    if (j.is_object() && j.contains("url")) {
+                        u = safeGet<std::string>(j, "url", "");
+                        s = extractSubtitleUrl(j);
+                        m.like_count       = j.value("like_count", 0LL);
+                        m.comment_count    = j.value("comment_count", 0LL);
+                        m.view_count       = j.value("view_count", 0LL);
+                        m.subscriber_count = j.value("channel_follower_count", 0LL);
+                        if (m.subscriber_count == 0LL) m.subscriber_count = j.value("subscriber_count", 0LL);
+                        m.description      = j.value("description", "");
+                        if (!u.empty()) return true;
                     }
-                }
-            } else {
-                if (req_id != current_stream_request_id_) {
-                    should_execute = false;
-                }
+                } catch (...) {}
             }
+            return false;
+        });
 
-            if (should_execute) {
-                const std::string output = executeCommand(cmd);
-
-                bool should_parse = true;
-                if (isPreview) {
-                    if (!parent_focus_id.empty()) {
-                        std::lock_guard<std::mutex> lock(preview_mutex_);
-                        if (current_preview_focus_id_ != parent_focus_id) {
-                            should_parse = false;
-                        }
-                    }
-                } else {
-                    if (req_id != current_stream_request_id_) {
-                        should_parse = false;
-                    }
-                }
-
-                if (should_parse) {
-                    std::istringstream iss(output);
-                    std::string line;
-                    while (std::getline(iss, line)) {
-                        if (!line.empty() && line.back() == '\r') line.pop_back();
-                        if (line.empty()) continue;
-                        try {
-                            auto j = json::parse(line);
-                            if (j.is_object() && j.contains("url")) {
-                                url = safeGet<std::string>(j, "url", "");
-                                subtitle_url = extractSubtitleUrl(j);
-                                
-                                meta.like_count = j.value("like_count", 0LL);
-                                meta.comment_count = j.value("comment_count", 0LL);
-                                meta.view_count = j.value("view_count", 0LL);
-                                meta.subscriber_count = j.value("channel_follower_count", 0LL);
-                                if (meta.subscriber_count == 0LL) {
-                                    meta.subscriber_count = j.value("subscriber_count", 0LL);
-                                }
-                                meta.description = j.value("description", "");
-
-                                if (!url.empty()) break;
-                            }
-                        } catch (...) {
-                            // ignore
-                        }
-                    }
-                }
-            }
-
-            if (!url.empty()) {
-                appendLog("Selected URL", url);
-                appendLog("Selected Subtitle URL", subtitle_url);
-            }
-
-            if (url.empty()) {
-                appendLog("yt-dlp: no URL found", "No playable URL was extracted.");
-                callback(false, "", "", VideoPlaybackMetadata());
-            } else {
-                callback(true, url, subtitle_url, meta);
-            }
-        } catch (...) {
-            callback(false, "", "", VideoPlaybackMetadata());
+        // Wait for the first winner, or until everyone has finished — capped so
+        // a stalled network can't wedge the request forever.
+        bool ok = false;
+        std::string url, subtitle_url;
+        VideoPlaybackMetadata meta;
+        {
+            std::unique_lock<std::mutex> lk(race->m);
+            race->cv.wait_for(lk, std::chrono::seconds(20),
+                              [&]{ return race->done || race->remaining == 0; });
+            ok           = race->success;
+            url          = race->url;
+            subtitle_url = race->subtitle_url;
+            meta         = race->meta;
         }
+
+        if (!ok || url.empty()) {
+            appendLog("resolve: no URL found", "All resolvers failed or were superseded.");
+            callback(false, "", "", VideoPlaybackMetadata());
+            return;
+        }
+        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+
+        appendLog("Selected URL", url);
+        appendLog("Selected Subtitle URL", subtitle_url);
+        callback(true, url, subtitle_url, meta);
+      } catch (...) {
+        callback(false, "", "", VideoPlaybackMetadata());
+      }
     }).detach();
 }

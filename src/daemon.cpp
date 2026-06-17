@@ -27,6 +27,7 @@
 #include <drm/drm_fourcc.h>
 #include <poll.h>
 #include <linux/input.h>
+#include <dirent.h>
 #endif
 
 #include <ft2build.h>
@@ -163,6 +164,9 @@ static void handleSignal(int sig) {
 // ── DRM overlay ───────────────────────────────────────────────────────────────
 
 #ifndef _WIN32
+// Fully releases card0 and all DRM resources. Safe to call when already closed.
+static void closeDrmOverlay();
+
 static bool initDrmOverlay() {
     drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     if (drm_fd < 0) { perror("[daemon] open card0"); return false; }
@@ -189,7 +193,7 @@ static bool initDrmOverlay() {
     creq.height = card_h;
     creq.bpp    = 32;
     if (drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0) {
-        perror("[daemon] CREATE_DUMB"); return false;
+        perror("[daemon] CREATE_DUMB"); closeDrmOverlay(); return false;
     }
     drm_handle = creq.handle;
     drm_pitch  = creq.pitch;
@@ -202,7 +206,7 @@ static bool initDrmOverlay() {
                       DRM_FORMAT_ARGB8888,
                       handles, pitches, offsets,
                       &drm_fb_id, 0) < 0) {
-        perror("[daemon] AddFB2"); return false;
+        perror("[daemon] AddFB2"); closeDrmOverlay(); return false;
     }
 
     struct drm_mode_map_dumb mreq = {};
@@ -211,7 +215,7 @@ static bool initDrmOverlay() {
     drm_map = (uint32_t*)mmap(nullptr, drm_size,
                                PROT_READ | PROT_WRITE,
                                MAP_SHARED, drm_fd, mreq.offset);
-    if (drm_map == MAP_FAILED) { perror("[daemon] mmap drm"); return false; }
+    if (drm_map == MAP_FAILED) { perror("[daemon] mmap drm"); drm_map = nullptr; closeDrmOverlay(); return false; }
 
     memset(drm_map, 0, drm_size);
     std::cerr << "[daemon] DRM overlay ready. Screen: "
@@ -221,6 +225,9 @@ static bool initDrmOverlay() {
 
 static void closeDrmOverlay() {
     if (drm_fd < 0) return;
+    // Disable the overlay plane, then release every resource and the device fd
+    // itself. Closing card0 is what lets an emulator's KMS modeset take the
+    // CRTC cleanly — a pinned FB on a lingering plane is what crashed games.
     drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     if (drm_map && drm_map != MAP_FAILED) munmap(drm_map, drm_size);
@@ -231,7 +238,12 @@ static void closeDrmOverlay() {
         drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
     }
     close(drm_fd);
-    drm_fd = -1;
+    drm_fd     = -1;
+    drm_map    = nullptr;
+    drm_fb_id  = 0;
+    drm_handle = 0;
+    drm_pitch  = 0;
+    drm_size   = 0;
 }
 
 static void commitOverlay() {
@@ -244,16 +256,64 @@ static void commitOverlay() {
                     0,      0,      card_w << 16, card_h << 16);
 }
 
-static void hideOverlay() {
-    if (drm_fd < 0) return;
-    drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+// Returns true when a game/emulator owns the display, so the daemon must not
+// touch DRM. Two signals, cheapest first:
+//   1. An explicit suspend sentinel a launch hook may drop (100% reliable if
+//      wired into runcommand: `touch /dev/shm/tubelite_suspend_overlay` on
+//      game start, `rm` on exit).
+//   2. Autonomous fallback: a known emulator process is running. This is only
+//      consulted when the daemon is about to (re)acquire DRM — i.e. rarely —
+//      so the /proc scan cost is irrelevant.
+static bool foregroundGameActive() {
+    if (access("/dev/shm/tubelite_suspend_overlay", F_OK) == 0) return true;
+
+    static const char* kEmu[] = {
+        "retroarch", "retroarch32", "ra32", "drastic", "PPSSPPSDL", "ppsspp",
+        "standalone", "flycast", "duckstation", "melonDS", "mupen64plus",
+        "snes9x", "pcsx_rearmed", "dosbox", "scummvm", "mednafen", "openbor",
+        "gpsp", "yabasanshiro", "easyrpg", "mgba", "vbam", "fbneo", nullptr
+    };
+
+    DIR* d = opendir("/proc");
+    if (!d) return false;
+    bool found = false;
+    struct dirent* e;
+    while (!found && (e = readdir(d)) != nullptr) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;  // pid dirs only
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        FILE* f = fopen(path, "r");
+        if (!f) continue;
+        char comm[128] = {0};
+        if (fgets(comm, sizeof(comm), f)) {
+            size_t n = strlen(comm);
+            if (n && comm[n - 1] == '\n') comm[n - 1] = '\0';
+            for (int i = 0; kEmu[i]; ++i) {
+                if (strstr(comm, kEmu[i])) { found = true; break; }
+            }
+        }
+        fclose(f);
+    }
+    closedir(d);
+    return found;
+}
+
+// Lazily (re)acquire the overlay only when it is safe to do so. Returns false
+// — and ensures DRM is fully released — whenever a game is in the foreground.
+static bool ensureDrmReady() {
+    if (foregroundGameActive()) {
+        if (drm_fd >= 0) closeDrmOverlay();
+        return false;
+    }
+    if (drm_fd >= 0) return true;
+    return initDrmOverlay();
 }
 #else
 static bool initDrmOverlay() { return true; }
 static void closeDrmOverlay() {}
 static void commitOverlay() {}
-static void hideOverlay() {}
+static bool foregroundGameActive() { return false; }
+static bool ensureDrmReady() { return true; }
 #endif
 
 // ── Drawing primitives ────────────────────────────────────────────────────────
@@ -494,10 +554,15 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 //   ↑ 4px accent bar + glow
 
 static void renderCard(MpvPlayer& mpv) {
-    memset(card_backbuffer, 0, sizeof(card_backbuffer));
-
     const uint8_t fa = fade(255);
     if (fa == 0) return;
+
+    // Acquire DRM lazily and bail if a game owns the display. Done before we
+    // spend any CPU rasterising, and it guarantees we never commit the overlay
+    // plane onto a CRTC an emulator is driving.
+    if (!ensureDrmReady()) return;
+
+    memset(card_backbuffer, 0, sizeof(card_backbuffer));
 
     const int ML = 16;                  // left margin (after accent bar + gap)
     const int MR = 12;                  // right margin
@@ -676,7 +741,9 @@ void runDaemon() {
 
     YouTubeAPI yt;
     initFreetype();
-    initDrmOverlay();
+    // DRM is acquired lazily (ensureDrmReady) the first time the card actually
+    // needs to draw, and fully released whenever it fades out — so the daemon
+    // holds no display resources while sitting in the background.
 
     daemon_overlay_timer = 5.0f;
     overlay_active = true;
@@ -819,14 +886,17 @@ void runDaemon() {
             }
         } else {
             if (!overlay_active && overlay_alpha <= 0.01f) {
-                hideOverlay();
+                // Fully release card0 so a game can take the display cleanly.
+                closeDrmOverlay();
                 overlay_alpha = 0.0f;
                 last_render_pos = -1.0;
             }
         }
 
         // ── Poll / sleep ──────────────────────────────────────────────────
-        int timeout = 500;
+        // Idle (audio only, no card): wake once a second — just enough to pump
+        // mpv and catch input, at a fraction of the previous CPU cost.
+        int timeout = 1000;
         if (overlay_alpha > 0.0f && overlay_alpha < 1.0f) timeout = 16;
         else if (overlay_active) timeout = 100;
 
