@@ -316,43 +316,15 @@ bool MpvPlayer::update() {
     bool needs_redraw = false;
 
     if (mpv_gl_) {
-        void* old_display = nullptr;
-        void* old_draw = nullptr;
-        void* old_read = nullptr;
-        void* old_context = nullptr;
-
-        static auto egl_get_current_display = []() -> PFN_eglGetCurrentDisplay {
-            void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-            if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
-            return lib ? reinterpret_cast<PFN_eglGetCurrentDisplay>(dlsym(lib, "eglGetCurrentDisplay")) : nullptr;
-        }();
-        static auto egl_get_current_surface = []() -> PFN_eglGetCurrentSurface {
-            void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-            if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
-            return lib ? reinterpret_cast<PFN_eglGetCurrentSurface>(dlsym(lib, "eglGetCurrentSurface")) : nullptr;
-        }();
-        static auto egl_get_current_context = []() -> PFN_eglGetCurrentContext {
-            void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-            if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
-            return lib ? reinterpret_cast<PFN_eglGetCurrentContext>(dlsym(lib, "eglGetCurrentContext")) : nullptr;
-        }();
-
-        if (egl_get_current_display && egl_get_current_surface && egl_get_current_context) {
-            old_display = egl_get_current_display();
-            old_draw    = egl_get_current_surface(EGL_DRAW);
-            old_read    = egl_get_current_surface(EGL_READ);
-            old_context = egl_get_current_context();
-        }
-
-        restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
+        // mpv_render_context_update is documented thread-safe and does NOT
+        // require a current GL/EGL context.  The full EGL save/restore round
+        // trip that used to wrap this call (4 eglGetCurrent* + 2 eglMakeCurrent
+        // per frame) was pure overhead — on the RK3326 it accounted for a
+        // meaningful slice of idle-frame CPU.  Just poll the flags directly.
         uint64_t flags = mpv_render_context_update(mpv_gl_);
         if (flags & MPV_RENDER_UPDATE_FRAME) {
             needs_redraw = true;
             has_new_frame_ = true;
-        }
-
-        if (old_display && old_context) {
-            restore_egl_context(old_display, old_draw, old_read, old_context);
         }
     }
 
@@ -415,18 +387,28 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     if (!mpv_gl_) return nullptr;
     if (w <= 0 || h <= 0) return nullptr;
 
-    // To prevent OpenGL FBO/texture resizing stutters and flickers, we always
-    // render the mpv video frame at the full window resolution.
-    int targetW = w;
-    int targetH = h;
-    int winW = 0, winH = 0;
-    if (window_) {
-        SDL_GetWindowSize(window_, &winW, &winH);
+    // Per-frame dedup: if multiple UI elements (preview card + miniplayer)
+    // both consume the video in the same frame, only the FIRST call drives a
+    // new mpv render — subsequent callers re-use whatever was just produced.
+    // This guards against texture-recreation thrash if the two callers happen
+    // to request different sizes within one frame.
+    if (last_rendered_frame_id_ == current_frame_id_ && video_layer_.getTexture()) {
+        return video_layer_.getTexture();
     }
-    if (winW > 0 && winH > 0) {
-        targetW = winW;
-        targetH = winH;
-    }
+
+    // Render mpv at the size the CALLER actually wants, not at the full window
+    // resolution.  This is the big one: a preview thumbnail (160x90) used to
+    // pay for a 640x480 mpv shader pass + a 640x480→160x90 SDL_RenderCopy
+    // downscale every frame — ~21x more fragment work than necessary.  Now
+    // mpv writes straight into the thumbnail-sized FBO and SDL blits 1:1.
+    //
+    // The historical "always full window" hack was supposed to avoid texture
+    // thrash when the preview size jitters.  In practice all three consumers
+    // (preview, miniplayer, fullscreen) request stable sizes within their own
+    // mode and only change on mode transitions, so the FBO is recreated once
+    // per transition, not per frame.
+    const int targetW = w;
+    const int targetH = h;
 
     bool texture_just_recreated = false;
     if (!video_layer_.getTexture() || video_layer_.getWidth() != targetW || video_layer_.getHeight() != targetH) {
@@ -435,9 +417,11 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     }
 
     if (!has_new_frame_ && !texture_just_recreated) {
+        last_rendered_frame_id_ = current_frame_id_;
         return video_layer_.getTexture();
     }
     has_new_frame_ = false;
+    last_rendered_frame_id_ = current_frame_id_;
 
     video_layer_.renderGLES(renderer, egl_display_, egl_draw_, egl_read_, egl_context_, [this, targetW, targetH](unsigned int fbo) {
         mpv_opengl_fbo mpv_fbo{};

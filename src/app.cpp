@@ -913,11 +913,17 @@ void App::updateKeyboardCursorBlinkState() {
 
 void App::renderFrame() {
     auto render_start = std::chrono::steady_clock::now();
-    
+
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
     bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing || state_.isSearching || (state_.miniplayerActive && mpv_player_.isPlaying());
     if (!shouldPresent) return;
+
+    // Advance mpv's frame id so renderToTexture knows a new frame has started.
+    // Required for the per-frame dedup that prevents preview + miniplayer from
+    // both driving a full mpv render (and possibly thrashing the FBO size) in
+    // the same frame.
+    mpv_player_.beginFrame();
 
     compositor_->render(this, width, height);
 

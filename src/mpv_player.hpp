@@ -47,6 +47,11 @@ public:
     void setMute(bool mute);
     SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
     void destroyPreviewTexture();
+
+    // Call once at the start of every frame on the rendering thread.
+    // Lets renderToTexture skip an extra mpv_render pass if multiple UI elements
+    // (preview card + miniplayer) consume the video in the same frame.
+    void beginFrame() { ++current_frame_id_; }
     void setSpeed(double speed);
     void adjustSpeed(double delta);
     double getSpeed() const;
@@ -80,6 +85,9 @@ private:
 
     Layer        video_layer_;
     bool         has_new_frame_{false};
+    // Monotonic frame counter for the per-frame renderToTexture dedup guard.
+    uint64_t     current_frame_id_{0};
+    uint64_t     last_rendered_frame_id_{0};
 
     std::string pending_subtitle_url_;
     bool file_ended_ = false;

@@ -292,33 +292,16 @@ void Compositor::render(App* app, int width, int height) {
 
         // ── Pass 2: live video frame (every frame, directly to screen) ────────
         // Fetch BEFORE any SDL render-target change to avoid the FBO conflict.
+        // mpv now renders directly at our 16:9 target (240x135) so no source
+        // crop / aspect adjustment is needed — the texture matches the dst.
+        // If preview already rendered this frame at a different size, the
+        // shared texture is whatever preview produced; both are 16:9 so the
+        // SDL_RenderCopy scale is a clean uniform stretch with no distortion.
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mVH);
         if (previewTex) {
             SDL_Rect videoDst{mX + 2, mY + 2, mW, mVH};
-            
-            // Calculate 16:9 source crop from the fullscreen texture to prevent stretching/squashing
-            int texW = 0, texH = 0;
-            SDL_QueryTexture(previewTex, nullptr, nullptr, &texW, &texH);
-            
-            SDL_Rect srcRect{0, 0, texW, texH};
-            if (texW > 0 && texH > 0) {
-                if (texW * 9 > texH * 16) {
-                    // Pillarboxed: crop width
-                    int cropW = texH * 16 / 9;
-                    srcRect.x = (texW - cropW) / 2;
-                    srcRect.w = cropW;
-                } else if (texW * 9 < texH * 16) {
-                    // Letterboxed: crop height
-                    int cropH = texW * 9 / 16;
-                    srcRect.y = (texH - cropH) / 2;
-                    srcRect.h = cropH;
-                }
-            }
-            
-            SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
-            // Mask top rounded corners of the video frame to align with card corners
+            SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
             maskRoundedCornersTop(renderer_, videoDst, theme::RADIUS_PANEL, theme::BG);
-            // Fade-from-black when the miniplayer first appears.
             drawVideoFade(app, videoDst, theme::RADIUS_PANEL);
         }
 
