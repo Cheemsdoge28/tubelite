@@ -18,9 +18,12 @@ ifeq ($(UNAME_S),MINGW64_NT-10.0)
     PLATFORM ?= windows
 endif
 
-# Default flags
-CXXFLAGS ?= -std=c++17 -O3 -ffast-math -Wall -Wextra -Wpedantic -pthread -Isrc
-LDFLAGS ?= -lmpv -pthread
+# Default flags — release optimization profile.
+# NOTE: no -ffast-math. mpv A/V sync and timestamp math must stay IEEE-correct;
+# fast-math reorders/contracts float ops and can desync audio. Section flags +
+# --gc-sections drop unreferenced code/data for a smaller, tighter binary.
+CXXFLAGS ?= -std=c++17 -O3 -fno-plt -ffunction-sections -fdata-sections -Wall -Wextra -Wpedantic -pthread -Isrc
+LDFLAGS ?= -lmpv -pthread -Wl,--gc-sections -Wl,--as-needed
 
 # LTO flags check (skip on Windows/macOS if causing issues, default on for native optimization)
 ifeq ($(LTO),1)
@@ -43,14 +46,16 @@ ifeq ($(PLATFORM),windows)
 
 else ifeq ($(PLATFORM),arm64)
     # ARM64 Cross-compilation (aarch64-linux-gnu)
-    # R36S uses Rockchip RK3326 with 4x Cortex-A35 @ 1.3GHz
-    # cortex-a53 is the closest widely-supported safe target; armv8-a+simd enables NEON
+    # R36S uses Rockchip RK3326 with 4x Cortex-A35 @ 1.3GHz (ARMv8-A).
+    # Tune precisely for the A35; +crc enables the CRC32 instructions it has.
+    # LTO is on for this release path (whole-program optimization across all TUs).
     CXX ?= aarch64-linux-gnu-g++
     SDL2DIR ?= /usr/aarch64-linux-gnu
     PKG_CONFIG_PATH := /usr/aarch64-linux-gnu/lib/pkgconfig
     SDL_CFLAGS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags sdl2 SDL2_ttf harfbuzz freetype2 libdrm 2>/dev/null || echo "-I$(SDL2DIR)/include/SDL2 -I$(SDL2DIR)/include/freetype2 -I$(SDL2DIR)/include/harfbuzz -I$(SDL2DIR)/include/libdrm")
     SDL_LIBS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs sdl2 SDL2_ttf harfbuzz freetype2 libdrm 2>/dev/null || echo "-L$(SDL2DIR)/lib -lSDL2 -lSDL2_ttf -lharfbuzz -lfreetype -ldrm") -lrt -lGLESv2
-    CXXFLAGS += -march=armv8-a+simd -mcpu=cortex-a53 -mtune=cortex-a53
+    CXXFLAGS += -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35 -flto -fomit-frame-pointer
+    LDFLAGS  += -flto
     TARGET_SUFFIX := .arm64
     STRIP ?= aarch64-linux-gnu-strip
 
@@ -131,10 +136,13 @@ clean:
 	rm -f tubelite tubelite.exe tubelite.arm64 fire4arkos.log
 	@echo "Cleaned build artifacts and stale logs."
 
-# Cross-compile for ARM64
-arm64: PLATFORM=arm64
-arm64: check_compiler $(BUILD_TARGET)
-	@echo "ARM64 build complete: $<"
+# Cross-compile for ARM64.
+# Re-invoke make with PLATFORM set on the command line so the aarch64 toolchain
+# and A35/LTO release block are chosen at parse time (a target-specific
+# `PLATFORM=arm64` is applied too late for the ifeq that selects the block).
+arm64:
+	$(MAKE) PLATFORM=arm64 all
+	@echo "ARM64 build complete"
 
 # Windows MinGW build
 windows: PLATFORM=windows
