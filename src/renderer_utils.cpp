@@ -1,5 +1,6 @@
 #include "renderer_utils.hpp"
 #include <cctype>
+#include <climits>
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -559,6 +560,169 @@ static CachedGlyph getOrCacheGlyph(SDL_Renderer* renderer, int font_idx, uint32_
     return glyph;
 }
 
+// ── Shaping cache helper ──────────────────────────────────────────────────────
+// Shapes `text` once (FreeType + HarfBuzz, with font fallback) and caches the
+// result. Shared by getTextSize() and drawText() so both hit the same cache.
+static const CachedTextShaping& getOrShape(const std::string& text, int scale, int size_idx) {
+    TextCacheKey key{text, scale};
+    auto it = g_text_shaping_cache.find(key);
+    if (it != g_text_shaping_cache.end()) return it->second;
+
+    if (g_text_shaping_cache.size() > 1000) {
+        g_text_shaping_cache.clear();
+    }
+
+    CachedTextShaping shaping;
+    std::vector<uint32_t> utf32 = utf8ToUtf32(text);
+    std::vector<TextRun> runs = segmentText(utf32, size_idx);
+
+    int total_width = 0;
+    int max_height = 0;
+    shaping.runs.reserve(runs.size());
+    for (const auto& run : runs) {
+        CachedShapedRun csr;
+        csr.font_idx = run.font_idx;
+        csr.shaped = shapeRun(run);
+
+        FT_Face face = g_ft_faces[run.font_idx];
+        if (face) {
+            int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
+            if (cap_height > max_height) max_height = cap_height;
+            for (const auto& sg : csr.shaped) total_width += sg.x_advance;
+        }
+        shaping.runs.push_back(std::move(csr));
+    }
+    shaping.width  = total_width;
+    shaping.height = max_height > 0 ? max_height : (14 * scale);
+
+    return g_text_shaping_cache.emplace(std::move(key), std::move(shaping)).first->second;
+}
+
+// ── Whole-string texture cache ────────────────────────────────────────────────
+// Browsing redraws the whole visible grid every frame while scrolling or while a
+// focused title marquees. Previously each drawText issued one SDL_RenderCopy
+// (plus three texture-state calls) per glyph — hundreds of draw calls per frame.
+// We composite each repeated string once into a premultiplied-alpha texture of
+// white coverage, so a warmed-up string costs exactly one colour-modulated blit.
+struct CachedStringTexture {
+    SDL_Texture* texture = nullptr; // premultiplied white coverage; null = nothing visible
+    int width = 0;
+    int height = 0;
+    int blit_dx = 0;        // on-screen offset of the texture's top-left from (x, y)
+    int blit_dy = 0;
+    bool fallback = false;  // build failed — caller should draw per-glyph instead
+};
+
+static std::unordered_map<TextCacheKey, CachedStringTexture, TextCacheKeyHash> g_string_texture_cache;
+static SDL_BlendMode g_premult_blend = SDL_BLENDMODE_BLEND;
+static bool g_string_cache_ok = true;   // disabled if the renderer rejects premultiplied blending
+
+// Original per-glyph path: draws an already-shaped string directly to the current
+// target in `color`. Used as a fallback and for translucent text, where alpha-mod
+// on a premultiplied texture would not rescale RGB.
+static void drawTextDirect(SDL_Renderer* renderer, int x, int y, const CachedTextShaping& shaping, SDL_Color color) {
+    int cursor_x = x;
+    for (const auto& run : shaping.runs) {
+        FT_Face face = g_ft_faces[run.font_idx];
+        if (!face) continue;
+        int ascender = face->size->metrics.ascender >> 6;
+        int baseline_y = y + ascender;
+        for (const auto& sg : run.shaped) {
+            CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
+            if (cg.texture) {
+                SDL_SetTextureColorMod(cg.texture, color.r, color.g, color.b);
+                SDL_SetTextureAlphaMod(cg.texture, color.a);
+                SDL_SetTextureBlendMode(cg.texture, SDL_BLENDMODE_BLEND);
+                int draw_x = cursor_x + sg.x_offset + cg.bearing_x;
+                int draw_y = baseline_y - sg.y_offset - cg.bearing_y;
+                SDL_Rect dst{draw_x, draw_y, cg.width, cg.height};
+                SDL_RenderCopy(renderer, cg.texture, nullptr, &dst);
+            }
+            cursor_x += sg.x_advance;
+        }
+    }
+}
+
+// Composite a shaped string once into a premultiplied-alpha texture. Drawing the
+// straight-alpha white glyphs src-over into a cleared (transparent) target yields
+// premultiplied coverage; tint/translucency is applied later via colour-mod at
+// blit time with g_premult_blend. For opaque, non-overlapping glyphs this is
+// pixel-identical to drawTextDirect.
+static CachedStringTexture buildStringTexture(SDL_Renderer* renderer, const CachedTextShaping& shaping) {
+    CachedStringTexture cst;
+
+    // Pass 1: bounding box of all visible glyphs (origin x=0, baseline=ascender).
+    int min_x = INT_MAX, min_y = INT_MAX, max_x = INT_MIN, max_y = INT_MIN;
+    int cursor_x = 0;
+    bool any = false;
+    for (const auto& run : shaping.runs) {
+        FT_Face face = g_ft_faces[run.font_idx];
+        int baseline = face ? (face->size->metrics.ascender >> 6) : 0;
+        for (const auto& sg : run.shaped) {
+            CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
+            if (cg.texture && cg.width > 0 && cg.height > 0) {
+                int gx = cursor_x + sg.x_offset + cg.bearing_x;
+                int gy = baseline - sg.y_offset - cg.bearing_y;
+                if (gx < min_x) min_x = gx;
+                if (gy < min_y) min_y = gy;
+                if (gx + cg.width  > max_x) max_x = gx + cg.width;
+                if (gy + cg.height > max_y) max_y = gy + cg.height;
+                any = true;
+            }
+            cursor_x += sg.x_advance;
+        }
+    }
+    if (!any) return cst;                         // e.g. all-whitespace — nothing to draw
+    int tex_w = max_x - min_x;
+    int tex_h = max_y - min_y;
+    if (tex_w <= 0 || tex_h <= 0) return cst;
+
+    SDL_Texture* tex = createTargetTexture(renderer, tex_w, tex_h);
+    if (!tex) { cst.fallback = true; return cst; }
+    if (SDL_SetTextureBlendMode(tex, g_premult_blend) != 0) {
+        // Renderer can't do premultiplied blending — disable the fast path entirely.
+        SDL_DestroyTexture(tex);
+        g_string_cache_ok = false;
+        cst.fallback = true;
+        return cst;
+    }
+
+    SDL_Texture* prev_target = SDL_GetRenderTarget(renderer);
+    SDL_SetRenderTarget(renderer, tex);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+    SDL_RenderClear(renderer);
+
+    // Pass 2: blit white glyphs at the same relative positions.
+    cursor_x = 0;
+    for (const auto& run : shaping.runs) {
+        FT_Face face = g_ft_faces[run.font_idx];
+        int baseline = face ? (face->size->metrics.ascender >> 6) : 0;
+        for (const auto& sg : run.shaped) {
+            CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
+            if (cg.texture && cg.width > 0 && cg.height > 0) {
+                SDL_SetTextureColorMod(cg.texture, 255, 255, 255);
+                SDL_SetTextureAlphaMod(cg.texture, 255);
+                SDL_SetTextureBlendMode(cg.texture, SDL_BLENDMODE_BLEND);
+                SDL_Rect dst{cursor_x + sg.x_offset + cg.bearing_x - min_x,
+                             baseline - sg.y_offset - cg.bearing_y - min_y,
+                             cg.width, cg.height};
+                SDL_RenderCopy(renderer, cg.texture, nullptr, &dst);
+            }
+            cursor_x += sg.x_advance;
+        }
+    }
+
+    SDL_SetRenderTarget(renderer, prev_target);
+
+    cst.texture = tex;
+    cst.width   = tex_w;
+    cst.height  = tex_h;
+    cst.blit_dx = min_x;
+    cst.blit_dy = min_y;
+    return cst;
+}
+
 bool initFonts(SDL_Renderer* renderer) {
     if (TTF_Init() != 0) {
         std::cerr << "TTF_Init failed: " << TTF_GetError() << std::endl;
@@ -690,13 +854,24 @@ bool initFonts(SDL_Renderer* renderer) {
     
     initCornerMask(renderer);
     initSolidCorner(renderer);
-    
+
+    // Blend mode for compositing the premultiplied-alpha string textures. Uses
+    // only standard FUNC_ADD blending (GLES2 core). If the renderer can't compose
+    // it, the first buildStringTexture() falls back to per-glyph drawing.
+    g_premult_blend = SDL_ComposeCustomBlendMode(
+        SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+        SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+
     return true;
 }
 
 
 void cleanupFonts() {
     g_text_shaping_cache.clear();
+    for (auto& pair : g_string_texture_cache) {
+        if (pair.second.texture) SDL_DestroyTexture(pair.second.texture);
+    }
+    g_string_texture_cache.clear();
     for (auto& pair : g_glyph_cache) {
         if (pair.second.texture) {
             SDL_DestroyTexture(pair.second.texture);
@@ -733,76 +908,38 @@ void cleanupFonts() {
 
 void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {
     if (text.empty()) return;
-    
-    int size_idx = 0;
-    if (scale <= 1) size_idx = 0;
-    else if (scale == 2) size_idx = 1;
-    else size_idx = 2;
 
-    TextCacheKey key{text, scale};
-    auto it = g_text_shaping_cache.find(key);
-    if (it == g_text_shaping_cache.end()) {
-        if (g_text_shaping_cache.size() > 1000) {
-            g_text_shaping_cache.clear();
-        }
+    int size_idx = (scale <= 1) ? 0 : (scale == 2 ? 1 : 2);
+    const CachedTextShaping& shaping = getOrShape(text, scale, size_idx);
 
-        CachedTextShaping shaping;
-        std::vector<uint32_t> utf32 = utf8ToUtf32(text);
-        std::vector<TextRun> runs = segmentText(utf32, size_idx);
-
-        int total_width = 0;
-        int max_height = 0;
-
-        shaping.runs.reserve(runs.size());
-        for (const auto& run : runs) {
-            CachedShapedRun csr;
-            csr.font_idx = run.font_idx;
-            csr.shaped = shapeRun(run);
-
-            FT_Face face = g_ft_faces[run.font_idx];
-            if (face) {
-                int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
-                if (cap_height > max_height) {
-                    max_height = cap_height;
+    // Fast path: opaque text via a cached, premultiplied whole-string texture.
+    // Translucent text falls back to per-glyph drawing so the colour's alpha stays
+    // correct (alpha-mod does not rescale a premultiplied texture's RGB).
+    if (g_string_cache_ok && color.a == 255) {
+        TextCacheKey key{text, scale};
+        auto sit = g_string_texture_cache.find(key);
+        if (sit == g_string_texture_cache.end()) {
+            if (g_string_texture_cache.size() > 512) {
+                for (auto& p : g_string_texture_cache) {
+                    if (p.second.texture) SDL_DestroyTexture(p.second.texture);
                 }
-                for (const auto& sg : csr.shaped) {
-                    total_width += sg.x_advance;
-                }
+                g_string_texture_cache.clear();
             }
-            shaping.runs.push_back(std::move(csr));
+            sit = g_string_texture_cache.emplace(key, buildStringTexture(renderer, shaping)).first;
         }
-
-        shaping.width = total_width;
-        shaping.height = max_height > 0 ? max_height : (14 * scale);
-
-        it = g_text_shaping_cache.emplace(key, std::move(shaping)).first;
+        const CachedStringTexture& cst = sit->second;
+        if (cst.texture) {
+            SDL_SetTextureColorMod(cst.texture, color.r, color.g, color.b);
+            SDL_SetTextureAlphaMod(cst.texture, 255);
+            SDL_Rect dst{x + cst.blit_dx, y + cst.blit_dy, cst.width, cst.height};
+            SDL_RenderCopy(renderer, cst.texture, nullptr, &dst);
+            return;
+        }
+        if (!cst.fallback) return;   // nothing visible (e.g. whitespace)
+        // build failed: fall through to direct per-glyph drawing
     }
 
-    const auto& shaping = it->second;
-    int cursor_x = x;
-    for (const auto& run : shaping.runs) {
-        FT_Face face = g_ft_faces[run.font_idx];
-        if (!face) continue;
-
-        int ascender = face->size->metrics.ascender >> 6;
-        int baseline_y = y + ascender;
-
-        for (const auto& sg : run.shaped) {
-            CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
-            if (cg.texture) {
-                SDL_SetTextureColorMod(cg.texture, color.r, color.g, color.b);
-                SDL_SetTextureAlphaMod(cg.texture, color.a);
-                SDL_SetTextureBlendMode(cg.texture, SDL_BLENDMODE_BLEND);
-
-                int draw_x = cursor_x + sg.x_offset + cg.bearing_x;
-                int draw_y = baseline_y - sg.y_offset - cg.bearing_y;
-
-                SDL_Rect dst{draw_x, draw_y, cg.width, cg.height};
-                SDL_RenderCopy(renderer, cg.texture, nullptr, &dst);
-            }
-            cursor_x += sg.x_advance;
-        }
-    }
+    drawTextDirect(renderer, x, y, shaping, color);
 }
 
 void drawTextShadow(SDL_Renderer* renderer, int x, int y, const std::string& text, int scale, SDL_Color color) {
@@ -858,52 +995,10 @@ void getTextSize(const std::string& text, int scale, int* w, int* h) {
     if (h) *h = 0;
     if (text.empty()) return;
     
-    int size_idx = 0;
-    if (scale <= 1) size_idx = 0;
-    else if (scale == 2) size_idx = 1;
-    else size_idx = 2;
-
-    TextCacheKey key{text, scale};
-    auto it = g_text_shaping_cache.find(key);
-    if (it == g_text_shaping_cache.end()) {
-        if (g_text_shaping_cache.size() > 1000) {
-            g_text_shaping_cache.clear();
-        }
-
-        CachedTextShaping shaping;
-        std::vector<uint32_t> utf32 = utf8ToUtf32(text);
-        std::vector<TextRun> runs = segmentText(utf32, size_idx);
-
-        int total_width = 0;
-        int max_height = 0;
-
-        shaping.runs.reserve(runs.size());
-        for (const auto& run : runs) {
-            CachedShapedRun csr;
-            csr.font_idx = run.font_idx;
-            csr.shaped = shapeRun(run);
-
-            FT_Face face = g_ft_faces[run.font_idx];
-            if (face) {
-                int cap_height = (face->size->metrics.ascender - face->size->metrics.descender) >> 6;
-                if (cap_height > max_height) {
-                    max_height = cap_height;
-                }
-                for (const auto& sg : csr.shaped) {
-                    total_width += sg.x_advance;
-                }
-            }
-            shaping.runs.push_back(std::move(csr));
-        }
-
-        shaping.width = total_width;
-        shaping.height = max_height > 0 ? max_height : (14 * scale);
-
-        it = g_text_shaping_cache.emplace(key, std::move(shaping)).first;
-    }
-
-    if (w) *w = it->second.width;
-    if (h) *h = it->second.height;
+    int size_idx = (scale <= 1) ? 0 : (scale == 2 ? 1 : 2);
+    const CachedTextShaping& shaping = getOrShape(text, scale, size_idx);
+    if (w) *w = shaping.width;
+    if (h) *h = shaping.height;
 }
 
 std::vector<std::string> wrapText(const std::string& text, int maxWidth, int scale) {
