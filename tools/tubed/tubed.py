@@ -345,7 +345,10 @@ def op_trending(req):
 
 
 # Client fallback chain — if one player client is broken, try the next.
-_CLIENT_CHAIN = [["ios", "android"], ["android"], ["web", "tv"], None]
+# `ios` first and alone: it returns unthrottled progressive URLs plus full
+# videoDetails (view counts) in a single player request and is the fastest path.
+# Only fall back to heavier clients if it yields nothing.
+_CLIENT_CHAIN = [["ios"], ["android"], ["web", "tv"], None]
 
 def _parse_stream_info(info):
     stream_url = info.get("url")
@@ -375,9 +378,12 @@ def _extract_stream(video_id, max_height):
            f"/best[height<={max_height}]"
            f"/best")
     for clients in _CLIENT_CHAIN:
-        ea = "youtube:skip=dash,hls"
+        # player_skip=webpage,configs avoids the extra watch-page + config HTTP
+        # round-trips the default path makes — a real chunk of first-play latency.
+        ea = "youtube:skip=dash,hls;player_skip=webpage,configs"
         if clients:
-            ea = f"youtube:player_client={','.join(clients)};skip=dash,hls"
+            ea = (f"youtube:player_client={','.join(clients)}"
+                  f";skip=dash,hls;player_skip=webpage,configs")
         args = _ytdlp_base_args() + [
             "--no-playlist", "--youtube-skip-dash-manifest", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,

@@ -137,6 +137,7 @@ bool App::initialize() {
         // Stop storyboard extraction during miniplayer to avoid RK3326 resource contention
         if (newMiniplayer && !oldMiniplayer) {
             storyboard_.stop();
+            triggerVideoFade();  // animate the miniplayer appearing
         }
         
         // Resume/restart storyboard extraction if returning to fullscreen playback from miniplayer
@@ -250,10 +251,12 @@ void App::run() {
         }
         
         bool active = uiDirty_ || gridScrolling || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo || (state_.currentScreen == TubeState::Screen::Playback && state_.showUi);
-        if (focusedCard && !is_playing_preview_ && !is_loading_preview_ && focusedCard->focusedTime_ < 0.85f) {
-            active = true;
-        }
-        
+        // (Removed a forced 60fps spin during the 0.85s post-navigation dwell:
+        // nothing animates then — the focus ring is instant and the title
+        // marquee only starts at 1.5s and raises uiDirty itself. The 100ms
+        // event-wait below still advances focusedTime to trigger previews, so
+        // browsing now idles the CPU instead of busy-rendering.)
+
         if (!active) {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             if (!main_thread_queue_.empty()) active = true;
@@ -321,8 +324,32 @@ void App::run() {
         || state_.miniplayerActive
         || state_.currentScreen == TubeState::Screen::Playback;
     if (state_.backgroundDaemonEnabled && daemonEligible && !current_video_.id.empty()) {
+#ifndef _WIN32
+        // Clear any stale readiness flag before launching the new daemon.
+        ::unlink("/dev/shm/tubelite_daemon_audio.live");
+#endif
         saveDaemonQueue();
         spawnDaemon();
+
+#ifndef _WIN32
+        // Seamless handoff: keep our own audio playing and fade it out while the
+        // daemon spins up and buffers. We exit the instant the daemon reports
+        // its audio is live (or after a short cap), so playback never goes
+        // silent during the cross-process handover.
+        using namespace std::chrono;
+        const auto deadline = steady_clock::now() + milliseconds(3500);
+        const auto fadeStart = steady_clock::now();
+        const int startVol = state_.volume;          // 0..100
+        const float fadeSecs = 1.2f;
+        while (steady_clock::now() < deadline) {
+            mpv_player_.update();                     // keep decoding/audio flowing
+            float t = duration<float>(steady_clock::now() - fadeStart).count();
+            int v = (t >= fadeSecs) ? 0 : static_cast<int>(startVol * (1.0f - t / fadeSecs));
+            mpv_player_.setVolume(v);
+            if (::access("/dev/shm/tubelite_daemon_audio.live", F_OK) == 0) break;
+            SDL_Delay(25);
+        }
+#endif
     }
 }
 
@@ -657,6 +684,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
 
         mpv_player_.play(stream_url, subtitle_url);
         mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
+        triggerVideoFade();
         if (!keepMiniplayer) {
             state_.showUi = false;
         }
@@ -702,6 +730,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                 mpv_player_.setSpeed(state_.speed);
                 mpv_player_.play(url, subtitle_url);
                 mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
+                triggerVideoFade();
 
                 // Start storyboard extraction
                 storyboard_.start(url, video.duration_seconds);
@@ -1650,6 +1679,7 @@ void App::updateHoverPreviews() {
         mpv_player_.play(stream_url);
         is_playing_preview_ = true;
         focusedCard->is_previewing = true;
+        triggerVideoFade();  // animate the thumbnail preview starting
         uiDirty_ = true;
     }
 }

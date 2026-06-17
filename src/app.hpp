@@ -88,6 +88,11 @@ private:
     bool lastKeyboardCursorVisible_{true};
     bool homeLoadFailed_{false};
     Uint32 play_flash_start_time_{0};
+    // Timestamp of the last "new video surface appeared" event (fullscreen
+    // start, next track, miniplayer open, preview start). Drives a short
+    // fade-from-black transition in the compositor. 0 = no animation pending.
+    Uint32 video_fade_start_time_{0};
+    void triggerVideoFade() { video_fade_start_time_ = SDL_GetTicks(); uiDirty_ = true; }
     StateManager state_manager_;
     std::unique_ptr<Compositor> compositor_;
 

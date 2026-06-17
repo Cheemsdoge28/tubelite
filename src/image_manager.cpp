@@ -7,13 +7,21 @@
 #include <cstdio>
 
 ImageManager::ImageManager(SDL_Renderer* renderer) : renderer_(renderer) {
-    worker_ = std::thread(&ImageManager::workerThread, this);
+    // A few workers so a grid's worth of thumbnails fetch concurrently instead
+    // of trickling in one at a time (each fetch is network-bound). curl is
+    // lightweight, so this doesn't compete meaningfully with decode/UI.
+    const int kWorkers = 3;
+    for (int i = 0; i < kWorkers; ++i) {
+        workers_.emplace_back(&ImageManager::workerThread, this);
+    }
 }
 
 ImageManager::~ImageManager() {
     running_ = false;
     cv_.notify_all();
-    if (worker_.joinable()) worker_.join();
+    for (auto& w : workers_) {
+        if (w.joinable()) w.join();
+    }
     clearCache();
 }
 
@@ -143,7 +151,10 @@ void ImageManager::workerThread() {
             downloadQueue_.pop();
         }
         
-        std::string url = "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
+        // mqdefault is 320x180 (true 16:9) — matches the card thumb aspect and
+        // is ~1/3 the pixels of the 4:3 hqdefault, so it downloads, decodes and
+        // stores much cheaper while still being sharp at card size.
+        std::string url = "https://i.ytimg.com/vi/" + videoId + "/mqdefault.jpg";
         std::string dl = "curl -k -s -L \"" + url + "\"";
         
 #ifdef _WIN32

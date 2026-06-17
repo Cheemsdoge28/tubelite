@@ -44,6 +44,9 @@ void Compositor::render(App* app, int width, int height) {
         // Render the video frame (internally delegates to offscreen Layer in MpvPlayer)
         app->mpv_player_.render(width, height);
 
+        // Fade-from-black transition when a new video surface appears.
+        { SDL_Rect full{0, 0, width, height}; drawVideoFade(app, full, 0); }
+
         // Draw the HUD overlay offscreen via Layer and composite it on top of the video
         if (app->state_.showUi) {
             renderPlaybackOverlay(app, width, height);
@@ -113,6 +116,7 @@ void Compositor::render(App* app, int width, int height) {
                 if (previewTex) {
                     SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
                     maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
+                    drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
             }
             app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
@@ -145,6 +149,7 @@ void Compositor::render(App* app, int width, int height) {
                 if (previewTex) {
                     SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
                     maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
+                    drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
             }
             app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
@@ -172,10 +177,11 @@ void Compositor::render(App* app, int width, int height) {
 
         const SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
 
-        // Clear the screen region to prevent card thumbnail bleed-through
-        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, theme::BG.r, theme::BG.g, theme::BG.b, 255); // match background color
-        SDL_RenderFillRect(renderer_, &miniplayerBounds);
+        // Clear the screen region to prevent card thumbnail bleed-through.
+        // Rounded to match the card so the underlay doesn't show square corners
+        // behind the rounded miniplayer.
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        fillRoundedRect(renderer_, miniplayerBounds, theme::RADIUS_CARD, theme::BG);
 
         // ── Pass 1: chrome layer (dirty-cached) ───────────────────────────────
         bool playing   = app->mpv_player_.isPlaying();
@@ -312,6 +318,8 @@ void Compositor::render(App* app, int width, int height) {
             SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
             // Mask top rounded corners of the video frame to align with card corners
             maskRoundedCornersTop(renderer_, videoDst, theme::RADIUS_PANEL, theme::BG);
+            // Fade-from-black when the miniplayer first appears.
+            drawVideoFade(app, videoDst, theme::RADIUS_PANEL);
         }
 
         // Composite chrome layer on top of the live video
@@ -406,6 +414,17 @@ void Compositor::render(App* app, int width, int height) {
     }
 
     SDL_RenderPresent(renderer_);
+}
+
+void Compositor::drawVideoFade(App* app, const SDL_Rect& region, int radius) {
+    if (app->video_fade_start_time_ == 0) return;
+    const Uint32 dur = 280;  // ms
+    Uint32 elapsed = SDL_GetTicks() - app->video_fade_start_time_;
+    if (elapsed >= dur) { app->video_fade_start_time_ = 0; return; }
+    Uint8 a = static_cast<Uint8>(255.0f * (1.0f - static_cast<float>(elapsed) / dur));
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    fillRoundedRect(renderer_, region, radius, theme::BLACK.a8(a));
+    app->uiDirty_ = true;  // keep the frames coming while it animates
 }
 
 void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const std::string& title, float scrollY, bool searchScreen) {

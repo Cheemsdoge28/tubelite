@@ -8,6 +8,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <list>
+#include <vector>
 
 class ThumbnailAtlas;
 
@@ -50,6 +51,6 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::atomic<bool> running_{true};
-    std::thread worker_;
+    std::vector<std::thread> workers_;   // small pool; downloads are I/O-bound
     ThumbnailAtlas* atlas_{nullptr};
 };

@@ -134,8 +134,11 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "sub-auto",               "fuzzy");
     mpv_set_option_string(mpv_, "cache",                  "yes");
     mpv_set_option_string(mpv_, "network-timeout",        "5");
-    mpv_set_option_string(mpv_, "demuxer-max-bytes",      "50MiB");
-    mpv_set_option_string(mpv_, "demuxer-readahead-secs", "20");
+    // Trimmed from 50MiB/20s: the device was memory-pressured (kswapd/mmcqd
+    // active, ~235MB RSS). A 32MiB / 12s readahead is plenty for 360p and
+    // meaningfully reduces RAM pressure and swapping.
+    mpv_set_option_string(mpv_, "demuxer-max-bytes",      "32MiB");
+    mpv_set_option_string(mpv_, "demuxer-readahead-secs", "12");
     mpv_set_option_string(mpv_, "vd-lavc-threads",        "4");
     mpv_set_option_string(mpv_, "vd-lavc-skiploopfilter", "nonkey");
     mpv_set_option_string(mpv_, "vd-lavc-fast",           "yes");

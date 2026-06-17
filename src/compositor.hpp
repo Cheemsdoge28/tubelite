@@ -13,6 +13,8 @@ public:
 private:
     void renderBrowseHeader(App* app, int width, int height, const std::string& title, float scrollY, bool searchScreen);
     void renderPlaybackOverlay(App* app, int width, int height);
+    // Short fade-from-black drawn over a freshly-appeared video surface.
+    void drawVideoFade(App* app, const SDL_Rect& region, int radius);
 
     SDL_Renderer* renderer_{nullptr};
     

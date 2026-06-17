@@ -778,6 +778,12 @@ void runDaemon() {
     bool dpad_up_held = false;
     double last_render_pos = -1.0;
 
+    // Seamless-handoff signal: the app keeps its own audio playing (fading out)
+    // until this flag appears, so playback never goes silent. Clear any stale
+    // one, then write it the moment our audio is actually flowing.
+    ::unlink("/dev/shm/tubelite_daemon_audio.live");
+    bool audio_live_signalled = false;
+
     std::cerr << "[daemon] Loop started.\n";
 
     while (daemon_running) {
@@ -786,6 +792,13 @@ void runDaemon() {
         last_tick = now;
 
         mpv.update();
+
+        if (!audio_live_signalled &&
+            daemon_status == DaemonStatus::Playing &&
+            mpv.getPlaybackTime() > 0.05) {
+            std::ofstream(("/dev/shm/tubelite_daemon_audio.live")) << "1";
+            audio_live_signalled = true;
+        }
 
         // ── Async resolve ─────────────────────────────────────────────────
         if (daemon_status == DaemonStatus::Resolving) {
@@ -938,6 +951,7 @@ void runDaemon() {
     if (js_fd >= 0) close(js_fd);
 #endif
     unlink("/dev/shm/tubelite_daemon.pid");
+    unlink("/dev/shm/tubelite_daemon_audio.live");
     std::cerr << "[daemon] Done.\n";
 }
 
