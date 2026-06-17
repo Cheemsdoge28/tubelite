@@ -513,6 +513,20 @@ std::optional<std::string> App::getCachedStreamUrl(const std::string& key) {
 void App::setCachedStreamUrl(const std::string& key, const std::string& url) {
     stream_url_cache_[key] = url;
     stream_url_cache_times_[key] = std::chrono::steady_clock::now();
+
+    // Bound the cache. Each resolved entry holds a long googlevideo URL (~1-2 KB);
+    // left unbounded it grows for every card you dwell on across a browse session,
+    // adding steady RAM pressure on the 1 GB device — which then swaps and makes
+    // the whole UI feel like it "slows down over time". Evict oldest over the cap.
+    constexpr size_t kMaxStreamCache = 192;
+    while (stream_url_cache_.size() > kMaxStreamCache && !stream_url_cache_times_.empty()) {
+        auto oldest = stream_url_cache_times_.begin();
+        for (auto it = stream_url_cache_times_.begin(); it != stream_url_cache_times_.end(); ++it) {
+            if (it->second < oldest->second) oldest = it;
+        }
+        stream_url_cache_.erase(oldest->first);
+        stream_url_cache_times_.erase(oldest);
+    }
 }
 
 void App::stopBrowsePreviewState() {
@@ -1549,6 +1563,16 @@ void App::loadMoreHomeFeeds() {
                     card->onClick = [this, v]() { playVideo(v); };
                     home_grid_->addCard(card);
                     cached_trending_videos_.push_back(v);
+                }
+                // Keep the in-memory trending list bounded so infinite home-scroll
+                // doesn't grow RAM without limit (the visible grid is already
+                // pruned to 100). Trim the oldest entries to match.
+                constexpr size_t kMaxTrendingCache = 150;
+                if (cached_trending_videos_.size() > kMaxTrendingCache) {
+                    cached_trending_videos_.erase(
+                        cached_trending_videos_.begin(),
+                        cached_trending_videos_.begin() +
+                            (cached_trending_videos_.size() - kMaxTrendingCache));
                 }
                 uiDirty_ = true;
             }
