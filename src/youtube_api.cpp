@@ -548,6 +548,52 @@ static bool fetchPipedInstance(const std::string& instance, const std::string& v
     } catch (...) { return false; }
 }
 
+// Resolve via local yt-dlp. Slow and heavy (spawns a Python process), so it is
+// only ever used once per request — never fanned out, never on hover.
+static bool runYtDlp(const std::string& watchUrl, int max_height,
+                     std::string& out_url, std::string& out_sub, VideoPlaybackMetadata& out_meta) {
+    const std::string fmtMain =
+        "best[height<=" + std::to_string(max_height) + "][vcodec^=avc1]"
+        "/best[height<=" + std::to_string(max_height) + "]"
+        "/best";
+    const std::string cmd =
+        "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
+        "--no-check-certificate --force-ipv4 --no-playlist --no-call-home --no-check-formats "
+        "--youtube-skip-dash-manifest --socket-timeout 10 "
+        "--cache-dir \"build/cache\" "
+        "--extractor-args \"youtube:player_client=ios,android;skip=dash,hls\" "
+        "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>/dev/null";
+    const std::string output = execCapture(cmd);
+    std::istringstream iss(output);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        try {
+            auto j = json::parse(line);
+            if (j.is_object() && j.contains("url")) {
+                out_url = safeGet<std::string>(j, "url", "");
+                out_sub = extractSubtitleUrl(j);
+                out_meta.like_count       = j.value("like_count", 0LL);
+                out_meta.comment_count    = j.value("comment_count", 0LL);
+                out_meta.view_count       = j.value("view_count", 0LL);
+                out_meta.subscriber_count = j.value("channel_follower_count", 0LL);
+                if (out_meta.subscriber_count == 0LL) out_meta.subscriber_count = j.value("subscriber_count", 0LL);
+                out_meta.description      = j.value("description", "");
+                if (!out_url.empty()) return true;
+            }
+        } catch (...) {}
+    }
+    return false;
+}
+
+static const std::vector<std::string> kInvidious = {
+    "https://invidious.projectsegfau.lt", "https://yewtu.be", "https://invidious.flokinet.to"
+};
+static const std::vector<std::string> kPiped = {
+    "https://pipedapi.kavin.rocks", "https://piped-api.lunar.icu", "https://pipedapi.colt.top"
+};
+
 // Shared result for the resolver race. The first worker to produce a usable
 // URL wins; the rest finish and harmlessly discard their work. Held by a
 // shared_ptr so it outlives any worker that is still in flight.
@@ -606,7 +652,37 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         const std::string safeId   = sanitizeShellText(video_id);
         const std::string watchUrl = "https://www.youtube.com/watch?v=" + safeId;
 
-        // Race every resolver concurrently; first usable muxed URL wins.
+        std::string url, subtitle_url;
+        VideoPlaybackMetadata meta;
+
+        // ── Preview path (hover/focus prefetch) ───────────────────────────────
+        // Must stay cheap and cancellable: ONE process at a time, bailing the
+        // moment focus moves. Never fan out — rapid scrolling would otherwise
+        // launch a storm of curl/yt-dlp processes and exhaust the device.
+        if (isPreview) {
+            for (const auto& inst : kInvidious) {
+                if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+                if (fetchInvidiousInstance(inst, safeId, max_height, url, meta)) break;
+            }
+            if (url.empty()) {
+                for (const auto& inst : kPiped) {
+                    if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+                    if (fetchPipedInstance(inst, safeId, max_height, url, meta)) break;
+                }
+            }
+            // yt-dlp only as a last resort, and only if this preview is still
+            // wanted — so a scroll-past bails before the heavy process spawns.
+            if (url.empty() && stillWanted()) {
+                runYtDlp(watchUrl, max_height, url, subtitle_url, meta);
+            }
+            if (!stillWanted() || url.empty()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+            callback(true, url, subtitle_url, meta);
+            return;
+        }
+
+        // ── Playback path (explicit, user-initiated, infrequent) ──────────────
+        // Race every resolver concurrently; first usable muxed URL wins. The
+        // burst of processes is bounded to a single play action.
         auto race = std::make_shared<ResolveRace>();
         auto spawn = [race](std::function<bool(std::string&, std::string&, VideoPlaybackMetadata&)> fn) {
             { std::lock_guard<std::mutex> lk(race->m); ++race->remaining; }
@@ -618,12 +694,6 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             }).detach();
         };
 
-        static const std::vector<std::string> kInvidious = {
-            "https://invidious.projectsegfau.lt", "https://yewtu.be", "https://invidious.flokinet.to"
-        };
-        static const std::vector<std::string> kPiped = {
-            "https://pipedapi.kavin.rocks", "https://piped-api.lunar.icu", "https://pipedapi.colt.top"
-        };
         for (const auto& inst : kInvidious) {
             spawn([inst, safeId, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
                 (void)s; return fetchInvidiousInstance(inst, safeId, max_height, u, m);
@@ -634,49 +704,13 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
                 (void)s; return fetchPipedInstance(inst, safeId, max_height, u, m);
             });
         }
-        // yt-dlp: slowest but most reliable. Raced alongside the APIs (not after),
-        // so a slow public instance no longer adds latency on top of it.
-        spawn([watchUrl, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) -> bool {
-            const std::string fmtMain =
-                "best[height<=" + std::to_string(max_height) + "][vcodec^=avc1]"
-                "/best[height<=" + std::to_string(max_height) + "]"
-                "/best";
-            const std::string cmd =
-                "yt-dlp --no-config --quiet --no-warnings --no-update --encoding utf-8 "
-                "--no-check-certificate --force-ipv4 --no-playlist --no-call-home --no-check-formats "
-                "--youtube-skip-dash-manifest --socket-timeout 10 "
-                "--cache-dir \"build/cache\" "
-                "--extractor-args \"youtube:player_client=ios,android;skip=dash,hls\" "
-                "-f \"" + fmtMain + "\" --dump-json \"" + watchUrl + "\" 2>/dev/null";
-            const std::string output = execCapture(cmd);
-            std::istringstream iss(output);
-            std::string line;
-            while (std::getline(iss, line)) {
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (line.empty()) continue;
-                try {
-                    auto j = json::parse(line);
-                    if (j.is_object() && j.contains("url")) {
-                        u = safeGet<std::string>(j, "url", "");
-                        s = extractSubtitleUrl(j);
-                        m.like_count       = j.value("like_count", 0LL);
-                        m.comment_count    = j.value("comment_count", 0LL);
-                        m.view_count       = j.value("view_count", 0LL);
-                        m.subscriber_count = j.value("channel_follower_count", 0LL);
-                        if (m.subscriber_count == 0LL) m.subscriber_count = j.value("subscriber_count", 0LL);
-                        m.description      = j.value("description", "");
-                        if (!u.empty()) return true;
-                    }
-                } catch (...) {}
-            }
-            return false;
+        spawn([watchUrl, max_height](std::string& u, std::string& s, VideoPlaybackMetadata& m) {
+            return runYtDlp(watchUrl, max_height, u, s, m);
         });
 
         // Wait for the first winner, or until everyone has finished — capped so
         // a stalled network can't wedge the request forever.
         bool ok = false;
-        std::string url, subtitle_url;
-        VideoPlaybackMetadata meta;
         {
             std::unique_lock<std::mutex> lk(race->m);
             race->cv.wait_for(lk, std::chrono::seconds(20),
