@@ -64,8 +64,11 @@ TTL_META     = 6 * 3600
 # time keeps three cores free for the app/daemon. Requests queue briefly behind
 # the worker, which is fine because results are cached.
 MAX_WORKERS  = 1
-# Self-exit after this long with no clients (0 = never). Frees RAM when idle.
-IDLE_EXIT_SECS = 0
+# Self-exit after this long with no requests. This is what stops tubed (and any
+# yt-dlp it spawned) from lingering after the app/daemon are gone — the bug
+# where an orphaned tubed + stray yt-dlp kept running. The background audio
+# daemon only hits tubed at track boundaries, so it simply re-spawns on demand.
+IDLE_EXIT_SECS = 90
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -147,6 +150,27 @@ class TTLCache:
 CACHE = TTLCache()
 _work_sem = threading.BoundedSemaphore(MAX_WORKERS)
 
+# Track every live yt-dlp child so we can guarantee none survive us. Each child
+# is started in its own session (process group) so we can kill the whole group
+# — yt-dlp's standalone binary can fork helpers that a plain kill() would miss.
+_active_procs = set()
+_active_lock = threading.Lock()
+
+def _kill_proc_group(p):
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+def _kill_all_children():
+    with _active_lock:
+        procs = list(_active_procs)
+    for p in procs:
+        _kill_proc_group(p)
+
 # ── yt-dlp integration ───────────────────────────────────────────────────────
 
 def _have_cookies():
@@ -179,17 +203,35 @@ def _ytdlp_base_args():
 
 
 def _run_ytdlp(args, timeout):
-    """Run yt-dlp, return stdout text (empty on failure)."""
+    """Run yt-dlp and return stdout text (empty on failure). The child runs in
+    its own process group and is force-killed (group-wide) on timeout/error, so
+    a hung or slow yt-dlp can never leak into a stray background process."""
     try:
-        p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                           timeout=timeout)
-        return p.stdout.decode("utf-8", "replace") if p.stdout else ""
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+    except Exception as ex:
+        log("yt-dlp launch failed:", ex)
+        return ""
+    with _active_lock:
+        _active_procs.add(p)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return out.decode("utf-8", "replace") if out else ""
     except subprocess.TimeoutExpired:
-        log("yt-dlp timed out:", " ".join(args[-2:]))
+        log("yt-dlp timed out; killing process group")
+        _kill_proc_group(p)
+        try:
+            p.communicate(timeout=2)
+        except Exception:
+            pass
         return ""
     except Exception as ex:
         log("yt-dlp run failed:", ex)
+        _kill_proc_group(p)
         return ""
+    finally:
+        with _active_lock:
+            _active_procs.discard(p)
 
 
 def _uploaded_ago(info):
@@ -562,12 +604,18 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    # Last-resort safety net: never leave a yt-dlp child behind, no matter how
+    # we exit.
+    import atexit
+    atexit.register(_kill_all_children)
+
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
     wd = threading.Thread(target=_idle_watchdog, args=(server,), daemon=True)
     wd.start()
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        _kill_all_children()   # reap any in-flight yt-dlp before we go
         for p in (SOCK_PATH, PID_PATH):
             try:
                 os.unlink(p)

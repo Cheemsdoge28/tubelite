@@ -16,6 +16,17 @@
 #else
 #include <sys/statvfs.h>
 #include <unistd.h>
+#include <csignal>
+
+// Stop the tubed backend service (SIGTERM). Used when the app exits and is NOT
+// handing off to the background daemon, so neither tubed nor any yt-dlp it
+// spawned is left running.
+static void stopTubed() {
+    std::ifstream ifs("/dev/shm/tubed.pid");
+    pid_t pid = 0;
+    if (ifs) ifs >> pid;
+    if (pid > 0) ::kill(pid, SIGTERM);
+}
 #endif
 
 static std::string getAppDataPath(const std::string& filename) {
@@ -349,6 +360,12 @@ void App::run() {
             if (::access("/dev/shm/tubelite_daemon_audio.live", F_OK) == 0) break;
             SDL_Delay(25);
         }
+#endif
+    } else {
+#ifndef _WIN32
+        // No background playback is taking over, so nothing will use the backend
+        // — shut tubed down so it (and any yt-dlp it spawned) can't linger.
+        stopTubed();
 #endif
     }
 }

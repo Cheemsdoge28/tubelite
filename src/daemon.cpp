@@ -280,7 +280,7 @@ static bool foregroundGameActive() {
     struct dirent* e;
     while (!found && (e = readdir(d)) != nullptr) {
         if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;  // pid dirs only
-        char path[64];
+        char path[300];  // sized for "/proc/" + max 255-byte name + "/comm"
         snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
         FILE* f = fopen(path, "r");
         if (!f) continue;
@@ -344,7 +344,7 @@ static inline void drmPutPixel(int x, int y,
                            (uint32_t)out_b;
 }
 
-static void fillRect(int rx, int ry, int rw, int rh,
+[[maybe_unused]] static void fillRect(int rx, int ry, int rw, int rh,
                      uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     int x2 = std::min(rx + rw, card_w);
     int y2 = std::min(ry + rh, card_h);
@@ -951,7 +951,17 @@ void runDaemon() {
     if (js_fd >= 0) close(js_fd);
 #endif
     unlink("/dev/shm/tubelite_daemon.pid");
+#ifndef _WIN32
     unlink("/dev/shm/tubelite_daemon_audio.live");
+    // Background playback is over and the app isn't running, so nothing needs
+    // the tubed backend — stop it so neither it nor any yt-dlp child lingers.
+    {
+        std::ifstream tp("/dev/shm/tubed.pid");
+        pid_t tpid = 0;
+        if (tp) tp >> tpid;
+        if (tpid > 0) kill(tpid, SIGTERM);
+    }
+#endif
     std::cerr << "[daemon] Done.\n";
 }
 
