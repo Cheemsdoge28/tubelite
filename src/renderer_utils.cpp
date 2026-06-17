@@ -256,13 +256,16 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
             SDL_SetSurfaceBlendMode(glyph_surf, prev_mode);
 
             GlyphInfo& info = atlas.glyphs[ch];
-            // Store full cell coordinates
             info.src_rect = {col * cell_w, row * cell_h, cell_w, cell_h};
             info.minx  = minx;
             info.maxx  = maxx;
             info.miny  = miny;
             info.maxy  = maxy;
             info.advance = advance;
+            // Exact glyph pixel rect in the atlas.  pen_x_offset encodes the
+            // correct screen-x adjustment even when left-edge clipping occurred.
+            info.glyph_src    = {dst_x, dst_y, std::max(0, blit_w), std::max(0, blit_h)};
+            info.pen_x_offset = minx + src_x; // src_x > 0 only when clipped
 
             SDL_FreeSurface(glyph_surf);
         } else {
@@ -270,6 +273,8 @@ static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
             info.src_rect = {col * cell_w, row * cell_h, cell_w, cell_h};
             info.minx = info.maxx = info.miny = info.maxy = 0;
             info.advance = advance > 0 ? advance : cell_w / 4;
+            info.glyph_src    = {0, 0, 0, 0};
+            info.pen_x_offset = 0;
         }
     }
 
@@ -359,6 +364,11 @@ struct CachedGlyph {
 };
 
 static std::unordered_map<uint64_t, CachedGlyph> g_glyph_cache;
+
+// Maps FreeType glyph_id → ASCII char code for each primary face slot (0, 2, 4).
+// Built at font-init time so drawTextDirect can look up atlas glyphs by HarfBuzz
+// glyph_id without touching FreeType per-frame.
+static std::unordered_map<uint32_t, unsigned int> g_atlas_glyph_map[6];
 
 static std::vector<uint32_t> utf8ToUtf32(const std::string& utf8) {
     std::vector<uint32_t> utf32;
@@ -597,30 +607,74 @@ static const CachedTextShaping& getOrShape(const std::string& text, int scale, i
     return g_text_shaping_cache.emplace(std::move(key), std::move(shaping)).first->second;
 }
 
-// Draws an already-shaped string directly to the current render target in `color`,
-// one glyph at a time. NOTE: an earlier "whole-string texture cache" that
-// composited each string into its own render-target texture was reverted — on the
-// RK3326's tile-based Mali-G31 the per-string SDL_SetRenderTarget (FBO bind) forced
-// a tile flush on every cache miss, which raised CPU during scrolling and grew RSS
-// (hundreds of FBO-backed target textures) instead of helping. Per-glyph blits from
-// the shared glyph cache are the known-good path on this GPU.
+// Draws an already-shaped string to the current render target.
+//
+// Fast path (primary Latin faces, ASCII glyphs): blits from the shared atlas texture
+// so the SDL2/GLES2 renderer can batch an entire text run into ONE draw call instead
+// of one per glyph.  On the Mali-G31 (tile-based), collapsing N texture-bind+draw
+// pairs into 1 is the biggest text-rendering win available.
+//
+// Slow path (fallback/emoji faces, non-ASCII, any atlas miss): falls back to the
+// per-glyph CachedGlyph texture path (correct but causes one draw call per glyph).
+//
+// NOTE: the earlier "whole-string render-to-texture cache" was reverted because
+// SDL_SetRenderTarget forces a Mali-G31 tile flush on every call, which cost more
+// than it saved.  The atlas approach avoids SDL_SetRenderTarget entirely.
 static void drawTextDirect(SDL_Renderer* renderer, int x, int y, const CachedTextShaping& shaping, SDL_Color color) {
     int cursor_x = x;
     for (const auto& run : shaping.runs) {
         FT_Face face = g_ft_faces[run.font_idx];
         if (!face) continue;
-        int ascender = face->size->metrics.ascender >> 6;
+        int ascender  = face->size->metrics.ascender >> 6;
         int baseline_y = y + ascender;
+
+        // Atlas selection: only primary faces (slots 0/2/4 = small/medium/large
+        // Atkinson Hyperlegible) have a matching atlas and glyph-id map.
+        // Fallback faces (1/3/5) and emoji (6/7) always use per-glyph textures.
+        FontAtlas* atlas = nullptr;
+        if      (run.font_idx == 0) atlas = &g_atlas_small;
+        else if (run.font_idx == 2) atlas = &g_atlas_medium;
+        else if (run.font_idx == 4) atlas = &g_atlas_large;
+
+        const auto* gmap = (atlas && run.font_idx < 6)
+                           ? &g_atlas_glyph_map[run.font_idx] : nullptr;
+        const bool can_atlas = atlas && atlas->texture && gmap && !gmap->empty();
+
+        if (can_atlas) {
+            // Set color/blend once for the whole run so SDL2's GLES2 renderer
+            // can accumulate every SDL_RenderCopy into a single draw call.
+            SDL_SetTextureColorMod(atlas->texture,  color.r, color.g, color.b);
+            SDL_SetTextureAlphaMod(atlas->texture,  color.a);
+            SDL_SetTextureBlendMode(atlas->texture, SDL_BLENDMODE_BLEND);
+        }
+
         for (const auto& sg : run.shaped) {
-            CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
-            if (cg.texture) {
-                SDL_SetTextureColorMod(cg.texture, color.r, color.g, color.b);
-                SDL_SetTextureAlphaMod(cg.texture, color.a);
-                SDL_SetTextureBlendMode(cg.texture, SDL_BLENDMODE_BLEND);
-                int draw_x = cursor_x + sg.x_offset + cg.bearing_x;
-                int draw_y = baseline_y - sg.y_offset - cg.bearing_y;
-                SDL_Rect dst{draw_x, draw_y, cg.width, cg.height};
-                SDL_RenderCopy(renderer, cg.texture, nullptr, &dst);
+            bool drew = false;
+            if (can_atlas) {
+                auto it = gmap->find(sg.glyph_id);
+                if (it != gmap->end()) {
+                    const GlyphInfo& gi = atlas->glyphs[it->second];
+                    if (gi.glyph_src.w > 0 && gi.glyph_src.h > 0) {
+                        int draw_x = cursor_x + sg.x_offset + gi.pen_x_offset;
+                        int draw_y = baseline_y - sg.y_offset - atlas->ascent;
+                        SDL_Rect src = gi.glyph_src;
+                        SDL_Rect dst{draw_x, draw_y, src.w, src.h};
+                        SDL_RenderCopy(renderer, atlas->texture, &src, &dst);
+                        drew = true;
+                    }
+                }
+            }
+            if (!drew) {
+                CachedGlyph cg = getOrCacheGlyph(renderer, run.font_idx, sg.glyph_id);
+                if (cg.texture) {
+                    SDL_SetTextureColorMod(cg.texture,  color.r, color.g, color.b);
+                    SDL_SetTextureAlphaMod(cg.texture,  color.a);
+                    SDL_SetTextureBlendMode(cg.texture, SDL_BLENDMODE_BLEND);
+                    int draw_x = cursor_x + sg.x_offset + cg.bearing_x;
+                    int draw_y = baseline_y - sg.y_offset - cg.bearing_y;
+                    SDL_Rect dst{draw_x, draw_y, cg.width, cg.height};
+                    SDL_RenderCopy(renderer, cg.texture, nullptr, &dst);
+                }
             }
             cursor_x += sg.x_advance;
         }
@@ -755,7 +809,20 @@ bool initFonts(SDL_Renderer* renderer) {
     g_atlas_small = createFontAtlas(renderer, g_font_small);
     g_atlas_medium = createFontAtlas(renderer, g_font_medium);
     g_atlas_large = createFontAtlas(renderer, g_font_large);
-    
+
+    // Build glyph_id → ASCII char maps for the three primary faces (slots 0, 2, 4).
+    // This lets drawTextDirect hit the shared atlas texture for all ASCII glyphs,
+    // collapsing N per-glyph texture binds into one per text run on the Mali-G31.
+    for (int si = 0; si < 3; si++) {
+        int fi = si * 2;  // primary face: 0 (14px), 2 (18px), 4 (24px)
+        FT_Face face = g_ft_faces[fi];
+        if (!face) continue;
+        for (unsigned int ch = 32; ch < 127; ++ch) {
+            FT_UInt gid = FT_Get_Char_Index(face, ch);
+            if (gid != 0) g_atlas_glyph_map[fi][gid] = ch;
+        }
+    }
+
     initCornerMask(renderer);
     initSolidCorner(renderer);
 
@@ -765,6 +832,7 @@ bool initFonts(SDL_Renderer* renderer) {
 
 void cleanupFonts() {
     g_text_shaping_cache.clear();
+    for (int i = 0; i < 6; i++) g_atlas_glyph_map[i].clear();
     for (auto& pair : g_glyph_cache) {
         if (pair.second.texture) {
             SDL_DestroyTexture(pair.second.texture);

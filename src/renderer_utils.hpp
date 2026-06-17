@@ -34,7 +34,9 @@ void drawSpeedOverlay(SDL_Renderer* renderer, int centerX, int y, double speed, 
 void drawLoadingOverlay(SDL_Renderer* renderer, int width, int height, const std::string& text, float time, SDL_Color textColor, bool drawBg);
 
 struct GlyphInfo {
-    SDL_Rect src_rect;
+    SDL_Rect src_rect;     // full atlas cell (for external callers)
+    SDL_Rect glyph_src;    // exact pixel rect of this glyph within the atlas texture
+    int pen_x_offset;      // draw_x = cursor_x + sg.x_offset + pen_x_offset
     int minx, maxx, miny, maxy, advance;
 };
 
