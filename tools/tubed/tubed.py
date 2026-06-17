@@ -189,6 +189,26 @@ def _find_ytdlp():
 # resolution path — no per-UI-action process storms.
 YT_DLP = _find_ytdlp()
 
+# yt-dlp is the only real CPU hog in the sidecar (Python start-up + extraction +
+# signature JS). We can't make the extraction itself cheaper, but we can stop it
+# from starving the foreground app/audio: each child runs at low priority and is
+# pinned to a single core, so on the quad-A35 it can never monopolise the SoC —
+# the other three cores stay free for the UI and the background audio daemon even
+# when previews are resolving back-to-back. Falls back to a plain launch if the
+# `nice`/`taskset` tools aren't installed.
+def _sched_prefix():
+    prefix = []
+    nice_bin = shutil.which("nice")
+    if nice_bin:
+        prefix += [nice_bin, "-n", "15"]
+    taskset_bin = shutil.which("taskset")
+    ncpu = os.cpu_count() or 1
+    if taskset_bin and ncpu > 1:
+        prefix += [taskset_bin, "-c", str(ncpu - 1)]  # pin to the last core
+    return prefix
+
+_SCHED_PREFIX = _sched_prefix()
+
 # Flags shared by every yt-dlp invocation. Mirrors the command that played
 # reliably before, plus cookies when present.
 def _ytdlp_base_args():
@@ -207,8 +227,10 @@ def _run_ytdlp(args, timeout):
     its own process group and is force-killed (group-wide) on timeout/error, so
     a hung or slow yt-dlp can never leak into a stray background process."""
     try:
-        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+        # nice/taskset (when present) exec into yt-dlp, so the launched process
+        # group still ends as yt-dlp and the group-wide kill below still works.
+        p = subprocess.Popen(_SCHED_PREFIX + args, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
     except Exception as ex:
         log("yt-dlp launch failed:", ex)
         return ""
@@ -610,6 +632,7 @@ def main():
     atexit.register(_kill_all_children)
 
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
+    log("yt-dlp launch prefix:", " ".join(_SCHED_PREFIX) if _SCHED_PREFIX else "(none)")
     wd = threading.Thread(target=_idle_watchdog, args=(server,), daemon=True)
     wd.start()
     try:
