@@ -44,7 +44,7 @@ struct DaemonVideo {
 };
 
 static std::vector<DaemonVideo> daemon_playlist;
-static int    daemon_current_index = 0;
+static int daemon_current_index = 0;
 static double daemon_start_position = 0.0;
 static std::atomic<bool> daemon_running{true};
 
@@ -55,19 +55,40 @@ static std::string daemon_resolved_url;
 static std::string daemon_subtitle_url;
 static std::mutex daemon_resolved_mutex;
 
-static float overlay_alpha  = 0.0f;
+static float overlay_alpha = 0.0f;
 static bool  overlay_active = false;
 static float daemon_overlay_timer = 0.0f;
 
-static const int card_w = 360;
-static const int card_h = 110;
-static const int card_y = 12;
+// ── Card dimensions ───────────────────────────────────────────────────────────
+static const int card_w = 380;
+static const int card_h = 88;
+static const int card_y = 10;
 
 static inline uint8_t fade(uint8_t a) {
     return (uint8_t)(a * overlay_alpha);
 }
 
-// ─── DRM state ───────────────────────────────────────────────────────────────
+// ── Design tokens ─────────────────────────────────────────────────────────────
+// Background: deep navy-black
+static const uint8_t C_BG_R  =  10, C_BG_G  =  11, C_BG_B  =  16;
+// Surface lift: slightly lighter for gradient
+static const uint8_t C_SF_R  =  20, C_SF_G  =  22, C_SF_B  =  30;
+// Accent red
+static const uint8_t C_AC_R  = 255, C_AC_G  =  45, C_AC_B  =  45;
+// Title: warm near-white
+static const uint8_t C_TT_R  = 245, C_TT_G  = 244, C_TT_B  = 242;
+// Author: muted blue-grey
+static const uint8_t C_AU_R  = 148, C_AU_G  = 158, C_AU_B  = 175;
+// Time: slightly brighter than author
+static const uint8_t C_TM_R  = 190, C_TM_G  = 194, C_TM_B  = 202;
+// Hints: very muted
+static const uint8_t C_HN_R  =  95, C_HN_G  = 100, C_HN_B  = 115;
+// Progress track
+static const uint8_t C_TR_R  =  36, C_TR_G  =  40, C_TR_B  =  52;
+// Status colours
+static const uint8_t C_GR_R  =  48, C_GR_G  = 210, C_GR_B  =  90;  // green
+static const uint8_t C_YL_R  = 255, C_YL_G  = 200, C_YL_B  =  50;  // yellow
+static const uint8_t C_BL_R  =  60, C_BL_G  = 150, C_BL_B  = 255;  // blue
 
 #ifndef _WIN32
 #define DRM_OVERLAY_PLANE_ID  61
@@ -81,11 +102,6 @@ static uint64_t  drm_size    = 0;
 static uint32_t* drm_map     = nullptr;
 static int       drm_screen_w = 640;
 static int       drm_screen_h = 480;
-
-// True while we hold an active plane commit on the VOP.
-// When false, the overlay plane is disabled and drm_fd may still be open
-// but no plane state is set — safe for another process to take master.
-static bool drm_plane_active = false;
 #endif
 
 static FT_Library ft_lib;
@@ -94,7 +110,7 @@ static bool       ft_ok = false;
 
 static uint32_t card_backbuffer[card_w * card_h];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 static std::string getAppDataPath(const std::string& filename) {
 #ifdef _WIN32
@@ -149,15 +165,7 @@ static void handleSignal(int sig) {
         daemon_running = false;
 }
 
-// ─── DRM overlay ─────────────────────────────────────────────────────────────
-//
-// Design: we open card0 once and keep the fd for the daemon lifetime, but we
-// only commit a plane when the overlay needs to be visible. When hidden we call
-// drmModeSetPlane with fb=0 to release the plane, then drop DRM master with
-// drmDropMaster(). This lets emulators take master cleanly.
-//
-// Before each commit we re-acquire master with drmSetMaster(). If that fails
-// (another process holds it) we skip the commit silently — audio keeps playing.
+// ── DRM overlay ───────────────────────────────────────────────────────────────
 
 #ifndef _WIN32
 static bool initDrmOverlay() {
@@ -166,7 +174,6 @@ static bool initDrmOverlay() {
 
     drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
-    // Query screen size
     drmModeRes* res = drmModeGetResources(drm_fd);
     if (res) {
         for (int i = 0; i < res->count_crtcs; i++) {
@@ -182,7 +189,6 @@ static bool initDrmOverlay() {
         drmModeFreeResources(res);
     }
 
-    // Allocate dumb buffer
     struct drm_mode_create_dumb creq = {};
     creq.width  = card_w;
     creq.height = card_h;
@@ -194,16 +200,16 @@ static bool initDrmOverlay() {
     drm_pitch  = creq.pitch;
     drm_size   = creq.size;
 
-    // Register framebuffer
     uint32_t handles[4] = { drm_handle };
     uint32_t pitches[4] = { drm_pitch  };
     uint32_t offsets[4] = { 0 };
-    if (drmModeAddFB2(drm_fd, card_w, card_h, DRM_FORMAT_ARGB8888,
-                      handles, pitches, offsets, &drm_fb_id, 0) < 0) {
+    if (drmModeAddFB2(drm_fd, card_w, card_h,
+                      DRM_FORMAT_ARGB8888,
+                      handles, pitches, offsets,
+                      &drm_fb_id, 0) < 0) {
         perror("[daemon] AddFB2"); return false;
     }
 
-    // Map buffer
     struct drm_mode_map_dumb mreq = {};
     mreq.handle = drm_handle;
     drmIoctl(drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
@@ -213,11 +219,6 @@ static bool initDrmOverlay() {
     if (drm_map == MAP_FAILED) { perror("[daemon] mmap drm"); return false; }
 
     memset(drm_map, 0, drm_size);
-
-    // Drop master immediately — don't hold it while idle.
-    // We'll re-acquire just before each plane commit.
-    drmDropMaster(drm_fd);
-
     std::cerr << "[daemon] DRM overlay ready. Screen: "
               << drm_screen_w << "x" << drm_screen_h << "\n";
     return true;
@@ -225,13 +226,8 @@ static bool initDrmOverlay() {
 
 static void closeDrmOverlay() {
     if (drm_fd < 0) return;
-
-    // Best-effort: acquire master to clean up plane, ignore failure
-    drmSetMaster(drm_fd);
     drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    drmDropMaster(drm_fd);
-
     if (drm_map && drm_map != MAP_FAILED) munmap(drm_map, drm_size);
     if (drm_fb_id)  drmModeRmFB(drm_fd, drm_fb_id);
     if (drm_handle) {
@@ -241,58 +237,34 @@ static void closeDrmOverlay() {
     }
     close(drm_fd);
     drm_fd = -1;
-    drm_plane_active = false;
 }
 
-// Returns true if we successfully committed the plane.
-// Acquires master, commits, then immediately drops master so emulators
-// can take it between frames. The plane state persists on the VOP hardware
-// even after we drop master — it only disappears when we explicitly disable it
-// or another master resets the display pipeline.
-static bool commitOverlay() {
-    if (drm_fd < 0) return false;
-
-    if (drmSetMaster(drm_fd) < 0) {
-        // Another process holds master (emulator running) — skip silently
-        return false;
-    }
-
+static void commitOverlay() {
+    if (drm_fd < 0) return;
     int dest_x = (drm_screen_w - card_w) / 2;
     int dest_y = card_y;
-    int ret = drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
-                               drm_fb_id, 0,
-                               dest_x, dest_y, card_w,       card_h,
-                               0,      0,      card_w << 16, card_h << 16);
-
-    drmDropMaster(drm_fd);  // release immediately after commit
-
-    if (ret < 0) {
-        drm_plane_active = false;
-        return false;
-    }
-    drm_plane_active = true;
-    return true;
+    drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
+                    drm_fb_id, 0,
+                    dest_x, dest_y, card_w,       card_h,
+                    0,      0,      card_w << 16, card_h << 16);
 }
 
-// Disable the overlay plane and drop master.
 static void hideOverlay() {
-    if (drm_fd < 0 || !drm_plane_active) return;
-
-    if (drmSetMaster(drm_fd) == 0) {
-        drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        drmDropMaster(drm_fd);
-    }
-    drm_plane_active = false;
+    if (drm_fd < 0) return;
+    drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 #else
 static bool initDrmOverlay() { return true; }
 static void closeDrmOverlay() {}
-static bool commitOverlay()  { return true; }
-static void hideOverlay()    {}
+static void commitOverlay() {}
+static void hideOverlay() {}
 #endif
 
-// ─── Drawing ─────────────────────────────────────────────────────────────────
+// ── Drawing primitives ────────────────────────────────────────────────────────
+// Backbuffer uses Porter-Duff "src over dst" so layers composite correctly
+// (shadow → card body → gradient → text). Hardware plane then composites the
+// finished buffer over the primary plane via the alpha channel.
 
 static inline void drmPutPixel(int x, int y,
                                 uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -304,39 +276,41 @@ static inline void drmPutPixel(int x, int y,
     uint8_t  dst_g = (dst >>  8) & 0xff;
     uint8_t  dst_b =  dst        & 0xff;
 
-    uint32_t out_a = a + (uint32_t)dst_a * (255 - a) / 255;
-    if (out_a > 0) {
-        uint8_t out_r = ((uint32_t)r * a + (uint32_t)dst_r * dst_a * (255 - a) / 255) / out_a;
-        uint8_t out_g = ((uint32_t)g * a + (uint32_t)dst_g * dst_a * (255 - a) / 255) / out_a;
-        uint8_t out_b = ((uint32_t)b * a + (uint32_t)dst_b * dst_a * (255 - a) / 255) / out_a;
-        card_backbuffer[idx] = ((uint32_t)out_a << 24) |
-                               ((uint32_t)out_r << 16) |
-                               ((uint32_t)out_g <<  8) |
-                                (uint32_t)out_b;
-    }
+    uint32_t inv   = 255 - a;
+    uint32_t out_a = a + (uint32_t)dst_a * inv / 255;
+    if (out_a == 0) return;
+    uint8_t out_r  = ((uint32_t)r * a + (uint32_t)dst_r * inv) / 255;
+    uint8_t out_g  = ((uint32_t)g * a + (uint32_t)dst_g * inv) / 255;
+    uint8_t out_b  = ((uint32_t)b * a + (uint32_t)dst_b * inv) / 255;
+
+    card_backbuffer[idx] = (uint32_t)(out_a > 255 ? 255 : out_a) << 24 |
+                           (uint32_t)out_r << 16 |
+                           (uint32_t)out_g <<  8 |
+                           (uint32_t)out_b;
 }
 
-static void drawRect(int rx, int ry, int rw, int rh,
+static void fillRect(int rx, int ry, int rw, int rh,
                      uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    for (int y = ry; y < ry + rh; ++y)
-        for (int x = rx; x < rx + rw; ++x)
+    int x2 = std::min(rx + rw, card_w);
+    int y2 = std::min(ry + rh, card_h);
+    for (int y = std::max(ry, 0); y < y2; ++y)
+        for (int x = std::max(rx, 0); x < x2; ++x)
             drmPutPixel(x, y, r, g, b, a);
 }
 
-static void drawRoundedRect(int rx, int ry, int rw, int rh, int radius,
+static void fillRoundedRect(int rx, int ry, int rw, int rh, int radius,
                              uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    for (int y = ry; y < ry + rh; ++y) {
-        for (int x = rx; x < rx + rw; ++x) {
+    for (int y = ry; y < ry + rh && y < card_h; ++y) {
+        for (int x = rx; x < rx + rw && x < card_w; ++x) {
             int dx = 0, dy = 0;
             if      (x < rx + radius)       dx = rx + radius - x;
             else if (x >= rx + rw - radius) dx = x - (rx + rw - radius - 1);
             if      (y < ry + radius)       dy = ry + radius - y;
             else if (y >= ry + rh - radius) dy = y - (ry + rh - radius - 1);
-
             if (dx > 0 && dy > 0) {
                 float dist = std::sqrt((float)(dx*dx + dy*dy));
-                if (dist > radius) continue;
-                uint8_t aa = (dist > radius - 1.0f)
+                if (dist >= radius) continue;
+                uint8_t aa = dist > radius - 1.0f
                              ? (uint8_t)(a * (radius - dist)) : a;
                 drmPutPixel(x, y, r, g, b, aa);
             } else {
@@ -346,6 +320,44 @@ static void drawRoundedRect(int rx, int ry, int rw, int rh, int radius,
     }
 }
 
+// Top-to-bottom gradient within a rectangle
+static void fillGradientV(int rx, int ry, int rw, int rh,
+                           uint8_t r0, uint8_t g0, uint8_t b0, uint8_t a0,
+                           uint8_t r1, uint8_t g1, uint8_t b1, uint8_t a1) {
+    for (int y = ry; y < ry + rh && y < card_h; ++y) {
+        float t = (rh > 1) ? (float)(y - ry) / (float)(rh - 1) : 0.f;
+        uint8_t r = (uint8_t)(r0 + t * ((int)r1 - r0));
+        uint8_t g = (uint8_t)(g0 + t * ((int)g1 - g0));
+        uint8_t b = (uint8_t)(b0 + t * ((int)b1 - b0));
+        uint8_t a = (uint8_t)(a0 + t * ((int)a1 - a0));
+        for (int x = std::max(rx, 0); x < rx + rw && x < card_w; ++x)
+            drmPutPixel(x, y, r, g, b, a);
+    }
+}
+
+// Left-to-right gradient — for accent glow
+static void fillGradientH(int rx, int ry, int rw, int rh,
+                           uint8_t r0, uint8_t g0, uint8_t b0, uint8_t a0,
+                           uint8_t r1, uint8_t g1, uint8_t b1, uint8_t a1) {
+    for (int x = rx; x < rx + rw && x < card_w; ++x) {
+        float t = (rw > 1) ? (float)(x - rx) / (float)(rw - 1) : 0.f;
+        uint8_t r = (uint8_t)(r0 + t * ((int)r1 - r0));
+        uint8_t g = (uint8_t)(g0 + t * ((int)g1 - g0));
+        uint8_t b = (uint8_t)(b0 + t * ((int)b1 - b0));
+        uint8_t a = (uint8_t)(a0 + t * ((int)a1 - a0));
+        for (int y = std::max(ry, 0); y < ry + rh && y < card_h; ++y)
+            drmPutPixel(x, y, r, g, b, a);
+    }
+}
+
+static void drawHRule(int rx, int ry, int rw,
+                      uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    for (int x = rx; x < rx + rw && x < card_w; ++x)
+        drmPutPixel(x, ry, r, g, b, a);
+}
+
+// ── FreeType ──────────────────────────────────────────────────────────────────
+
 static void initFreetype() {
     if (FT_Init_FreeType(&ft_lib) != 0) return;
     for (const auto& p : {
@@ -354,14 +366,36 @@ static void initFreetype() {
             "/roms/tools/tubelite/res/fonts/AtkinsonHyperlegible-Regular.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" }) {
         if (std::filesystem::exists(p) && FT_New_Face(ft_lib, p, 0, &ft_face) == 0) {
-            ft_ok = true;
-            break;
+            ft_ok = true; break;
         }
     }
 }
 
+static int measureText(const std::string& text, int fontSize) {
+    if (!ft_ok) return 0;
+    FT_Set_Pixel_Sizes(ft_face, 0, fontSize);
+    int w = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        uint32_t cp = (uint8_t)text[i];
+        if (cp & 0x80) {
+            if ((cp & 0xE0) == 0xC0 && i+1 < text.size())
+                cp = ((cp & 0x1F) << 6) | ((uint8_t)text[++i] & 0x3F);
+            else if ((cp & 0xF0) == 0xE0 && i+2 < text.size()) {
+                cp = ((cp & 0x0F) << 12)
+                   | (((uint8_t)text[i+1] & 0x3F) << 6)
+                   |  ((uint8_t)text[i+2] & 0x3F);
+                i += 2;
+            }
+        }
+        if (FT_Load_Char(ft_face, cp, FT_LOAD_ADVANCE_ONLY) != 0) continue;
+        w += ft_face->glyph->advance.x >> 6;
+    }
+    return w;
+}
+
 static void drawText(const std::string& text, int x, int y, int fontSize,
-                     uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+                     uint8_t r, uint8_t g, uint8_t b, uint8_t a,
+                     int clip_x2 = card_w) {
     if (!ft_ok) return;
     FT_Set_Pixel_Sizes(ft_face, 0, fontSize);
     int pen_x = x, pen_y = y + fontSize;
@@ -384,21 +418,31 @@ static void drawText(const std::string& text, int x, int y, int fontSize,
         int gy = pen_y - gl->bitmap_top;
         for (unsigned row = 0; row < gl->bitmap.rows; ++row)
             for (unsigned col = 0; col < gl->bitmap.width; ++col) {
+                int px = gx + (int)col;
+                if (px >= clip_x2) continue;
                 uint8_t ga = gl->bitmap.buffer[row * gl->bitmap.pitch + col];
                 if (ga == 0) continue;
-                drmPutPixel(gx + col, gy + row, r, g, b,
+                drmPutPixel(px, gy + (int)row, r, g, b,
                             (uint8_t)((uint16_t)ga * a / 255));
             }
         pen_x += gl->advance.x >> 6;
     }
 }
 
-static std::string truncateText(const std::string& t, size_t maxLen) {
-    if (t.size() <= maxLen) return t;
-    return t.substr(0, maxLen - 3) + "...";
+static void drawTextRight(const std::string& text, int right_x, int y,
+                           int fontSize,
+                           uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    int w = measureText(text, fontSize);
+    drawText(text, right_x - w, y, fontSize, r, g, b, a);
 }
 
-// ─── Playback ─────────────────────────────────────────────────────────────────
+static std::string truncateText(const std::string& t, size_t maxLen) {
+    if (t.size() <= maxLen) return t;
+    // Unicode ellipsis U+2026
+    return t.substr(0, maxLen - 1) + "\xE2\x80\xA6";
+}
+
+// ── Playback ──────────────────────────────────────────────────────────────────
 
 static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
     if (daemon_current_index < 0 ||
@@ -423,11 +467,11 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 
     {
         std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
-        daemon_status           = DaemonStatus::Resolving;
-        daemon_request_finished = false;
-        daemon_request_success  = false;
-        daemon_resolved_url     = "";
-        daemon_subtitle_url     = "";
+        daemon_status            = DaemonStatus::Resolving;
+        daemon_request_finished  = false;
+        daemon_request_success   = false;
+        daemon_resolved_url      = "";
+        daemon_subtitle_url      = "";
     }
 
     yt.getStreamUrl(video.id, 360,
@@ -441,64 +485,168 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         });
 }
 
-// ─── Card render ──────────────────────────────────────────────────────────────
+// ── Card render ───────────────────────────────────────────────────────────────
+//
+// Layout (380 × 88px):
+//
+//  ┌────────────────────────────────────────────────────────────────┐
+//  │▌ Title 14px                                    [STATUS badge] │ y=10
+//  │▌ Author 11px                                   00:00 / 00:00 │ y=27
+//  │  ──────── hairline rule ───────────────────────────────────── │ y=42
+//  │  ████████████░░░░░░░░░░░░░░░░░●░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │ y=48 bar
+//  │  FN+A Pause · FN+L/R Skip · FN+B Exit           2 / 5        │ y=62
+//  └────────────────────────────────────────────────────────────────┘
+//   ↑ 4px accent bar + glow
 
 static void renderCard(MpvPlayer& mpv) {
     memset(card_backbuffer, 0, sizeof(card_backbuffer));
 
-    drawRoundedRect(2, 2, card_w - 2, card_h - 2, 8,   0,  0,  0, fade(80));
-    drawRoundedRect(0, 0, card_w,     card_h,     9,  255, 48, 48, fade(255));
-    drawRoundedRect(1, 1, card_w - 2, card_h - 2, 8,   26, 28, 32, fade(255));
-    drawRect(2, 2, card_w - 4, 2, 255, 48, 48, fade(255));
+    const uint8_t fa = fade(255);
+    if (fa == 0) return;
 
-    auto flushAndCommit = [&]() {
+    const int ML = 16;   // left margin (after accent bar + gap)
+    const int MR = 12;   // right margin
+    const int R  = 10;   // card corner radius
+
+    // ── 1. Diffuse shadow ─────────────────────────────────────────────────────
+    // Two-pass soft shadow: larger rect, low alpha, slightly offset down
+    fillRoundedRect(2,  4, card_w - 2, card_h,     R, 0, 0, 0, fade(50));
+    fillRoundedRect(1,  2, card_w - 1, card_h + 1, R, 0, 0, 0, fade(30));
+
+    // ── 2. Card body ──────────────────────────────────────────────────────────
+    fillRoundedRect(0, 0, card_w, card_h, R, C_BG_R, C_BG_G, C_BG_B, fa);
+
+    // Subtle top-half gradient: slightly lighter surface at top
+    fillGradientV(1, 1, card_w - 2, card_h / 2,
+                  C_SF_R, C_SF_G, C_SF_B, fade(55),
+                  C_SF_R, C_SF_G, C_SF_B, 0);
+
+    // ── 3. Left accent bar + glow ─────────────────────────────────────────────
+    // 4px solid bar, full card height with matching corner radius
+    fillRoundedRect(0, 0, 4, card_h, 2, C_AC_R, C_AC_G, C_AC_B, fa);
+    // Glow: short horizontal gradient fading right from bar
+    fillGradientH(4, 0, 32, card_h,
+                  C_AC_R, C_AC_G, C_AC_B, fade(28),
+                  C_AC_R, C_AC_G, C_AC_B, 0);
+
+    // ── 4. Hairline rules (top + bottom edges, inside card) ───────────────────
+    drawHRule(4, 0,          card_w - 4, 55, 65, 85, fade(70));
+    drawHRule(4, card_h - 1, card_w - 4, 55, 65, 85, fade(35));
+
+    // ── Guard ─────────────────────────────────────────────────────────────────
+    if (daemon_current_index < 0 ||
+        daemon_current_index >= (int)daemon_playlist.size()) {
 #ifndef _WIN32
-        if (drm_map) {
+        if (drm_map)
             for (int y = 0; y < card_h; ++y)
                 memcpy(drm_map + y * (drm_pitch / 4),
                        card_backbuffer + y * card_w, card_w * 4);
-        }
 #endif
         commitOverlay();
-    };
-
-    if (daemon_current_index < 0 ||
-        daemon_current_index >= (int)daemon_playlist.size()) {
-        flushAndCommit();
         return;
     }
     const auto& video = daemon_playlist[daemon_current_index];
 
-    drawText(truncateText(video.title,  32), 10, 10, 14, 240, 242, 245, fade(255));
-    drawText(truncateText(video.author, 38), 10, 28, 11, 154, 165, 184, fade(255));
+    // ── 5. Status badge (top-right) ───────────────────────────────────────────
+    uint8_t sr, sg, sb;
+    std::string statStr;
+    switch ((DaemonStatus)daemon_status) {
+        case DaemonStatus::Resolving:
+            statStr="LOADING"; sr=C_BL_R; sg=C_BL_G; sb=C_BL_B; break;
+        case DaemonStatus::Paused:
+            statStr="PAUSED";  sr=C_YL_R; sg=C_YL_G; sb=C_YL_B; break;
+        case DaemonStatus::Error:
+            statStr="ERROR";   sr=C_AC_R; sg=C_AC_G; sb=C_AC_B;  break;
+        default:
+            statStr="PLAYING"; sr=C_GR_R; sg=C_GR_G; sb=C_GR_B;  break;
+    }
+    int bw = measureText(statStr, 9) + 10;
+    int bx = card_w - MR - bw;
+    // Pill tint behind badge text
+    fillRoundedRect(bx, 7, bw, 14, 4, sr, sg, sb, fade(30));
+    drawText(statStr, bx + 5, 9, 9, sr, sg, sb, fade(220));
 
-    std::string statStr = "PLAYING";
-    uint8_t sr = 64, sg = 214, sb = 96;
-    if      (daemon_status == DaemonStatus::Resolving) { statStr="LOADING"; sr=64;  sg=148; sb=255; }
-    else if (daemon_status == DaemonStatus::Paused)    { statStr="PAUSED";  sr=255; sg=214; sb=64;  }
-    else if (daemon_status == DaemonStatus::Error)     { statStr="ERROR";   sr=255; sg=48;  sb=48;  }
-    drawText(statStr, card_w - 75, 10, 11, sr, sg, sb, fade(255));
+    // ── 6. Title (14px, clipped before badge) ────────────────────────────────
+    drawText(truncateText(video.title, 34), ML, 10, 14,
+             C_TT_R, C_TT_G, C_TT_B, fa, bx - 6);
+
+    // ── 7. Author (11px) + timestamp right-aligned (same baseline) ───────────
+    drawText(truncateText(video.author, 40), ML, 27, 11,
+             C_AU_R, C_AU_G, C_AU_B, fade(200));
 
     double pos  = mpv.getPlaybackTime();
     double dur  = mpv.getDuration() > 0.0 ? mpv.getDuration()
                                            : (double)video.duration_seconds;
     double frac = (dur > 0.0) ? std::max(0.0, std::min(1.0, pos / dur)) : 0.0;
 
-    const int barX = 10, barY = 47, barW = card_w - 20, barH = 5;
-    drawRect(barX, barY, barW, barH, 42, 48, 56, fade(255));
-    if (frac > 0.0)
-        drawRect(barX, barY, (int)(barW * frac), barH, 255, 48, 48, fade(255));
-
     std::string timeStr = formatTime(pos) + " / " +
         (video.duration_string.empty() ? formatTime(dur) : video.duration_string);
-    drawText(timeStr,                              10, 56, 10, 220, 220, 232, fade(255));
-    drawText("FN+A Pause      FN+B Exit",          10, 72, 10, 160, 160, 172, fade(255));
-    drawText("FN+L1 Prev      FN+R1 Next",         10, 88, 10, 160, 160, 172, fade(255));
+    drawTextRight(timeStr, card_w - MR, 27, 10,
+                  C_TM_R, C_TM_G, C_TM_B, fade(175));
 
-    flushAndCommit();
+    // ── 8. Separator hairline above progress bar ──────────────────────────────
+    drawHRule(ML, 42, card_w - ML - MR, 45, 52, 68, fade(90));
+
+    // ── 9. Progress bar (5px pill, y=48) ─────────────────────────────────────
+    const int barX = ML, barY = 48, barW = card_w - ML - MR, barH = 5;
+
+    // Track pill
+    fillRoundedRect(barX, barY, barW, barH, barH / 2,
+                    C_TR_R, C_TR_G, C_TR_B, fade(220));
+
+    // Fill pill
+    int fillW = (int)(barW * frac);
+    if (fillW > 1) {
+        fillRoundedRect(barX, barY, fillW, barH, barH / 2,
+                        C_AC_R, C_AC_G, C_AC_B, fa);
+
+        // Thumb dot — 7px diameter circle at leading edge
+        int tx = barX + fillW - 1;
+        int ty = barY + barH / 2;
+        const int TR = 4;
+        for (int dy = -TR; dy <= TR; ++dy) {
+            for (int dx = -TR; dx <= TR; ++dx) {
+                float d = std::sqrt((float)(dx*dx + dy*dy));
+                if (d > TR) continue;
+                // Soft edge
+                uint8_t aa = d > TR - 1.0f ? (uint8_t)(fa * (TR - d)) : fa;
+                // White core → accent red at rim
+                float t = d / (float)TR;
+                uint8_t tr = (uint8_t)(255 - t * (255 - C_AC_R));
+                uint8_t tg = (uint8_t)(255 * (1.f - t) + C_AC_G * t);
+                uint8_t tb = (uint8_t)(255 * (1.f - t) + C_AC_B * t);
+                drmPutPixel(tx + dx, ty + dy, tr, tg, tb, aa);
+            }
+        }
+    }
+
+    // ── 10. Hint row + track index ────────────────────────────────────────────
+    // Single line with middle-dot separators; track index right-aligned
+    // U+00B7 = middle dot ·   U+2190/2192 = ← →
+    const std::string hints =
+        "FN+A Pause  \xC2\xB7  FN+\xE2\x86\x90\xE2\x86\x92 Skip  \xC2\xB7  FN+B Exit";
+    drawText(hints, ML, 62, 9, C_HN_R, C_HN_G, C_HN_B, fade(155));
+
+    if ((int)daemon_playlist.size() > 1) {
+        // U+2044 = fraction slash ⁄
+        std::string idx = std::to_string(daemon_current_index + 1)
+                        + " \xE2\x81\x84 "
+                        + std::to_string(daemon_playlist.size());
+        drawTextRight(idx, card_w - MR, 62, 9,
+                      C_HN_R, C_HN_G, C_HN_B, fade(110));
+    }
+
+    // ── 11. Flush to DRM dumb buffer ─────────────────────────────────────────
+#ifndef _WIN32
+    if (drm_map)
+        for (int y = 0; y < card_h; ++y)
+            memcpy(drm_map + y * (drm_pitch / 4),
+                   card_backbuffer + y * card_w, card_w * 4);
+#endif
+    commitOverlay();
 }
 
-// ─── Daemon loop ──────────────────────────────────────────────────────────────
+// ── Daemon loop ───────────────────────────────────────────────────────────────
 
 void runDaemon() {
     std::cerr << "[daemon] Initializing...\n";
@@ -535,7 +683,6 @@ void runDaemon() {
     initFreetype();
     initDrmOverlay();
 
-    // Show overlay on startup
     daemon_overlay_timer = 5.0f;
     overlay_active = true;
 
@@ -557,11 +704,8 @@ void runDaemon() {
     while (daemon_running) {
         auto now = std::chrono::steady_clock::now();
         float dt = std::chrono::duration<float>(now - last_tick).count();
-        // Clamp dt to avoid huge jumps after a long poll wakeup
-        if (dt > 0.2f) dt = 0.2f;
         last_tick = now;
 
-        // ── MPV ──────────────────────────────────────────────────────────
         mpv.update();
 
         // ── Async resolve ─────────────────────────────────────────────────
@@ -608,58 +752,55 @@ void runDaemon() {
                     if (ev.code == 708) { fn_held = down; }
 
                     if (down && fn_held) {
-                        switch (ev.code) {
-                        case 305: // A → pause/resume
+                        if (ev.code == 305) { // A → pause/resume
                             if (daemon_status == DaemonStatus::Playing) {
-                                mpv.pause(); daemon_status = DaemonStatus::Paused;
+                                mpv.pause();
+                                daemon_status = DaemonStatus::Paused;
                             } else if (daemon_status == DaemonStatus::Paused) {
-                                mpv.resume(); daemon_status = DaemonStatus::Playing;
+                                mpv.resume();
+                                daemon_status = DaemonStatus::Playing;
                             }
-                            daemon_overlay_timer = 5.0f; overlay_active = true;
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
                             last_render_pos = -1.0;
-                            break;
-                        case 304: // B → exit
+                        } else if (ev.code == 304) { // B → exit
                             daemon_running = false;
-                            break;
-                        case 310: // L1 → prev
+                        } else if (ev.code == 310) { // L1 → prev
                             daemon_current_index =
                                 (daemon_current_index - 1 + (int)daemon_playlist.size())
                                 % (int)daemon_playlist.size();
                             playCurrentTrack(mpv, yt);
                             last_render_pos = -1.0;
-                            break;
-                        case 311: // R1 → next
+                        } else if (ev.code == 311) { // R1 → next
                             daemon_current_index =
                                 (daemon_current_index + 1) % (int)daemon_playlist.size();
                             playCurrentTrack(mpv, yt);
                             last_render_pos = -1.0;
-                            break;
-                        case 103:  // KEY_UP
-                        case 544:  // BTN_DPAD_UP
-                            daemon_overlay_timer = 5.0f; overlay_active = true;
+                        } else if (ev.code == 103 || ev.code == 544) { // UP → show
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
                             last_render_pos = -1.0;
-                            break;
                         }
                     }
-                } else if (ev.type == EV_ABS && ev.code == 17) { // ABS_HAT0Y
-                    bool new_up = (ev.value < 0);
-                    if (new_up && !dpad_up_held && fn_held) {
-                        daemon_overlay_timer = 5.0f; overlay_active = true;
+                } else if (ev.type == EV_ABS && ev.code == 17) {
+                    bool new_dpad_up = (ev.value < 0);
+                    if (new_dpad_up && !dpad_up_held && fn_held) {
+                        daemon_overlay_timer = 5.0f;
+                        overlay_active = true;
                         last_render_pos = -1.0;
                     }
-                    dpad_up_held = new_up;
+                    dpad_up_held = new_dpad_up;
                 }
             }
         }
 #endif
 
-        // ── Fade alpha ────────────────────────────────────────────────────
-        constexpr float FADE_SPEED = 5.0f;  // 1/0.2s = 200ms
+        // ── Fade ──────────────────────────────────────────────────────────
         if (overlay_active) {
-            overlay_alpha += dt * FADE_SPEED;
+            overlay_alpha += dt * 5.0f;
             if (overlay_alpha > 1.0f) overlay_alpha = 1.0f;
         } else {
-            overlay_alpha -= dt * FADE_SPEED;
+            overlay_alpha -= dt * 5.0f;
             if (overlay_alpha < 0.0f) overlay_alpha = 0.0f;
         }
 
@@ -671,44 +812,40 @@ void runDaemon() {
         }
 
         // ── Render ────────────────────────────────────────────────────────
-        bool animating  = overlay_alpha > 0.0f && overlay_alpha < 1.0f;
-        double cur_pos  = mpv.getPlaybackTime();
-        bool pos_ticked = std::abs(cur_pos - last_render_pos) >= 1.0;
+        bool animating   = overlay_alpha > 0.0f && overlay_alpha < 1.0f;
+        double cur_pos   = mpv.getPlaybackTime();
+        bool pos_changed = std::abs(cur_pos - last_render_pos) >= 1.0;
+        bool forced      = (last_render_pos < 0.0);
 
         if (overlay_alpha > 0.0f) {
-            if (animating || pos_ticked || last_render_pos < 0.0) {
+            if (animating || pos_changed || forced) {
                 renderCard(mpv);
                 last_render_pos = cur_pos;
             }
-        } else if (drm_plane_active) {
-            // Alpha hit zero — disable the plane and release master
-            hideOverlay();
-            last_render_pos = -1.0;
+        } else {
+            if (!overlay_active && overlay_alpha <= 0.01f) {
+                hideOverlay();
+                overlay_alpha = 0.0f;
+                last_render_pos = -1.0;
+            }
         }
 
         // ── Poll / sleep ──────────────────────────────────────────────────
-        // Fade animation: 16ms (~60fps smooth)
-        // Overlay visible and stable: 1000ms (only wakes on input or 1s pos tick)
-        // Hidden: up to 2000ms (just keeping audio alive, input via poll wakeup)
-        int timeout_ms;
-        if (animating)
-            timeout_ms = 16;
-        else if (overlay_alpha >= 1.0f)
-            timeout_ms = 1000;
-        else
-            timeout_ms = 2000;
+        int timeout = 500;
+        if (overlay_alpha > 0.0f && overlay_alpha < 1.0f) timeout = 16;
+        else if (overlay_active) timeout = 100;
 
 #ifndef _WIN32
         if (js_fd >= 0) {
             struct pollfd pfd{};
-            pfd.fd     = js_fd;
+            pfd.fd = js_fd;
             pfd.events = POLLIN;
-            poll(&pfd, 1, timeout_ms);
+            poll(&pfd, 1, timeout);
         } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+            std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
         }
 #else
-        std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
 #endif
     }
 
@@ -722,7 +859,7 @@ void runDaemon() {
     std::cerr << "[daemon] Done.\n";
 }
 
-// ─── Process management ───────────────────────────────────────────────────────
+// ── Process management ────────────────────────────────────────────────────────
 
 void killExistingDaemon() {
 #ifndef _WIN32
