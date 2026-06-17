@@ -59,8 +59,11 @@ TTL_SEARCH   = 10 * 60
 TTL_TRENDING = 10 * 60
 TTL_META     = 6 * 3600
 
-# Limit concurrent heavy (yt-dlp) work so we never storm the device.
-MAX_WORKERS  = 3
+# Serialize heavy (yt-dlp) work. On the quad-A35 a single yt-dlp already pegs a
+# core; running several at once saturates the SoC and stalls the UI. One at a
+# time keeps three cores free for the app/daemon. Requests queue briefly behind
+# the worker, which is fine because results are cached.
+MAX_WORKERS  = 1
 # Self-exit after this long with no clients (0 = never). Frees RAM when idle.
 IDLE_EXIT_SECS = 0
 
@@ -309,6 +312,9 @@ def op_search(req):
 
     args = _ytdlp_base_args() + [
         "--flat-playlist", "--dump-json",
+        # Ask the tab extractor for approximate upload dates so the cards can
+        # show "x years ago" (flat extraction omits exact dates otherwise).
+        "--extractor-args", "youtubetab:approximate_date",
         "--playlist-start", str(start), "--playlist-end", str(end),
         spec,
     ]

@@ -163,11 +163,12 @@ void Compositor::render(App* app, int width, int height) {
     //     caused the full-screen flicker in the first place.
     if (app->state_.miniplayerActive) {
         const int mW  = 240;
-        const int mVH = 135;   // video area height
+        const int mVH = 135;   // video area height (16:9 of 240)
         const int mSH = 60;    // details/title strip height
         const int mH  = mVH + mSH;
-        const int mX  = width  - mW - 16;
-        const int mY  = height - 60 - mH - 12; // float above 60px bottom panel
+        const int kStatusBarH = 48;  // matches StatusOverlay's bar height
+        const int mX  = width  - mW - 12;
+        const int mY  = height - kStatusBarH - mH - 10; // float just above the status bar
 
         const SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
 

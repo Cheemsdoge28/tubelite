@@ -128,9 +128,10 @@ bool App::initialize() {
         if (stoppedPlayback) {
             mpv_player_.stop();
             storyboard_.stop();
-            if (image_manager_) {
-                image_manager_->clearCache();
-            }
+            // NOTE: do NOT clear the thumbnail cache here. The atlas is bounded,
+            // so clearing frees little memory but forces every visible grid
+            // thumbnail to re-download/re-decode — the "churn" on closing the
+            // miniplayer. Keeping it cached returns to a fully-drawn grid.
         }
         
         // Stop storyboard extraction during miniplayer to avoid RK3326 resource contention
@@ -615,10 +616,9 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     stopBrowsePreviewState();
     mpv_player_.stop();
     storyboard_.stop();
-    if (image_manager_) {
-        image_manager_->clearCache();
-    }
-    
+    // Keep the (bounded) thumbnail atlas warm across playback so returning to
+    // the grid doesn't re-decode every thumbnail.
+
     current_video_ = video;
     state_.isLoadingVideo = true;
     state_.showDescriptionDrawer = false;
@@ -664,6 +664,20 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
 
         // Start storyboard extraction
         storyboard_.start(stream_url, video.duration_seconds);
+
+        // The cached URL carries no metadata, which previously left the player's
+        // stat row stuck on "loading stats". Fetch stats/description from the
+        // backend — a tubed cache hit, so it's fast and spawns no yt-dlp.
+        youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight,
+            [this, video](bool ok, const std::string&, const std::string&, const VideoPlaybackMetadata& meta) {
+                if (!ok) return;
+                queueOnMainThread([this, video, meta]() {
+                    if (current_video_.id != video.id) return;
+                    active_video_metadata_ = meta;
+                    wrapped_description_lines_ = wrapText(meta.description, 280, 1);
+                    uiDirty_ = true;
+                });
+            });
         return;
     }
 
@@ -1576,58 +1590,28 @@ void App::updateHoverPreviews() {
 
     const std::string cacheKey = streamCacheKey(focusedCard->video.id, state_.maxQualityHeight);
     auto grid = activeGrid();
-    if (grid && focusedCard->focusedTime_ >= 0.10f) {
-        int focusedIdx = -1;
-        for (size_t i = 0; i < grid->cards.size(); ++i) {
-            if (grid->cards[i] == focusedCard) {
-                focusedIdx = static_cast<int>(i);
-                break;
-            }
-        }
-
-        if (focusedIdx != -1) {
-            // A. Prefetch focused card
-            if (!getCachedStreamUrl(cacheKey).has_value() &&
-                stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
-                stream_prefetch_inflight_.insert(cacheKey);
-                is_loading_preview_ = true;
-                youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
-                    queueOnMainThread([this, cacheKey, success, url, subtitle_url]() {
-                        stream_prefetch_inflight_.erase(cacheKey);
-                        is_loading_preview_ = false;
-                        if (success && !url.empty()) {
-                            setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
-                        } else {
-                            setCachedStreamUrl(cacheKey, ""); // Cache failure
-                        }
-                        uiDirty_ = true;
-                    });
-                }, true /* isPreview */, focusedCard->video.id);
-            }
-
-            // B. Prefetch next two adjacent cards if focused for >= 0.15s
-            if (focusedCard->focusedTime_ >= 0.15f) {
-                for (int nextIdx = focusedIdx + 1; nextIdx <= focusedIdx + 2; ++nextIdx) {
-                    if (nextIdx < static_cast<int>(grid->cards.size())) {
-                        auto nextCard = grid->cards[nextIdx];
-                        const std::string nextCacheKey = streamCacheKey(nextCard->video.id, state_.maxQualityHeight);
-                        if (!getCachedStreamUrl(nextCacheKey).has_value() &&
-                            stream_prefetch_inflight_.find(nextCacheKey) == stream_prefetch_inflight_.end()) {
-                            stream_prefetch_inflight_.insert(nextCacheKey);
-                            youtube_api_.getStreamUrl(nextCard->video.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
-                                queueOnMainThread([this, nextCacheKey, success, url, subtitle_url]() {
-                                    stream_prefetch_inflight_.erase(nextCacheKey);
-                                    if (success && !url.empty()) {
-                                        setCachedStreamUrl(nextCacheKey, url + "|" + subtitle_url);
-                                    } else {
-                                        setCachedStreamUrl(nextCacheKey, "");
-                                    }
-                                });
-                            }, true /* isPreview */, focusedCard->video.id);
-                        }
+    // Resolve ONLY the currently focused card, and only once it has been dwelt
+    // on. Previously this also prefetched the next TWO adjacent cards, which
+    // launched up to three concurrent yt-dlp processes per focus change — those
+    // pegged all four A35 cores and stalled the UI. The dwell gate means simply
+    // scrolling past cards resolves nothing; you must linger to warm a preview.
+    if (grid && focusedCard->focusedTime_ >= 0.45f) {
+        if (!getCachedStreamUrl(cacheKey).has_value() &&
+            stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
+            stream_prefetch_inflight_.insert(cacheKey);
+            is_loading_preview_ = true;
+            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
+                queueOnMainThread([this, cacheKey, success, url, subtitle_url]() {
+                    stream_prefetch_inflight_.erase(cacheKey);
+                    is_loading_preview_ = false;
+                    if (success && !url.empty()) {
+                        setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
+                    } else {
+                        setCachedStreamUrl(cacheKey, ""); // Cache failure
                     }
-                }
-            }
+                    uiDirty_ = true;
+                });
+            }, true /* isPreview */, focusedCard->video.id);
         }
     }
 

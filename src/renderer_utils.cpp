@@ -1037,9 +1037,44 @@ void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
     SDL_RenderCopy(renderer, g_solid_corner_texture, &srcBR, &dstBR);
 }
 
-void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int /*radius*/, SDL_Color color) {
+void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    SDL_RenderDrawRect(renderer, &rect);
+
+    int r = radius;
+    if (r <= 0 || rect.w < 2 * r || rect.h < 2 * r) {
+        SDL_RenderDrawRect(renderer, &rect);  // too small to round — plain box
+        return;
+    }
+
+    const int x = rect.x, y = rect.y, w = rect.w, h = rect.h;
+
+    // Straight edges, inset by the corner radius.
+    SDL_RenderDrawLine(renderer, x + r,         y,           x + w - r - 1, y);            // top
+    SDL_RenderDrawLine(renderer, x + r,         y + h - 1,   x + w - r - 1, y + h - 1);    // bottom
+    SDL_RenderDrawLine(renderer, x,             y + r,       x,             y + h - r - 1); // left
+    SDL_RenderDrawLine(renderer, x + w - 1,     y + r,       x + w - 1,     y + h - r - 1); // right
+
+    // Four quarter-circle corners via the midpoint-circle algorithm.
+    const int cxL = x + r,         cxR = x + w - 1 - r;
+    const int cyT = y + r,         cyB = y + h - 1 - r;
+    int px = r, py = 0, err = 1 - r;
+    while (px >= py) {
+        SDL_RenderDrawPoint(renderer, cxL - px, cyT - py);   // top-left
+        SDL_RenderDrawPoint(renderer, cxL - py, cyT - px);
+        SDL_RenderDrawPoint(renderer, cxR + px, cyT - py);   // top-right
+        SDL_RenderDrawPoint(renderer, cxR + py, cyT - px);
+        SDL_RenderDrawPoint(renderer, cxL - px, cyB + py);   // bottom-left
+        SDL_RenderDrawPoint(renderer, cxL - py, cyB + px);
+        SDL_RenderDrawPoint(renderer, cxR + px, cyB + py);   // bottom-right
+        SDL_RenderDrawPoint(renderer, cxR + py, cyB + px);
+        ++py;
+        if (err < 0) {
+            err += 2 * py + 1;
+        } else {
+            --px;
+            err += 2 * (py - px) + 1;
+        }
+    }
 }
 
 void maskRoundedCorners(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {

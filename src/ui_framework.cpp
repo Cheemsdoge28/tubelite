@@ -259,9 +259,11 @@ void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
     if (columns == 1) {
         card->bounds.h = 90.0f;
     } else {
-        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 80.0f;
+        // thumbnail + text block (title + channel + views/date) + tight bottom
+        // padding. Was +80, which left a large dead gap under the text.
+        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 66.0f;
     }
-    
+
     card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
     card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding);
 }
@@ -273,7 +275,7 @@ void GridContainer::pruneOldCards(int maxCards, int& focusedCardIdx) {
     int pruneCount = pruneRows * columns;
     if (pruneCount >= static_cast<int>(cards.size())) return;
     
-    float cardH = (columns == 1) ? 90.0f : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 80.0f);
+    float cardH = (columns == 1) ? 90.0f : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 66.0f);
     float rowHeight = cardH + padding;
     float removedHeight = pruneRows * rowHeight;
     
