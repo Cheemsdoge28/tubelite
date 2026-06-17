@@ -57,6 +57,20 @@ mkdir -p "$APP_DIR/src"
 cp -r "$SCRIPT_DIR/src/"* "$APP_DIR/src/"
 copy_file "$SCRIPT_DIR/Makefile" "$APP_DIR/Makefile"
 
+# Include the tubed backend service (persistent YouTube resolver). The C++
+# client launches it from <install>/tubed/tubed.py on first request.
+if [ -d "$SCRIPT_DIR/tools/tubed" ]; then
+    mkdir -p "$APP_DIR/tubed"
+    cp -r "$SCRIPT_DIR/tools/tubed/"* "$APP_DIR/tubed/"
+    chmod +x "$APP_DIR/tubed/tubed.py" 2>/dev/null || true
+fi
+
+# Include backend architecture doc
+if [ -f "$SCRIPT_DIR/docs/BACKEND.md" ]; then
+    mkdir -p "$APP_DIR/docs"
+    copy_file "$SCRIPT_DIR/docs/BACKEND.md" "$APP_DIR/docs/BACKEND.md"
+fi
+
 # Include theme folder
 if [ -d "$SCRIPT_DIR/theme" ]; then
     mkdir -p "$APP_DIR/theme"
