@@ -42,7 +42,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     // so the mpv GLES video (rendered in the first pass) shows through.
     if (is_previewing) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 26, 28, 32, 255);
+        SDL_SetRenderDrawColor(renderer, theme::SURFACE.r, theme::SURFACE.g, theme::SURFACE.b, 255);
         if (horizontal) {
             SDL_Rect textSection{cardRect.x + thumbW, cardRect.y, cardRect.w - thumbW, cardRect.h};
             SDL_RenderFillRect(renderer, &textSection);
@@ -53,10 +53,10 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     } else {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 26, 28, 32, 255);
+        SDL_SetRenderDrawColor(renderer, theme::SURFACE.r, theme::SURFACE.g, theme::SURFACE.b, 255);
         SDL_RenderFillRect(renderer, &cardRect);
         // Subtle 1px top accent line for visual separation
-        SDL_SetRenderDrawColor(renderer, 52, 54, 62, 255);
+        SDL_SetRenderDrawColor(renderer, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, 255);
         SDL_Rect topLine{cardRect.x, cardRect.y, cardRect.w, 1};
         SDL_RenderFillRect(renderer, &topLine);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
@@ -68,7 +68,7 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         // Do nothing: GLES video frame was already drawn to this region in the first pass
     } else {
         if (!im_->renderThumbnail(renderer, video.id, thumbRect)) {
-            SDL_SetRenderDrawColor(renderer, 37, 37, 37, 255); // Fallback thumb background (#252525)
+            SDL_SetRenderDrawColor(renderer, theme::THUMB_BG.r, theme::THUMB_BG.g, theme::THUMB_BG.b, 255); // Fallback thumb background
             SDL_RenderFillRect(renderer, &thumbRect);
         }
     }
@@ -210,20 +210,20 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
                 }
             }
             SDL_RenderSetClipRect(renderer, &activeClip);
-            drawText(renderer, textX - scrollOffset, textY, video.title, 2, {240, 240, 240, 255});
+            drawText(renderer, textX - scrollOffset, textY, video.title, 2, theme::TEXT);
             SDL_RenderSetClipRect(renderer, hasOldClip ? &oldClip : nullptr);
         } else {
-            drawText(renderer, textX, textY, truncated_title_, 2, {240, 240, 240, 255});
+            drawText(renderer, textX, textY, truncated_title_, 2, theme::TEXT);
         }
     } else {
-        drawText(renderer, textX, textY, video.title, 2, {240, 240, 240, 255});
+        drawText(renderer, textX, textY, video.title, 2, theme::TEXT);
     }
     
     // Draw Channel Name
-    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_author_, 1, {185, 185, 195, 255});
-    
+    drawText(renderer, textX, textY + titleH_ + lineGap, truncated_author_, 1, theme::TEXT_2);
+
     // Draw Views & Date line
-    drawText(renderer, textX, textY + titleH_ + lineGap + metaH_ + lineGap, truncated_views_date_, 1, {140, 140, 155, 255});
+    drawText(renderer, textX, textY + titleH_ + lineGap + metaH_ + lineGap, truncated_views_date_, 1, theme::TEXT_3);
     
     if (!video.duration_string.empty() && !is_previewing) {
         int pillW = durW_ + 10;
@@ -233,19 +233,19 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
         int textPillY = pillY + (pillH - durH_) / 2;
         
         SDL_Rect pillRect{pillX, pillY, pillW, pillH};
-        fillRoundedRect(renderer, pillRect, 4, {0, 0, 0, 210});
-        drawText(renderer, pillX + 5, textPillY, video.duration_string, 1, {255, 255, 255, 255});
+        fillRoundedRect(renderer, pillRect, theme::RADIUS_PILL, theme::BLACK.a8(210));
+        drawText(renderer, pillX + 5, textPillY, video.duration_string, 1, theme::WHITE);
     }
 
     // maskRoundedCorners paints background-colour pixels into the corners; when
     // previewing this would overwrite the mpv video corners, so skip it.
     if (!is_previewing) {
-        maskRoundedCorners(renderer, cardRect, 8, {15, 15, 15, 255});
+        maskRoundedCorners(renderer, cardRect, theme::RADIUS_CARD, theme::BG);
     }
 
     // Draw card border on top of masked corners
     if (focused) {
-        drawRoundedRect(renderer, cardRect, 8, {48, 48, 52, 255});
+        drawRoundedRect(renderer, cardRect, theme::RADIUS_CARD, theme::BORDER);
     }
 }
 
@@ -454,10 +454,10 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
         ring.w + 4,
         ring.h + 4
     };
-    drawRoundedRect(renderer, glow, 12, {255, 48, 48, 70});
-    drawRoundedRect(renderer, ring, 10, {255, 255, 255, 200});
+    drawRoundedRect(renderer, glow, 12, theme::ACCENT.a8(70));
+    drawRoundedRect(renderer, ring, 10, theme::WHITE.a8(200));
     ring.x -= 1; ring.y -= 1; ring.w += 2; ring.h += 2;
-    drawRoundedRect(renderer, ring, 11, {255, 48, 48, 255});
+    drawRoundedRect(renderer, ring, 11, theme::ACCENT);
     SDL_RenderSetClipRect(renderer, nullptr);
 }
 

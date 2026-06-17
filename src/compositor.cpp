@@ -62,15 +62,15 @@ void Compositor::render(App* app, int width, int height) {
             lastSpeedActivePlayback  = speedActive;
 
             if (volumeActive) {
-                drawVolumeOverlay(renderer_, width / 2, 64, app->state_.volume, app->state_.muted, {64, 148, 255, 255});
+                drawVolumeOverlay(renderer_, width / 2, 64, app->state_.volume, app->state_.muted, theme::BLUE);
             } else if (speedActive) {
-                drawSpeedOverlay(renderer_, width / 2, 64, app->state_.speed, {64, 148, 255, 255});
+                drawSpeedOverlay(renderer_, width / 2, 64, app->state_.speed, theme::BLUE);
             }
         }
 
         // Draw loading overlay
         if (app->state_.isLoadingVideo) {
-            drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, {255, 255, 255, 255}, true);
+            drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, theme::WHITE, true);
             app->uiDirty_ = true;
         }
 
@@ -81,7 +81,7 @@ void Compositor::render(App* app, int width, int height) {
 
     // ── Browse / Search screens ───────────────────────────────────────────────
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255);
+    SDL_SetRenderDrawColor(renderer_, theme::BG.r, theme::BG.g, theme::BG.b, 255);
     SDL_RenderClear(renderer_);
 
     auto currentGrid = app->activeGrid();
@@ -90,10 +90,10 @@ void Compositor::render(App* app, int width, int height) {
     if (app->state_.currentScreen == TubeState::Screen::Home) {
         if (app->home_grid_->cards.empty()) {
             if (app->homeLoadFailed_) {
-                drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load feed.", 2, {255, 100, 100, 255});
-                drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, {150, 150, 150, 255});
+                drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load feed.", 2, theme::ACCENT_BRIGHT);
+                drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, theme::TEXT_3);
             } else {
-                drawLoadingOverlay(renderer_, width, height, "Loading Feed...", SDL_GetTicks() / 1000.0f, {150, 150, 150, 255}, false);
+                drawLoadingOverlay(renderer_, width, height, "Loading Feed...", SDL_GetTicks() / 1000.0f, theme::TEXT_3, false);
                 app->uiDirty_ = true;
             }
         } else {
@@ -112,7 +112,7 @@ void Compositor::render(App* app, int width, int height) {
                 SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
                 if (previewTex) {
                     SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
-                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                    maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
                 }
             }
             app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
@@ -120,13 +120,13 @@ void Compositor::render(App* app, int width, int height) {
         renderBrowseHeader(app, width, height, "TubeLite", scrollY, false);
     } else if (app->state_.currentScreen == TubeState::Screen::Search) {
         if (app->state_.isSearching && app->search_grid_->cards.empty()) {
-            drawLoadingOverlay(renderer_, width, height, "Searching...", SDL_GetTicks() / 1000.0f, {150, 150, 150, 255}, false);
+            drawLoadingOverlay(renderer_, width, height, "Searching...", SDL_GetTicks() / 1000.0f, theme::TEXT_3, false);
             app->uiDirty_ = true;
         } else if (app->search_grid_->cards.empty()) {
             if (app->current_search_query_.empty()) {
-                drawTextCentered(renderer_, width / 2, height / 2, "Press Y to search videos", 2, {150, 150, 150, 255});
+                drawTextCentered(renderer_, width / 2, height / 2, "Press Y to search videos", 2, theme::TEXT_3);
             } else {
-                drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, {150, 150, 150, 255});
+                drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, theme::TEXT_3);
             }
         } else {
             app->search_grid_->render(renderer_, 0.0f, 0.0f);
@@ -144,7 +144,7 @@ void Compositor::render(App* app, int width, int height) {
                 SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
                 if (previewTex) {
                     SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
-                    maskRoundedCornersTop(renderer_, thumbDst, 8, {15, 15, 15, 255});
+                    maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
                 }
             }
             app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
@@ -173,7 +173,7 @@ void Compositor::render(App* app, int width, int height) {
 
         // Clear the screen region to prevent card thumbnail bleed-through
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer_, 15, 15, 15, 255); // match background color
+        SDL_SetRenderDrawColor(renderer_, theme::BG.r, theme::BG.g, theme::BG.b, 255); // match background color
         SDL_RenderFillRect(renderer_, &miniplayerBounds);
 
         // ── Pass 1: chrome layer (dirty-cached) ───────────────────────────────
@@ -192,9 +192,9 @@ void Compositor::render(App* app, int width, int height) {
             // Unified sleek border around the entire miniplayer card
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
             SDL_Rect borderOuter{0, 0, mW + 4, mH + 4};
-            drawRoundedRect(renderer_, borderOuter, 8, {255, 48, 48, 200}); // Red outline
+            drawRoundedRect(renderer_, borderOuter, theme::RADIUS_CARD, theme::ACCENT.a8(200)); // Red outline
             SDL_Rect borderInner{1, 1, mW + 2, mH + 2};
-            drawRoundedRect(renderer_, borderInner, 7, {26, 28, 32, 100});
+            drawRoundedRect(renderer_, borderInner, 7, theme::SURFACE.a8(100));
 
             // Pause icon (only shown when paused)
             if (!playing) {
@@ -202,9 +202,9 @@ void Compositor::render(App* app, int width, int height) {
                 int cy = 2 + mVH / 2;
                 SDL_Rect pauseBg{cx - 16, cy - 16, 32, 32};
                 SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-                fillRoundedRect(renderer_, pauseBg, 16, {0, 0, 0, 170});
+                fillRoundedRect(renderer_, pauseBg, 16, theme::BLACK.a8(170));
                 SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-                SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 255);
+                SDL_SetRenderDrawColor(renderer_, theme::WHITE.r, theme::WHITE.g, theme::WHITE.b, 255);
                 SDL_Rect pL{cx - 6, cy - 8, 4, 16};
                 SDL_Rect pR{cx + 2, cy - 8, 4, 16};
                 SDL_RenderFillRect(renderer_, &pL);
@@ -214,24 +214,24 @@ void Compositor::render(App* app, int width, int height) {
             // ── Details strip background ─────────────────────────────────────
             SDL_Rect stripBg{2, 2 + mVH, mW, mSH};
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer_, 26, 28, 32, 255); // sleek card color
-            fillRoundedRect(renderer_, stripBg, 6, {26, 28, 32, 255});
+            SDL_SetRenderDrawColor(renderer_, theme::SURFACE.r, theme::SURFACE.g, theme::SURFACE.b, 255); // sleek card color
+            fillRoundedRect(renderer_, stripBg, theme::RADIUS_PANEL, theme::SURFACE);
             // Keep top edges flat
             SDL_Rect stripTopFlat{2, 2 + mVH, mW, 12};
             SDL_RenderFillRect(renderer_, &stripTopFlat);
 
             // Red divider between video and details
-            SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 160);
+            SDL_SetRenderDrawColor(renderer_, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 160);
             SDL_Rect divider{2, 2 + mVH, mW, 1};
             SDL_RenderFillRect(renderer_, &divider);
 
             // Row 1: Title (Truncated to fit, centered)
             std::string titleTxt = truncateTextToWidth(app->current_video_.title, 1, mW - 16);
-            drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 6, titleTxt, 1, {240, 242, 245, 255}, true);
+            drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 6, titleTxt, 1, theme::TEXT, true);
 
             // Row 2: Channel name (Truncated, centered)
             std::string authorTxt = truncateTextToWidth(app->current_video_.author, 1, mW - 16);
-            drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 22, authorTxt, 1, {154, 165, 184, 255});
+            drawTextCentered(renderer_, (mW + 4) / 2, 2 + mVH + 22, authorTxt, 1, theme::TEXT_2);
 
             // Row 3: Centered compact hint buttons
             std::string btnB = "SEL+B";
@@ -263,18 +263,18 @@ void Compositor::render(App* app, int width, int height) {
 
             // Draw SEL+A
             SDL_Rect pillARect{startX, row3Y, pillAW, pillH};
-            fillRoundedRect(renderer_, pillARect, 3, {42, 48, 56, 255});
-            drawRoundedRect(renderer_, pillARect, 3, {52, 58, 70, 255});
-            drawText(renderer_, startX + pillPad / 2, row3Y + (pillH - fh) / 2 - 1, btnA, 1, {255, 48, 48, 255}); // Red
-            drawText(renderer_, startX + pillAW + labelGap, row3Y + (pillH - fh) / 2 - 1, actA, 1, {214, 220, 230, 255});
+            fillRoundedRect(renderer_, pillARect, theme::RADIUS_SM, theme::CHIP);
+            drawRoundedRect(renderer_, pillARect, theme::RADIUS_SM, theme::HAIRLINE);
+            drawText(renderer_, startX + pillPad / 2, row3Y + (pillH - fh) / 2 - 1, btnA, 1, theme::ACCENT); // Red
+            drawText(renderer_, startX + pillAW + labelGap, row3Y + (pillH - fh) / 2 - 1, actA, 1, theme::TEXT_ON);
 
             // Draw SEL+B
             int startBX = startX + itemAW + buttonGap;
             SDL_Rect pillBRect{startBX, row3Y, pillBW, pillH};
-            fillRoundedRect(renderer_, pillBRect, 3, {42, 48, 56, 255});
-            drawRoundedRect(renderer_, pillBRect, 3, {52, 58, 70, 255});
-            drawText(renderer_, startBX + pillPad / 2, row3Y + (pillH - fh) / 2 - 1, btnB, 1, {255, 214, 64, 255}); // Yellow
-            drawText(renderer_, startBX + pillBW + labelGap, row3Y + (pillH - fh) / 2 - 1, actB, 1, {214, 220, 230, 255});
+            fillRoundedRect(renderer_, pillBRect, theme::RADIUS_SM, theme::CHIP);
+            drawRoundedRect(renderer_, pillBRect, theme::RADIUS_SM, theme::HAIRLINE);
+            drawText(renderer_, startBX + pillPad / 2, row3Y + (pillH - fh) / 2 - 1, btnB, 1, theme::YELLOW); // Yellow
+            drawText(renderer_, startBX + pillBW + labelGap, row3Y + (pillH - fh) / 2 - 1, actB, 1, theme::TEXT_ON);
 
             miniplayer_layer_.end(renderer_);
 
@@ -310,7 +310,7 @@ void Compositor::render(App* app, int width, int height) {
             
             SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
             // Mask top rounded corners of the video frame to align with card corners
-            maskRoundedCornersTop(renderer_, videoDst, 6, {15, 15, 15, 255});
+            maskRoundedCornersTop(renderer_, videoDst, theme::RADIUS_PANEL, theme::BG);
         }
 
         // Composite chrome layer on top of the live video
@@ -333,9 +333,9 @@ void Compositor::render(App* app, int width, int height) {
         lastSpeedActive = speedActive;
 
         if (volumeActive) {
-            drawVolumeOverlay(renderer_, width / 2, 64, app->state_.volume, app->state_.muted, {255, 48, 48, 255});
+            drawVolumeOverlay(renderer_, width / 2, 64, app->state_.volume, app->state_.muted, theme::ACCENT);
         } else if (speedActive) {
-            drawSpeedOverlay(renderer_, width / 2, 64, app->state_.speed, {64, 148, 255, 255});
+            drawSpeedOverlay(renderer_, width / 2, 64, app->state_.speed, theme::BLUE);
         }
     }
 
@@ -349,24 +349,24 @@ void Compositor::render(App* app, int width, int height) {
         int panelY = 60; // below top bar/header
 
         SDL_Rect rect{panelX, panelY, panelW, panelH};
-        fillRoundedRect(renderer_, rect, 6, {0, 0, 0, 200});
-        drawRoundedRect(renderer_, rect, 6, {150, 150, 150, 255});
+        fillRoundedRect(renderer_, rect, theme::RADIUS_PANEL, theme::BLACK.a8(200));
+        drawRoundedRect(renderer_, rect, theme::RADIUS_PANEL, theme::TEXT_3);
 
         char buf[256];
         int textY = panelY + 8;
 
         std::snprintf(buf, sizeof(buf), "FPS: %.1f", app->current_fps_);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
         textY += 16;
 
         std::snprintf(buf, sizeof(buf), "Render Latency: %.2f ms", app->render_latency_ms_);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
         textY += 16;
 
         int64_t vo_drops = app->mpv_player_.getPropertyInt("vo-drop-frame-count");
         int64_t dec_drops = app->mpv_player_.getPropertyInt("decoder-frame-drop-count");
         std::snprintf(buf, sizeof(buf), "Drops: VO %lld / Dec %lld", (long long)vo_drops, (long long)dec_drops);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
         textY += 16;
 
         size_t q_size = 0;
@@ -375,7 +375,7 @@ void Compositor::render(App* app, int width, int height) {
             q_size = app->main_thread_queue_.size();
         }
         std::snprintf(buf, sizeof(buf), "Queue Size: %zu", q_size);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
         textY += 16;
 
         static double cached_ram = 0.0, cached_storage_free = 0.0, cached_storage_total = 0.0;
@@ -386,11 +386,11 @@ void Compositor::render(App* app, int width, int height) {
             last_sys_poll = now_ticks;
         }
         std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", cached_ram);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
         textY += 16;
 
         std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", cached_storage_free, cached_storage_total);
-        drawText(renderer_, panelX + 10, textY, buf, 1, {255, 255, 255, 255});
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
     }
 
     // Browse status bar
@@ -400,7 +400,7 @@ void Compositor::render(App* app, int width, int height) {
     
     // Loading overlay
     if (app->state_.isLoadingVideo) {
-        drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, {255, 255, 255, 255}, true);
+        drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, theme::WHITE, true);
         app->uiDirty_ = true;
     }
 
@@ -427,20 +427,20 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
 
     if (needsRedraw) {
         header_layer_.init(renderer_, width, headerHeight, {0, 0, width, headerHeight});
-        header_layer_.begin(renderer_, {10, 10, 13, 255});
+        header_layer_.begin(renderer_, theme::BG);
 
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
         // Left red accent bar (3px)
-        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 220);
+        SDL_SetRenderDrawColor(renderer_, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 220);
         SDL_Rect leftBar{0, 0, 3, headerHeight};
         SDL_RenderFillRect(renderer_, &leftBar);
 
         // Bottom separator line
-        SDL_SetRenderDrawColor(renderer_, 255, 52, 52, 60);
+        SDL_SetRenderDrawColor(renderer_, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 60);
         SDL_Rect accent{0, headerHeight - 1, width, 1};
         SDL_RenderFillRect(renderer_, &accent);
-        SDL_SetRenderDrawColor(renderer_, 50, 50, 60, 180);
+        SDL_SetRenderDrawColor(renderer_, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, 180);
         SDL_Rect accent2{0, headerHeight - 2, width, 1};
         SDL_RenderFillRect(renderer_, &accent2);
 
@@ -452,13 +452,13 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
         int titleH = 0;
         getTextSize(title, titleScale, nullptr, &titleH);
         int titleY = static_cast<int>((headerHeight - titleH) / 2.0f * (1.0f - t) + 12.0f * t);
-        SDL_Color titleColor = searchScreen ? SDL_Color{255, 85, 85, 255} : SDL_Color{255, 52, 52, 255};
+        SDL_Color titleColor = searchScreen ? SDL_Color(theme::ACCENT_BRIGHT) : SDL_Color(theme::ACCENT);
         drawTextShadow(renderer_, 20, titleY, title, titleScale, titleColor);
 
         if (!searchScreen) {
             if (t > 0.25f) {
                 Uint8 alpha = static_cast<Uint8>(255.0f * std::min(1.0f, (t - 0.25f) / 0.5f));
-                drawText(renderer_, 22, titleY + titleH + 4, "RECOMMENDED", 1, {135, 135, 150, alpha});
+                drawText(renderer_, 22, titleY + titleH + 4, "RECOMMENDED", 1, theme::TEXT_MUTED.a8(alpha));
             }
         } else {
             if (t > 0.15f) {
@@ -469,15 +469,15 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
                 const int bh = 20;
 
                 SDL_Rect bar{bx, by, bw, bh};
-                fillRoundedRect(renderer_, bar, 6, {22, 22, 28, alpha});
-                drawRoundedRect(renderer_, bar, 6, {82, 82, 100, static_cast<Uint8>(alpha * 0.8f)});
+                fillRoundedRect(renderer_, bar, theme::RADIUS_PANEL, theme::PANEL.a8(alpha));
+                drawRoundedRect(renderer_, bar, theme::RADIUS_PANEL, theme::HAIRLINE.a8(static_cast<Uint8>(alpha * 0.8f)));
 
                 std::string q = app->current_search_query_.empty()
                                 ? "Search..."
                                 : utf8Truncate(app->current_search_query_, 50, true);
                 SDL_Color qCol = app->current_search_query_.empty()
-                                 ? SDL_Color{75, 75, 88, alpha}
-                                 : SDL_Color{215, 215, 225, alpha};
+                                 ? SDL_Color(theme::TEXT_MUTED.a8(alpha))
+                                 : SDL_Color(theme::TEXT.a8(alpha));
                 drawText(renderer_, bx + 8, by + 3, q, 1, qCol);
             }
         }
@@ -553,11 +553,11 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
     // ── Top Panel ─────────────────────────────────────────────────────────────
-    SDL_SetRenderDrawColor(renderer_, 16, 18, 22, 220);
+    SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 220);
     SDL_Rect topPanel{0, 0, width, 56};
     SDL_RenderFillRect(renderer_, &topPanel);
-    
-    SDL_SetRenderDrawColor(renderer_, 30, 34, 40, 220);
+
+    SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 220);
     SDL_Rect topBorder{0, 56, width, 2};
     SDL_RenderFillRect(renderer_, &topBorder);
     
@@ -576,15 +576,15 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             }
             titleTxt += "...";
         }
-        drawTextShadow(renderer_, 14, 6, titleTxt, 2, {255, 255, 255, 255});
+        drawTextShadow(renderer_, 14, 6, titleTxt, 2, theme::WHITE);
 
         // Speed badge (top right)
         if (app->state_.speed != 1.0) {
             char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
             int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
             SDL_Rect badge{width - sw - 20, 10, sw + 12, sh + 6};
-            fillRoundedRect(renderer_, badge, 4, {64, 148, 255, 200});
-            drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, {255, 255, 255, 255});
+            fillRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::BLUE.a8(200));
+            drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, theme::WHITE);
         }
 
         // Stats string formatted on the right of Line 2
@@ -604,7 +604,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
         int statsW = 0, statsH = 0;
         getTextSize(statsStr, 1, &statsW, &statsH);
-        drawText(renderer_, width - 14 - statsW, 32, statsStr, 1, {214, 220, 230, 200});
+        drawText(renderer_, width - 14 - statsW, 32, statsStr, 1, theme::TEXT_ON.a8(200));
 
         // Channel Author on the left of Line 2
         if (!app->current_video_.author.empty()) {
@@ -619,7 +619,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 }
                 author += "...";
             }
-            drawText(renderer_, 14, 32, author, 1, {255, 48, 48, 255});
+            drawText(renderer_, 14, 32, author, 1, theme::ACCENT);
         }
     }
 
@@ -655,7 +655,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         int iconY = (height - iconSize) / 2;
         
         SDL_Rect iconBg{iconX - 8, iconY - 8, iconSize + 16, iconSize + 16};
-        fillRoundedRect(renderer_, iconBg, iconBg.w / 2, {0, 0, 0, bgAlpha});
+        fillRoundedRect(renderer_, iconBg, iconBg.w / 2, theme::BLACK.a8(bgAlpha));
 
         int centerX = width / 2;
         int centerY = height / 2;
@@ -663,7 +663,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
         if (drawPlay) {
-            SDL_Color color{255, 255, 255, iconAlpha};
+            SDL_Color color = theme::WHITE.a8(iconAlpha);
             SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
             int halfSize = iconSize / 2;
             int startX = centerX - halfSize + 4;
@@ -675,7 +675,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 SDL_RenderDrawLine(renderer_, x, centerY - h, x, centerY + h);
             }
         } else {
-            SDL_Color color{255, 255, 255, iconAlpha};
+            SDL_Color color = theme::WHITE.a8(iconAlpha);
             SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
             int barW = iconSize / 3;
             int barH = iconSize;
@@ -690,11 +690,11 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // ── Bottom Panel ──────────────────────────────────────────────────────────
     const int botH = 60; // was 72; saved 12px
-    SDL_SetRenderDrawColor(renderer_, 14, 16, 20, 225);
+    SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 225);
     SDL_Rect botPanel{0, height - botH, width, botH};
     SDL_RenderFillRect(renderer_, &botPanel);
     // Top separator
-    SDL_SetRenderDrawColor(renderer_, 32, 36, 44, 255);
+    SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
     SDL_Rect botBorder{0, height - botH, width, 1};
     SDL_RenderFillRect(renderer_, &botBorder);
 
@@ -706,14 +706,14 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // Track (background)
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(renderer_, 68, 68, 78, 255);
+    SDL_SetRenderDrawColor(renderer_, theme::TRACK.r, theme::TRACK.g, theme::TRACK.b, 255);
     SDL_Rect pbBg{mg, pbY, pbW, pbH};
     SDL_RenderFillRect(renderer_, &pbBg);
 
     // Buffered indicator
     {
         int bufW = static_cast<int>(pbW * std::min(frac + 0.15, 1.0));
-        SDL_SetRenderDrawColor(renderer_, 100, 100, 112, 255);
+        SDL_SetRenderDrawColor(renderer_, theme::BUFFERED.r, theme::BUFFERED.g, theme::BUFFERED.b, 255);
         SDL_Rect pbBuf{mg, pbY, bufW, pbH};
         SDL_RenderFillRect(renderer_, &pbBuf);
     }
@@ -721,7 +721,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     // Played
     {
         int fillW = static_cast<int>(pbW * frac);
-        SDL_SetRenderDrawColor(renderer_, 255, 48, 48, 255);
+        SDL_SetRenderDrawColor(renderer_, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 255);
         SDL_Rect pbFill{mg, pbY, fillW, pbH};
         SDL_RenderFillRect(renderer_, &pbFill);
     }
@@ -733,11 +733,11 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         // White outer disc
         SDL_Rect dotOuter{dotX - dotR, pbY - dotR + pbH / 2, dotR * 2, dotR * 2};
-        fillRoundedRect(renderer_, dotOuter, dotR, {255, 255, 255, 255});
+        fillRoundedRect(renderer_, dotOuter, dotR, theme::WHITE);
         // Red inner disc
         int iR = 4;
         SDL_Rect dotInner{dotX - iR, pbY - iR + pbH / 2, iR * 2, iR * 2};
-        fillRoundedRect(renderer_, dotInner, iR, {255, 48, 48, 255});
+        fillRoundedRect(renderer_, dotInner, iR, theme::ACCENT);
     }
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
@@ -756,8 +756,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
             SDL_Rect thumbRect{previewX, previewY, thumbW, thumbH};
             SDL_RenderCopy(renderer_, sbTex, nullptr, &thumbRect);
-            
-            SDL_SetRenderDrawColor(renderer_, 255, 255, 255, 180);
+
+            SDL_SetRenderDrawColor(renderer_, theme::WHITE.r, theme::WHITE.g, theme::WHITE.b, 180);
             SDL_RenderDrawRect(renderer_, &thumbRect);
 
             int tw = 0, th = 0;
@@ -768,8 +768,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             int pillY = thumbRect.y + thumbH - pillH - 4;
 
             SDL_Rect tsBg{pillX, pillY, pillW, pillH};
-            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
-            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+            fillRoundedRect(renderer_, tsBg, theme::RADIUS_SM, theme::BLACK.a8(200));
+            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, theme::WHITE);
         } else {
             int tw = 0, th = 0;
             getTextSize(timeStr, 1, &tw, &th);
@@ -779,8 +779,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             int previewY = pbY - previewH - 12;
 
             SDL_Rect tsBg{previewX, previewY, previewW, previewH};
-            fillRoundedRect(renderer_, tsBg, 3, {0, 0, 0, 200});
-            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, {255, 255, 255, 255});
+            fillRoundedRect(renderer_, tsBg, theme::RADIUS_SM, theme::BLACK.a8(200));
+            drawText(renderer_, tsBg.x + 4, tsBg.y + 2, timeStr, 1, theme::WHITE);
         }
     }
 
@@ -788,20 +788,20 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     {
         std::string posStr = fmtTime(displayTime);
         int tsY = pbY + pbH + 5;
-        drawText(renderer_, mg, tsY, posStr, 1, {220, 220, 232, 255});
+        drawText(renderer_, mg, tsY, posStr, 1, theme::TEXT_ON);
         if (dur > 0.0) {
             std::string remStr = "-" + fmtTime(dur - displayTime);
             int rw = 0; getTextSize(remStr, 1, &rw, nullptr);
-            drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, {160, 160, 172, 255});
+            drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, theme::TEXT_3);
         }
     }
 
     // ── Description Drawer ─────────────────────────────────────────────────────
     if (app->state_.showDescriptionDrawer) {
         SDL_Rect drawerRect{width - 300, 58, 300, height - 120}; // 60px bottom + 58px header + 2px margin
-        fillRoundedRect(renderer_, drawerRect, 0, {12, 14, 18, 240});
-        
-        SDL_SetRenderDrawColor(renderer_, 42, 48, 56, 255);
+        fillRoundedRect(renderer_, drawerRect, 0, theme::BG.a8(240));
+
+        SDL_SetRenderDrawColor(renderer_, theme::CHIP.r, theme::CHIP.g, theme::CHIP.b, 255);
         SDL_RenderDrawLine(renderer_, drawerRect.x, drawerRect.y, drawerRect.x, drawerRect.y + drawerRect.h);
 
         if (app->wrapped_description_lines_.empty() && !app->active_video_metadata_.description.empty()) {
@@ -816,13 +816,13 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
         if (descLines.empty()) {
             std::string noDesc = app->active_video_metadata_.description.empty() ? "No description available." : "Loading...";
-            drawTextCentered(renderer_, drawerRect.x + drawerRect.w / 2, drawerRect.y + drawerRect.h / 2, noDesc, 1, {150, 150, 160, 255});
+            drawTextCentered(renderer_, drawerRect.x + drawerRect.w / 2, drawerRect.y + drawerRect.h / 2, noDesc, 1, theme::TEXT_3);
         } else {
             int startIdx = app->description_scroll_row_;
             int endIdx = std::min(static_cast<int>(descLines.size()), startIdx + visibleLines);
             int drawY = drawerRect.y + 10;
             for (int i = startIdx; i < endIdx; ++i) {
-                drawText(renderer_, drawerRect.x + 10, drawY, descLines[i], 1, {230, 230, 240, 255});
+                drawText(renderer_, drawerRect.x + 10, drawY, descLines[i], 1, theme::TEXT);
                 drawY += lineH + 4;
             }
 
@@ -832,19 +832,19 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 scrollbarH = std::max(10, scrollbarH);
                 int scrollbarY = drawerRect.y + 10 + static_cast<int>((barHeight - scrollbarH) * ((double)app->description_scroll_row_ / maxScroll));
                 SDL_Rect scrollbar{drawerRect.x + drawerRect.w - 6, scrollbarY, 4, scrollbarH};
-                fillRoundedRect(renderer_, scrollbar, 2, {255, 48, 48, 180});
+                fillRoundedRect(renderer_, scrollbar, 2, theme::ACCENT.a8(180));
             }
         }
     }
 
     // Bottom hint line
-    SDL_Color textColor{214, 220, 230, 255};
-    const SDL_Color red{255, 48, 48, 255};
-    const SDL_Color blue{64, 148, 255, 255};
-    const SDL_Color yellow{255, 214, 64, 255};
-    const SDL_Color green{64, 214, 96, 255};
-    const SDL_Color purple{191, 64, 255, 255};
-    const SDL_Color panel{24, 28, 34, 200};
+    SDL_Color textColor    = theme::TEXT_ON;
+    const SDL_Color red    = theme::ACCENT;
+    const SDL_Color blue   = theme::BLUE;
+    const SDL_Color yellow = theme::YELLOW;
+    const SDL_Color green  = theme::GREEN;
+    const SDL_Color purple = theme::PURPLE;
+    const SDL_Color panel  = theme::PANEL.a8(200);
 
     std::vector<HintItem> activeHints;
     if (app->state_.showDescriptionDrawer) {
@@ -870,7 +870,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     }
 
     // Hint bar sits inside the 60px bottom panel, below the timestamp row
-    drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, {42, 48, 56, 180}, textColor);
+    drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(180), textColor);
 
     hud_layer_.end(renderer_);
 

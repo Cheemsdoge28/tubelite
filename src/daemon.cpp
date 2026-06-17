@@ -2,6 +2,7 @@
 #include "mpv_player.hpp"
 #include "youtube_api.hpp"
 #include "json.hpp"
+#include "theme.hpp"   // unified design system (SDL-free in this TU)
 
 #include <iostream>
 #include <fstream>
@@ -69,26 +70,20 @@ static inline uint8_t fade(uint8_t a) {
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
-// Background: deep navy-black
-static const uint8_t C_BG_R  =  10, C_BG_G  =  11, C_BG_B  =  16;
-// Surface lift: slightly lighter for gradient
-static const uint8_t C_SF_R  =  20, C_SF_G  =  22, C_SF_B  =  30;
-// Accent red
-static const uint8_t C_AC_R  = 255, C_AC_G  =  45, C_AC_B  =  45;
-// Title: warm near-white
-static const uint8_t C_TT_R  = 245, C_TT_G  = 244, C_TT_B  = 242;
-// Author: muted blue-grey
-static const uint8_t C_AU_R  = 148, C_AU_G  = 158, C_AU_B  = 175;
-// Time: slightly brighter than author
-static const uint8_t C_TM_R  = 190, C_TM_G  = 194, C_TM_B  = 202;
-// Hints: very muted
-static const uint8_t C_HN_R  =  95, C_HN_G  = 100, C_HN_B  = 115;
-// Progress track
-static const uint8_t C_TR_R  =  36, C_TR_G  =  40, C_TR_B  =  52;
-// Status colours
-static const uint8_t C_GR_R  =  48, C_GR_G  = 210, C_GR_B  =  90;  // green
-static const uint8_t C_YL_R  = 255, C_YL_G  = 200, C_YL_B  =  50;  // yellow
-static const uint8_t C_BL_R  =  60, C_BL_G  = 150, C_BL_B  = 255;  // blue
+// All pulled from the shared theme so the daemon's now-playing card is the
+// exact same palette as the in-app cards, HUD and status bar. The C_* aliases
+// are kept so the rasteriser call sites below stay unchanged.
+static const uint8_t C_BG_R  = theme::BG.r,     C_BG_G  = theme::BG.g,     C_BG_B  = theme::BG.b;      // background
+static const uint8_t C_SF_R  = theme::RAISED.r, C_SF_G  = theme::RAISED.g, C_SF_B  = theme::RAISED.b;  // surface lift
+static const uint8_t C_AC_R  = theme::ACCENT.r, C_AC_G  = theme::ACCENT.g, C_AC_B  = theme::ACCENT.b;  // accent red
+static const uint8_t C_TT_R  = theme::TEXT.r,   C_TT_G  = theme::TEXT.g,   C_TT_B  = theme::TEXT.b;     // title
+static const uint8_t C_AU_R  = theme::TEXT_2.r, C_AU_G  = theme::TEXT_2.g, C_AU_B  = theme::TEXT_2.b;   // author
+static const uint8_t C_TM_R  = theme::TEXT_ON.r,C_TM_G  = theme::TEXT_ON.g,C_TM_B  = theme::TEXT_ON.b;  // time
+static const uint8_t C_HN_R  = theme::TEXT_MUTED.r, C_HN_G = theme::TEXT_MUTED.g, C_HN_B = theme::TEXT_MUTED.b; // hints
+static const uint8_t C_TR_R  = theme::TRACK.r,  C_TR_G  = theme::TRACK.g,  C_TR_B  = theme::TRACK.b;    // progress track
+static const uint8_t C_GR_R  = theme::GREEN.r,  C_GR_G  = theme::GREEN.g,  C_GR_B  = theme::GREEN.b;    // green
+static const uint8_t C_YL_R  = theme::YELLOW.r, C_YL_G  = theme::YELLOW.g, C_YL_B  = theme::YELLOW.b;   // yellow
+static const uint8_t C_BL_R  = theme::BLUE.r,   C_BL_G  = theme::BLUE.g,   C_BL_B  = theme::BLUE.b;     // blue
 
 #ifndef _WIN32
 #define DRM_OVERLAY_PLANE_ID  61
@@ -504,9 +499,9 @@ static void renderCard(MpvPlayer& mpv) {
     const uint8_t fa = fade(255);
     if (fa == 0) return;
 
-    const int ML = 16;   // left margin (after accent bar + gap)
-    const int MR = 12;   // right margin
-    const int R  = 10;   // card corner radius
+    const int ML = 16;                  // left margin (after accent bar + gap)
+    const int MR = 12;                  // right margin
+    const int R  = theme::RADIUS_CARD;  // card corner radius (shared token)
 
     // ── 1. Diffuse shadow ─────────────────────────────────────────────────────
     // Two-pass soft shadow: larger rect, low alpha, slightly offset down
@@ -530,8 +525,8 @@ static void renderCard(MpvPlayer& mpv) {
                   C_AC_R, C_AC_G, C_AC_B, 0);
 
     // ── 4. Hairline rules (top + bottom edges, inside card) ───────────────────
-    drawHRule(4, 0,          card_w - 4, 55, 65, 85, fade(70));
-    drawHRule(4, card_h - 1, card_w - 4, 55, 65, 85, fade(35));
+    drawHRule(4, 0,          card_w - 4, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, fade(70));
+    drawHRule(4, card_h - 1, card_w - 4, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, fade(35));
 
     // ── Guard ─────────────────────────────────────────────────────────────────
     if (daemon_current_index < 0 ||
@@ -585,7 +580,7 @@ static void renderCard(MpvPlayer& mpv) {
                   C_TM_R, C_TM_G, C_TM_B, fade(175));
 
     // ── 8. Separator hairline above progress bar ──────────────────────────────
-    drawHRule(ML, 42, card_w - ML - MR, 45, 52, 68, fade(90));
+    drawHRule(ML, 42, card_w - ML - MR, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, fade(90));
 
     // ── 9. Progress bar (5px pill, y=48) ─────────────────────────────────────
     const int barX = ML, barY = 48, barW = card_w - ML - MR, barH = 5;

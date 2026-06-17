@@ -508,7 +508,7 @@ void App::showPlaybackUi() {
 void App::renderBrowseLoadingState(int width, int height, const std::string& text) {
     float time = SDL_GetTicks() / 1000.0f;
     drawSpinner(renderer_, width / 2, height / 2 - 15, 20, time);
-    drawTextCentered(renderer_, width / 2, height / 2 + 20, text, 2, {150, 150, 150, 255});
+    drawTextCentered(renderer_, width / 2, height / 2 + 20, text, 2, theme::TEXT_3);
     uiDirty_ = true;
 }
 

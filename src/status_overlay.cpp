@@ -38,21 +38,21 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             SDL_SetRenderTarget(renderer, texture_);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
             
-            // Match fire4arkos status bar background: 16, 18, 22
-            SDL_SetRenderDrawColor(renderer, 16, 18, 22, 255);
+            // Unified chrome bar background (shared with the playback HUD bars)
+            SDL_SetRenderDrawColor(renderer, theme::BAR.r, theme::BAR.g, theme::BAR.b, 255);
             SDL_RenderClear(renderer);
-            
-            // Match fire4arkos top border line: 30, 34, 40 at y = 0
-            SDL_SetRenderDrawColor(renderer, 30, 34, 40, 255);
-            SDL_RenderDrawLine(renderer, 0, 0, width, 0);
-            
-            SDL_Color textColor{214, 220, 230, 255};
 
-            const SDL_Color red{255, 48, 48, 255};
-            const SDL_Color blue{64, 148, 255, 255};
-            const SDL_Color yellow{255, 214, 64, 255};
-            const SDL_Color green{64, 214, 96, 255};
-            const SDL_Color panel{24, 28, 34, 255};
+            // Top border line
+            SDL_SetRenderDrawColor(renderer, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
+            SDL_RenderDrawLine(renderer, 0, 0, width, 0);
+
+            SDL_Color textColor = theme::TEXT_ON;
+
+            const SDL_Color red    = theme::ACCENT;
+            const SDL_Color blue   = theme::BLUE;
+            const SDL_Color yellow = theme::YELLOW;
+            const SDL_Color green  = theme::GREEN;
+            const SDL_Color panel  = theme::PANEL;
             const int boxY = 13;
             const int boxH = 22;
 
@@ -84,7 +84,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                 };
             }
 
-            drawHintButtons(renderer, activeHints, boxY, boxH, 1, width, panel, {42, 48, 56, 255}, textColor);
+            drawHintButtons(renderer, activeHints, boxY, boxH, 1, width, panel, theme::CHIP, textColor);
 
             
             SDL_SetRenderTarget(renderer, prev);

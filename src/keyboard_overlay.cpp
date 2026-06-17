@@ -350,17 +350,17 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
         SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer);
         SDL_SetRenderTarget(renderer, texture_);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 18, 20, 24, 255);
+        SDL_SetRenderDrawColor(renderer, theme::PANEL.r, theme::PANEL.g, theme::PANEL.b, 255);
         SDL_RenderClear(renderer);
 
-        SDL_Color textColor{226, 230, 236, 255};
-        SDL_Color accent{110, 192, 255, 255};
+        SDL_Color textColor = theme::TEXT;
+        SDL_Color accent    = theme::ACCENT;   // unified red accent (was blue)
 
         const std::string header = "SEARCH [" + keyboardModeLabel(state) + "]";
         drawTextShadow(renderer, 12, 12, header, 2, accent);
         drawTextShadow(renderer, 12, 34, keyboardPreviewText(state, cursorVisible), 2, textColor);
 
-        SDL_SetRenderDrawColor(renderer, 28, 32, 38, 255);
+        SDL_SetRenderDrawColor(renderer, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
         SDL_RenderDrawLine(renderer, 12, 60, layoutInfo.panel.w - 12, 60);
 
         for (const auto& key : layoutInfo.keys) {
@@ -371,11 +371,11 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
                 key.bounds.h
             };
             const bool selected = key.index == state.keyboardSelectedIndex;
-            SDL_Color keyBg = selected ? SDL_Color{72, 138, 190, 255} : SDL_Color{28, 32, 38, 255};
-            SDL_Color keyBorder = selected ? SDL_Color{178, 216, 240, 255} : SDL_Color{46, 52, 58, 255};
+            SDL_Color keyBg     = selected ? SDL_Color(theme::ACCENT)        : SDL_Color(theme::SURFACE);
+            SDL_Color keyBorder = selected ? SDL_Color(theme::ACCENT_BRIGHT) : SDL_Color(theme::BORDER);
 
-            fillRoundedRect(renderer, keyRect, 4, keyBg);
-            drawRoundedRect(renderer, keyRect, 4, keyBorder);
+            fillRoundedRect(renderer, keyRect, theme::RADIUS_PILL, keyBg);
+            drawRoundedRect(renderer, keyRect, theme::RADIUS_PILL, keyBorder);
 
             int scale = (key.label.length() > 1) ? 1 : 2;
             int labelW = 0, labelH = 0;
@@ -383,7 +383,7 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
             int textX = keyRect.x + (keyRect.w - labelW) / 2;
             int textY = keyRect.y + (keyRect.h - labelH) / 2;
 
-            drawTextShadow(renderer, textX, textY, key.label, scale, selected ? SDL_Color{12, 16, 22, 255} : textColor);
+            drawTextShadow(renderer, textX, textY, key.label, scale, selected ? SDL_Color(theme::BG) : textColor);
         }
 
         SDL_SetRenderTarget(renderer, previousTarget);

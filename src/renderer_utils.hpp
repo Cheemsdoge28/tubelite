@@ -1,5 +1,6 @@
 #pragma once
 #include <SDL2/SDL.h>
+#include "theme.hpp"   // unified design system; included after SDL so theme::Rgba gains its SDL_Color cast
 #include <string>
 #include <array>
 #include <vector>

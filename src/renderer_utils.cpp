@@ -839,7 +839,7 @@ void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time) {
         int alpha = 255 - (index * 28);
         if (alpha < 30) alpha = 30;
         
-        SDL_SetRenderDrawColor(renderer, 255, 60, 60, alpha);
+        SDL_SetRenderDrawColor(renderer, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, alpha);
         SDL_Rect r{static_cast<int>(dotX) - 3, static_cast<int>(dotY) - 3, 6, 6};
         SDL_RenderFillRect(renderer, &r);
     }
@@ -1122,8 +1122,8 @@ void drawHintButtons(SDL_Renderer* renderer, const std::vector<HintItem>& hints,
         int actW = actWidths[i];
         
         SDL_Rect box{currentX, y, boxW, height};
-        fillRoundedRect(renderer, box, 4, panelColor);
-        drawRoundedRect(renderer, box, 4, borderColor);
+        fillRoundedRect(renderer, box, theme::RADIUS_PILL, panelColor);
+        drawRoundedRect(renderer, box, theme::RADIUS_PILL, borderColor);
         
         int contentW = btnW + labelGap + actW;
         int contentX = currentX + (boxW - contentW) / 2;
@@ -1140,46 +1140,46 @@ void drawVolumeOverlay(SDL_Renderer* renderer, int centerX, int y, int volume, b
     int boxW = 200, boxH = 36;
     int boxX = centerX - boxW / 2;
     SDL_Rect r{boxX, y, boxW, boxH};
-    fillRoundedRect(renderer, r, 6, {0, 0, 0, 200});
-    drawRoundedRect(renderer, r, 6, themeColor);
-    
+    fillRoundedRect(renderer, r, theme::RADIUS_PANEL, theme::BLACK.a8(200));
+    drawRoundedRect(renderer, r, theme::RADIUS_PANEL, themeColor);
+
     std::string volText = "Volume: " + std::to_string(volume) + "%";
     if (muted) volText = "Mute: ON";
-    
+
     int barW = 160, barH = 6;
     int barX = boxX + 20;
     int barY = y + 24;
     SDL_Rect barBg{barX, barY, barW, barH};
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+    SDL_SetRenderDrawColor(renderer, theme::TRACK.r, theme::TRACK.g, theme::TRACK.b, 255);
     SDL_RenderFillRect(renderer, &barBg);
-    
+
     if (!muted) {
         int fillW = static_cast<int>(barW * (volume / 100.0f));
         SDL_Rect barFill{barX, barY, fillW, barH};
         SDL_SetRenderDrawColor(renderer, themeColor.r, themeColor.g, themeColor.b, themeColor.a);
         SDL_RenderFillRect(renderer, &barFill);
     }
-    
-    drawTextCentered(renderer, centerX, y + 4, volText, 1, {255, 255, 255, 255}, true);
+
+    drawTextCentered(renderer, centerX, y + 4, volText, 1, theme::WHITE, true);
 }
 
 void drawSpeedOverlay(SDL_Renderer* renderer, int centerX, int y, double speed, SDL_Color themeColor) {
     int boxW = 200, boxH = 36;
     int boxX = centerX - boxW / 2;
     SDL_Rect r{boxX, y, boxW, boxH};
-    fillRoundedRect(renderer, r, 6, {0, 0, 0, 200});
-    drawRoundedRect(renderer, r, 6, themeColor);
-    
+    fillRoundedRect(renderer, r, theme::RADIUS_PANEL, theme::BLACK.a8(200));
+    drawRoundedRect(renderer, r, theme::RADIUS_PANEL, themeColor);
+
     char speedBuf[32];
     snprintf(speedBuf, sizeof(speedBuf), "Speed: %.2fx", speed);
-    drawTextCentered(renderer, centerX, y + 8, speedBuf, 1, {255, 255, 255, 255}, true);
+    drawTextCentered(renderer, centerX, y + 8, speedBuf, 1, theme::WHITE, true);
 }
 
 void drawLoadingOverlay(SDL_Renderer* renderer, int width, int height, const std::string& text, float time, SDL_Color textColor, bool drawBg) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     if (drawBg) {
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
+        SDL_SetRenderDrawColor(renderer, theme::BLACK.r, theme::BLACK.g, theme::BLACK.b, 180);
         SDL_Rect bg{0, 0, width, height};
         SDL_RenderFillRect(renderer, &bg);
     }
