@@ -218,30 +218,26 @@ def _find_ytdlp():
     for p in candidates:
         if not (p and os.path.isfile(p) and os.access(p, os.X_OK)):
             continue
-        # Don't probe with `--version`: PyInstaller-frozen yt-dlp binaries
-        # intercept it at the bootloader level (before the embedded Python
-        # even starts) and print metadata from the binary header.  A broken
-        # bundle whose embedded Python can't import _ssl (libssl.so.3
-        # missing on ArkOS / RG351MP) will still happily answer --version
-        # with exit 0.  `--help` instead forces a real `import yt_dlp`,
-        # which is what fails for real on a mismatched build.
+        # Probe with --version: it's intercepted by the PyInstaller bootloader
+        # before Python starts, so it's near-instant (<0.5s) even on Cortex-A35
+        # where a full Python init takes 15-20s.  We accept the small risk of
+        # trusting a binary that might have a broken _ssl (libssl.so.3 missing)
+        # — if that happens, runtime stderr will show the ImportError, and
+        # Invidious/Piped handle the common case without yt-dlp anyway.
+        # _ytdlp_env() injects LD_LIBRARY_PATH as a belt-and-suspenders guard
+        # for the real invocations.
         try:
-            # Probe env must match the runtime env we'll use for real
-            # invocations (see _ytdlp_env) so a libssl3 side-load is visible.
-            # Otherwise the probe falsely rejects a binary that would work fine
-            # when actually run.  But _ytdlp_env is defined below, so we
-            # construct the env inline here:
             probe_env = os.environ.copy()
-            extra = [d for d in ("/usr/local/lib", "/usr/local/lib64",
-                                 "/roms/tools/tubelite/lib")
-                     if os.path.isfile(os.path.join(d, "libssl.so.3"))]
-            if extra:
+            extra_ssl = [d for d in ("/usr/local/lib", "/usr/local/lib64",
+                                     "/roms/tools/tubelite/lib")
+                         if os.path.isfile(os.path.join(d, "libssl.so.3"))]
+            if extra_ssl:
                 cur = probe_env.get("LD_LIBRARY_PATH", "")
-                probe_env["LD_LIBRARY_PATH"] = ":".join(extra + ([cur] if cur else []))
-            r = subprocess.run([p, "--help"],
+                probe_env["LD_LIBRARY_PATH"] = ":".join(extra_ssl + ([cur] if cur else []))
+            r = subprocess.run([p, "--version"],
                                stdout=subprocess.DEVNULL,
                                stderr=subprocess.PIPE,
-                               timeout=8,
+                               timeout=3,
                                env=probe_env)
             if r.returncode == 0:
                 log(f"yt-dlp resolved to {p}")
