@@ -1,4 +1,5 @@
 #include "mpv_player.hpp"
+#include "profiler.hpp"
 #include <iostream>
 #include <cmath>
 #include <cstring>
@@ -384,6 +385,7 @@ void MpvPlayer::render(int winWidth, int winHeight) {
 }
 
 SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
+    PROFILE_SCOPE("mpv_renderToTexture");
     if (!mpv_gl_) return nullptr;
     if (w <= 0 || h <= 0) return nullptr;
 
@@ -393,6 +395,7 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     // This guards against texture-recreation thrash if the two callers happen
     // to request different sizes within one frame.
     if (last_rendered_frame_id_ == current_frame_id_ && video_layer_.getTexture()) {
+        PROFILE_COUNT("mpv_render_dedup_hit");
         return video_layer_.getTexture();
     }
 
@@ -417,11 +420,13 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     }
 
     if (!has_new_frame_ && !texture_just_recreated) {
+        PROFILE_COUNT("mpv_render_no_new_frame");
         last_rendered_frame_id_ = current_frame_id_;
         return video_layer_.getTexture();
     }
     has_new_frame_ = false;
     last_rendered_frame_id_ = current_frame_id_;
+    PROFILE_SCOPE("mpv_renderGLES");
 
     video_layer_.renderGLES(renderer, egl_display_, egl_draw_, egl_read_, egl_context_, [this, targetW, targetH](unsigned int fbo) {
         mpv_opengl_fbo mpv_fbo{};

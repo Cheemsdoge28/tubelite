@@ -1,5 +1,6 @@
 #include "compositor.hpp"
 #include "app.hpp"
+#include "profiler.hpp"
 #include "renderer_utils.hpp"
 #include "ui_framework.hpp"
 #include <algorithm>
@@ -36,19 +37,22 @@ static std::string truncateTextToWidth(const std::string& text, int scale, int m
 }
 
 void Compositor::render(App* app, int width, int height) {
+    PROFILE_SCOPE("Compositor::render");
     if (app->state_.currentScreen == TubeState::Screen::Playback) {
+        PROFILE_SCOPE("playback_screen");
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
         SDL_RenderClear(renderer_);
 
         // Render the video frame (internally delegates to offscreen Layer in MpvPlayer)
-        app->mpv_player_.render(width, height);
+        { PROFILE_SCOPE("mpv_video_blit"); app->mpv_player_.render(width, height); }
 
         // Fade-from-black transition when a new video surface appears.
         { SDL_Rect full{0, 0, width, height}; drawVideoFade(app, full, 0); }
 
         // Draw the HUD overlay offscreen via Layer and composite it on top of the video
         if (app->state_.showUi) {
+            PROFILE_SCOPE("playback_HUD");
             renderPlaybackOverlay(app, width, height);
         }
 
@@ -78,11 +82,12 @@ void Compositor::render(App* app, int width, int height) {
         }
 
         app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_);
-        SDL_RenderPresent(renderer_);
+        { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
         return;
     }
 
     // ── Browse / Search screens ───────────────────────────────────────────────
+    PROFILE_SCOPE("browse_screen");
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(renderer_, theme::BG.r, theme::BG.g, theme::BG.b, 255);
     SDL_RenderClear(renderer_);
@@ -100,7 +105,7 @@ void Compositor::render(App* app, int width, int height) {
                 app->uiDirty_ = true;
             }
         } else {
-            app->home_grid_->render(renderer_, 0.0f, 0.0f);
+            { PROFILE_SCOPE("home_grid"); app->home_grid_->render(renderer_, 0.0f, 0.0f); }
             if (app->is_playing_preview_ && app->preview_card_) {
                 float screenY = app->preview_card_->bounds.y - scrollY;
                 bool horizontal = (app->preview_card_->bounds.w > 400);
@@ -119,9 +124,9 @@ void Compositor::render(App* app, int width, int height) {
                     drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
             }
-            app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
+            { PROFILE_SCOPE("focus_ring"); app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f); }
         }
-        renderBrowseHeader(app, width, height, "TubeLite", scrollY, false);
+        { PROFILE_SCOPE("browse_header"); renderBrowseHeader(app, width, height, "TubeLite", scrollY, false); }
     } else if (app->state_.currentScreen == TubeState::Screen::Search) {
         if (app->state_.isSearching && app->search_grid_->cards.empty()) {
             drawLoadingOverlay(renderer_, width, height, "Searching...", SDL_GetTicks() / 1000.0f, theme::TEXT_3, false);
@@ -133,7 +138,7 @@ void Compositor::render(App* app, int width, int height) {
                 drawTextCentered(renderer_, width / 2, height / 2, "No results found.", 2, theme::TEXT_3);
             }
         } else {
-            app->search_grid_->render(renderer_, 0.0f, 0.0f);
+            { PROFILE_SCOPE("search_grid"); app->search_grid_->render(renderer_, 0.0f, 0.0f); }
             if (app->is_playing_preview_ && app->preview_card_) {
                 float screenY = app->preview_card_->bounds.y - scrollY;
                 bool horizontal = (app->preview_card_->bounds.w > 400);
@@ -152,9 +157,9 @@ void Compositor::render(App* app, int width, int height) {
                     drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
             }
-            app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f);
+            { PROFILE_SCOPE("focus_ring"); app->focus_manager_.renderFocusRing(renderer_, 0.0f, 0.0f); }
         }
-        renderBrowseHeader(app, width, height, "Search", scrollY, true);
+        { PROFILE_SCOPE("browse_header"); renderBrowseHeader(app, width, height, "Search", scrollY, true); }
     }
 
     // Draw Miniplayer
@@ -167,6 +172,7 @@ void Compositor::render(App* app, int width, int height) {
     //     through the layer) so we avoid the FBO / render-target conflict that
     //     caused the full-screen flicker in the first place.
     if (app->state_.miniplayerActive) {
+        PROFILE_SCOPE("miniplayer");
         const int mW  = 240;
         const int mVH = 135;   // video area height (16:9 of 240)
         const int mSH = 60;    // details/title strip height
@@ -335,31 +341,52 @@ void Compositor::render(App* app, int width, int height) {
 
     // Draw telemetry overlay if enabled
     if (app->state_.showDebugOverlay) {
-        int panelW = 240;
-        int panelH = 110;
-        int panelX = width - panelW - 10;
-        int panelY = 60; // below top bar/header
+        // ── Snapshot profiler sections, sort by avg time, drop empties ────────
+        struct Row { const char* name; float avg_ms; float max_ms; float avg_calls; };
+        Row rows[Profiler::MAX_SECTIONS];
+        int  nRows = 0;
+        const auto& prof = Profiler::instance();
+        for (int i = 0; i < prof.sectionCount(); ++i) {
+            const auto& s = prof.section(i);
+            const float ms = s.avg_ns / 1.0e6f;
+            // Keep entries that ran in any recent frame even if cur frame was 0.
+            if (s.avg_calls < 0.01f && ms < 0.001f) continue;
+            rows[nRows++] = {s.name, ms, s.max_ns / 1.0e6f, s.avg_calls};
+            if (nRows >= Profiler::MAX_SECTIONS) break;
+        }
+        std::sort(rows, rows + nRows, [](const Row& a, const Row& b){
+            return a.avg_ms > b.avg_ms;
+        });
+        const int maxShown = std::min(nRows, 14);
+
+        // Panel sized to fit header rows + profiler rows + sparkline
+        const int headerRows = 6;                   // FPS, latency, drops, queue, RAM, storage
+        const int sparkH     = 28;
+        const int rowH       = 12;
+        const int panelW     = 280;
+        const int panelH     = 14 + headerRows * 16 + 6 + maxShown * rowH + 8 + sparkH + 10;
+        const int panelX     = width - panelW - 10;
+        const int panelY     = 60;
 
         SDL_Rect rect{panelX, panelY, panelW, panelH};
-        fillRoundedRect(renderer_, rect, theme::RADIUS_PANEL, theme::BLACK.a8(200));
+        fillRoundedRect(renderer_, rect, theme::RADIUS_PANEL, theme::BLACK.a8(210));
         drawRoundedRect(renderer_, rect, theme::RADIUS_PANEL, theme::TEXT_3);
 
         char buf[256];
         int textY = panelY + 8;
 
-        std::snprintf(buf, sizeof(buf), "FPS: %.1f", app->current_fps_);
-        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
-        textY += 16;
+        std::snprintf(buf, sizeof(buf), "FPS: %.1f   Frame: %.2f ms",
+                      app->current_fps_, prof.lastFrameMs());
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
 
         std::snprintf(buf, sizeof(buf), "Render Latency: %.2f ms", app->render_latency_ms_);
-        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
-        textY += 16;
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
 
-        int64_t vo_drops = app->mpv_player_.getPropertyInt("vo-drop-frame-count");
+        int64_t vo_drops  = app->mpv_player_.getPropertyInt("vo-drop-frame-count");
         int64_t dec_drops = app->mpv_player_.getPropertyInt("decoder-frame-drop-count");
-        std::snprintf(buf, sizeof(buf), "Drops: VO %lld / Dec %lld", (long long)vo_drops, (long long)dec_drops);
-        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
-        textY += 16;
+        std::snprintf(buf, sizeof(buf), "Drops: VO %lld / Dec %lld",
+                      (long long)vo_drops, (long long)dec_drops);
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
 
         size_t q_size = 0;
         {
@@ -367,8 +394,7 @@ void Compositor::render(App* app, int width, int height) {
             q_size = app->main_thread_queue_.size();
         }
         std::snprintf(buf, sizeof(buf), "Queue Size: %zu", q_size);
-        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
-        textY += 16;
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
 
         static double cached_ram = 0.0, cached_storage_free = 0.0, cached_storage_total = 0.0;
         static uint32_t last_sys_poll = 0;
@@ -378,11 +404,93 @@ void Compositor::render(App* app, int width, int height) {
             last_sys_poll = now_ticks;
         }
         std::snprintf(buf, sizeof(buf), "RAM RSS: %.1f MB", cached_ram);
-        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
-        textY += 16;
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
 
-        std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free", cached_storage_free, cached_storage_total);
-        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE);
+        std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free",
+                      cached_storage_free, cached_storage_total);
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
+
+        // ── Section list (top N, sorted by avg ms) ───────────────────────────
+        SDL_SetRenderDrawColor(renderer_, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, 180);
+        SDL_Rect divider{panelX + 8, textY + 2, panelW - 16, 1};
+        SDL_RenderFillRect(renderer_, &divider);
+        textY += 6;
+
+        // Header
+        drawText(renderer_, panelX + 10,           textY, "section",      1, theme::TEXT_3);
+        drawText(renderer_, panelX + panelW - 132, textY, "avg",          1, theme::TEXT_3);
+        drawText(renderer_, panelX + panelW - 88,  textY, "max",          1, theme::TEXT_3);
+        drawText(renderer_, panelX + panelW - 40,  textY, "n",            1, theme::TEXT_3);
+        textY += rowH;
+
+        // Find peak for the inline bar visualization
+        float peak = 0.0f;
+        for (int i = 0; i < maxShown; ++i) if (rows[i].avg_ms > peak) peak = rows[i].avg_ms;
+        if (peak < 0.001f) peak = 0.001f;
+
+        for (int i = 0; i < maxShown; ++i) {
+            const Row& r = rows[i];
+            // Heat color: green < 1ms < yellow < 3ms < red
+            SDL_Color col = theme::TEXT;
+            if      (r.avg_ms < 1.0f) col = theme::GREEN;
+            else if (r.avg_ms < 3.0f) col = theme::YELLOW;
+            else                      col = theme::ACCENT;
+
+            // Inline bar under the row
+            int barW = (int)((panelW - 24) * (r.avg_ms / peak));
+            SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, 60);
+            SDL_Rect bar{panelX + 10, textY + rowH - 2, barW, 1};
+            SDL_RenderFillRect(renderer_, &bar);
+
+            std::snprintf(buf, sizeof(buf), "%.20s", r.name ? r.name : "?");
+            drawText(renderer_, panelX + 10, textY, buf, 1, col);
+
+            std::snprintf(buf, sizeof(buf), "%5.2f", r.avg_ms);
+            drawText(renderer_, panelX + panelW - 132, textY, buf, 1, col);
+
+            std::snprintf(buf, sizeof(buf), "%5.2f", r.max_ms);
+            drawText(renderer_, panelX + panelW - 88,  textY, buf, 1, col);
+
+            std::snprintf(buf, sizeof(buf), "%4.1f", r.avg_calls);
+            drawText(renderer_, panelX + panelW - 40,  textY, buf, 1, col);
+
+            textY += rowH;
+        }
+
+        // ── Frame-time sparkline ──────────────────────────────────────────────
+        textY += 4;
+        float hist[Profiler::HIST_FRAMES];
+        int   histN = 0;
+        prof.getFrameHistory(hist, histN);
+
+        SDL_Rect sparkRect{panelX + 10, textY, panelW - 20, sparkH};
+        SDL_SetRenderDrawColor(renderer_, theme::TRACK.r, theme::TRACK.g, theme::TRACK.b, 80);
+        SDL_RenderFillRect(renderer_, &sparkRect);
+
+        // 16.6 ms (60fps) reference line
+        int refY = sparkRect.y + sparkRect.h
+                   - (int)((16.6f / 33.3f) * sparkRect.h);
+        SDL_SetRenderDrawColor(renderer_, theme::GREEN.r, theme::GREEN.g, theme::GREEN.b, 140);
+        SDL_Rect refLine{sparkRect.x, refY, sparkRect.w, 1};
+        SDL_RenderFillRect(renderer_, &refLine);
+
+        if (histN > 0) {
+            // Scale to a 0..33.3 ms range (anything over 33ms clips to the top).
+            for (int i = 0; i < histN; ++i) {
+                float ms = hist[i];
+                if (ms < 0.0f) ms = 0.0f;
+                float t  = ms / 33.3f;
+                if (t > 1.0f) t = 1.0f;
+                int barH = (int)(t * sparkRect.h);
+                int x = sparkRect.x + (int)((float)i / histN * sparkRect.w);
+                SDL_Color col = (ms <= 16.6f) ? theme::GREEN
+                              : (ms <= 25.0f) ? theme::YELLOW
+                              :                 theme::ACCENT;
+                SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, 220);
+                SDL_Rect bar{x, sparkRect.y + sparkRect.h - barH, 2, barH};
+                SDL_RenderFillRect(renderer_, &bar);
+            }
+        }
     }
 
     // Browse status bar
@@ -396,7 +504,7 @@ void Compositor::render(App* app, int width, int height) {
         app->uiDirty_ = true;
     }
 
-    SDL_RenderPresent(renderer_);
+    { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
 }
 
 void Compositor::drawVideoFade(App* app, const SDL_Rect& region, int radius) {
@@ -605,6 +713,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     }
 
     if (hud_static_dirty_) {
+        PROFILE_SCOPE("hud_static_rebuild");
+        PROFILE_COUNT("hud_static_rebuild_n");
         if (!hud_static_layer_.getTexture() ||
             hud_static_layer_.getWidth()  != width ||
             hud_static_layer_.getHeight() != height) {

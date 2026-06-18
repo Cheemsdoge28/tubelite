@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "daemon.hpp"
 #include "json.hpp"
+#include "profiler.hpp"
 #include "renderer_utils.hpp"
 #include "stb_image.h"
 #include <iostream>
@@ -199,14 +200,15 @@ void App::run() {
     last_frame_time_ = steady_clock::now();
     
     while (state_.running) {
+        Profiler::instance().beginFrame();
         auto start = steady_clock::now();
-        
+
         auto now_dt = steady_clock::now();
         float dt = duration<float>(now_dt - last_frame_time_).count();
         last_frame_time_ = now_dt;
         if (dt > 0.1f) dt = 0.1f; // Clamp to prevent spikes after waking up
-        
-        processMainThreadQueue();
+
+        { PROFILE_SCOPE("main_queue"); processMainThreadQueue(); }
         
         // Handle Playback HUD timeout and fadeout
         if (state_.currentScreen == TubeState::Screen::Playback) {
@@ -273,19 +275,26 @@ void App::run() {
             if (!main_thread_queue_.empty()) active = true;
         }
         
-        SDL_Event event;
-        if (!active) {
-            if (SDL_WaitEventTimeout(&event, 100)) {
-                handleEvent(event);
+        {
+            PROFILE_SCOPE("sdl_events");
+            SDL_Event event;
+            if (!active) {
+                if (SDL_WaitEventTimeout(&event, 100)) {
+                    handleEvent(event);
+                }
             }
+            while (SDL_PollEvent(&event)) { handleEvent(event); }
         }
-        while (SDL_PollEvent(&event)) { handleEvent(event); }
-        
-        updateSticks(dt);
-        updateKeyboardCursorBlinkState();
-        updateHoverPreviews();
-        if (mpv_player_.update()) {
-            uiDirty_ = true;
+
+        { PROFILE_SCOPE("sticks");          updateSticks(dt); }
+        { PROFILE_SCOPE("kbd_blink");       updateKeyboardCursorBlinkState(); }
+        { PROFILE_SCOPE("hover_previews");  updateHoverPreviews(); }
+        {
+            PROFILE_SCOPE("mpv_update");
+            if (mpv_player_.update()) {
+                uiDirty_ = true;
+                PROFILE_COUNT("mpv_new_frame");
+            }
         }
         if (mpv_player_.checkAndClearEnded()) {
             handleVideoEnded();
@@ -296,7 +305,7 @@ void App::run() {
                 prefetchNextVideo();
             }
         }
-        focus_manager_.update(dt);
+        { PROFILE_SCOPE("focus_update");    focus_manager_.update(dt); }
         renderFrame();
         
         // Calculate FPS
@@ -326,6 +335,8 @@ void App::run() {
         
         // Clamp to prevent runaway accumulation during load stalls/crashes
         if (sleep_error_accum < -0.05f) sleep_error_accum = -0.05f;
+
+        Profiler::instance().endFrame();
     }
 
     saveSettings();
@@ -912,20 +923,20 @@ void App::updateKeyboardCursorBlinkState() {
 }
 
 void App::renderFrame() {
+    PROFILE_SCOPE("renderFrame");
     auto render_start = std::chrono::steady_clock::now();
 
     int width = 0, height = 0;
     SDL_GetWindowSize(window_, &width, &height);
     bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing || state_.isSearching || (state_.miniplayerActive && mpv_player_.isPlaying());
-    if (!shouldPresent) return;
+    if (!shouldPresent) {
+        PROFILE_COUNT("frame_skipped");
+        return;
+    }
 
-    // Advance mpv's frame id so renderToTexture knows a new frame has started.
-    // Required for the per-frame dedup that prevents preview + miniplayer from
-    // both driving a full mpv render (and possibly thrashing the FBO size) in
-    // the same frame.
     mpv_player_.beginFrame();
 
-    compositor_->render(this, width, height);
+    { PROFILE_SCOPE("compositor"); compositor_->render(this, width, height); }
 
     uiDirty_ = false;
 
