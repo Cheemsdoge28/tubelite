@@ -359,12 +359,14 @@ void Compositor::render(App* app, int width, int height) {
         });
         const int maxShown = std::min(nRows, 14);
 
-        // Panel sized to fit header rows + profiler rows + sparkline
-        const int headerRows = 6;                   // FPS, latency, drops, queue, RAM, storage
-        const int sparkH     = 28;
-        const int rowH       = 12;
-        const int panelW     = 280;
-        const int panelH     = 14 + headerRows * 16 + 6 + maxShown * rowH + 8 + sparkH + 10;
+        // Panel sized to fit header rows + sidecar block + profiler rows + sparkline
+        const int headerRows  = 6;     // FPS, latency, drops, queue, RAM, storage
+        const int sidecarRows = 5;     // tubed status + 3 latency lines + image stats
+        const int sparkH      = 28;
+        const int rowH        = 12;
+        const int panelW      = 320;
+        const int panelH      = 14 + headerRows * 16 + 6 + sidecarRows * 12 + 6
+                              + 6 + (maxShown + 1) * rowH + 8 + sparkH + 10;
         const int panelX     = width - panelW - 10;
         const int panelY     = 60;
 
@@ -409,6 +411,51 @@ void Compositor::render(App* app, int width, int height) {
         std::snprintf(buf, sizeof(buf), "Storage: %.1f / %.1f GB free",
                       cached_storage_free, cached_storage_total);
         drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
+
+        // ── Sidecar (tubed) + ImageManager telemetry ─────────────────────────
+        SDL_SetRenderDrawColor(renderer_, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, 180);
+        SDL_Rect div1{panelX + 8, textY + 2, panelW - 16, 1};
+        SDL_RenderFillRect(renderer_, &div1);
+        textY += 6;
+
+        const auto& yt = app->youtube_api_.telemetry();
+        const auto& im = app->image_manager_->telemetry();
+
+        // tubed-side request inflight + total counts
+        std::snprintf(buf, sizeof(buf), "tubed: S%d P%d /S%llu P%llu F%llu C%llu",
+            yt.searches_inflight.load() + yt.streams_inflight.load(),
+            yt.previews_inflight.load(),
+            (unsigned long long)yt.streams_total.load(),
+            (unsigned long long)yt.previews_total.load(),
+            (unsigned long long)yt.streams_failed.load(),
+            (unsigned long long)yt.previews_cancelled.load());
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::TEXT); textY += 12;
+
+        // Latencies — last + EMA
+        std::snprintf(buf, sizeof(buf), "  stream last %u ms / ema %.0f ms",
+            yt.last_stream_ms.load(),
+            yt.ema_stream_ms_x10.load() / 10.0);
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::TEXT_2); textY += 12;
+
+        std::snprintf(buf, sizeof(buf), "  preview last %u ms / ema %.0f ms",
+            yt.last_preview_ms.load(),
+            yt.ema_preview_ms_x10.load() / 10.0);
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::TEXT_2); textY += 12;
+
+        std::snprintf(buf, sizeof(buf), "  search last %u ms / total wait %.1fs",
+            yt.last_search_ms.load(),
+            yt.tubed_wait_ms_total.load() / 1000.0);
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::TEXT_2); textY += 12;
+
+        // Image manager
+        std::snprintf(buf, sizeof(buf), "imgs: dl %d  q %d  tex %d  cache %d  ok %llu  fail %llu",
+            im.downloads_inflight.load(),
+            im.queue_depth.load(),
+            im.texture_queue_depth.load(),
+            im.cache_size.load(),
+            (unsigned long long)im.thumbnails_loaded_total.load(),
+            (unsigned long long)im.thumbnails_failed_total.load());
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::TEXT); textY += 14;
 
         // ── Section list (top N, sorted by avg ms) ───────────────────────────
         SDL_SetRenderDrawColor(renderer_, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, 180);

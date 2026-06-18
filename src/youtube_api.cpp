@@ -71,8 +71,20 @@ void spawnTubed() {
     if (pid > 0) return;  // parent
 
     ::setsid();
-    int devnull = ::open("/dev/null", O_RDWR);
-    if (devnull >= 0) { ::dup2(devnull, 0); ::dup2(devnull, 1); ::dup2(devnull, 2); }
+    // stdin → /dev/null. stdout/stderr → tubed.log so yt-dlp errors are
+    // recoverable.  `tail -f /dev/shm/tubed.log` to watch resolves live.
+    int devnull = ::open("/dev/null", O_RDONLY);
+    if (devnull >= 0) { ::dup2(devnull, 0); ::close(devnull); }
+    int logfd = ::open("/dev/shm/tubed.log",
+                       O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd >= 0) {
+        ::dup2(logfd, 1);
+        ::dup2(logfd, 2);
+        ::close(logfd);
+    } else {
+        // Worst case: keep tubed's stderr on the parent's so the user can
+        // still see SOMETHING.  Better than silent failure.
+    }
     ::execlp("python3", "python3", script.c_str(), static_cast<char*>(nullptr));
     ::execlp("python",  "python",  script.c_str(), static_cast<char*>(nullptr));
     ::_exit(127);
@@ -172,23 +184,37 @@ void YouTubeAPI::search(const std::string& query, int page,
     std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback) {
 
     int req_id = ++current_search_request_id_;
-    std::thread([this, query, page, callback, req_id]() {
-        if (req_id != current_search_request_id_) { callback({}, true); return; }
+    tele_.searches_inflight.fetch_add(1, std::memory_order_relaxed);
+    auto t0 = std::chrono::steady_clock::now();
+
+    std::thread([this, query, page, callback, req_id, t0]() {
+        auto finish = [this, t0]() {
+            uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            tele_.last_search_ms.store(ms, std::memory_order_relaxed);
+            ema_update(tele_.ema_search_ms_x10, ms);
+            tele_.searches_total.fetch_add(1, std::memory_order_relaxed);
+            tele_.tubed_wait_ms_total.fetch_add(ms, std::memory_order_relaxed);
+            tele_.searches_inflight.fetch_sub(1, std::memory_order_relaxed);
+        };
+
+        if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
         json req = {{"op", "search"}, {"query", query}, {"page", page}};
         json resp;
         bool ok = tubedRequest(req, resp, 20000);
 
-        if (req_id != current_search_request_id_) { callback({}, true); return; }
+        if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
         if (ok && resp.value("ok", false) && resp.contains("results")) {
             for (const auto& item : resp["results"]) {
-                if (req_id != current_search_request_id_) { callback({}, true); return; }
+                if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
                 YouTubeVideo v = videoFromJson(item);
                 if (!v.id.empty()) callback({v}, false);
             }
         }
         callback({}, true);
+        finish();
     }).detach();
 }
 
@@ -205,11 +231,14 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             std::lock_guard<std::mutex> lock(preview_mutex_);
             current_preview_focus_id_ = parent_focus_id;
         }
+        tele_.previews_inflight.fetch_add(1, std::memory_order_relaxed);
     } else {
         req_id = ++current_stream_request_id_;
+        tele_.streams_inflight.fetch_add(1, std::memory_order_relaxed);
     }
+    auto t0 = std::chrono::steady_clock::now();
 
-    std::thread([this, video_id, max_height, callback, req_id, isPreview, parent_focus_id]() {
+    std::thread([this, video_id, max_height, callback, req_id, isPreview, parent_focus_id, t0]() {
         auto stillWanted = [this, req_id, isPreview, parent_focus_id]() -> bool {
             if (isPreview) {
                 if (parent_focus_id.empty()) return true;
@@ -219,7 +248,26 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             return req_id == current_stream_request_id_;
         };
 
-        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+        auto finish = [this, isPreview, t0](bool success, bool cancelled) {
+            uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            tele_.tubed_wait_ms_total.fetch_add(ms, std::memory_order_relaxed);
+            if (isPreview) {
+                tele_.last_preview_ms.store(ms, std::memory_order_relaxed);
+                ema_update(tele_.ema_preview_ms_x10, ms);
+                tele_.previews_total.fetch_add(1, std::memory_order_relaxed);
+                if (cancelled) tele_.previews_cancelled.fetch_add(1, std::memory_order_relaxed);
+                tele_.previews_inflight.fetch_sub(1, std::memory_order_relaxed);
+            } else {
+                tele_.last_stream_ms.store(ms, std::memory_order_relaxed);
+                ema_update(tele_.ema_stream_ms_x10, ms);
+                tele_.streams_total.fetch_add(1, std::memory_order_relaxed);
+                if (!success && !cancelled) tele_.streams_failed.fetch_add(1, std::memory_order_relaxed);
+                tele_.streams_inflight.fetch_sub(1, std::memory_order_relaxed);
+            }
+        };
+
+        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
         json req = {{"op", "stream"}, {"id", video_id}, {"max_height", max_height}};
         if (isPreview) req["preview"] = true;
@@ -229,10 +277,11 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // instead of resolving a stream the user already scrolled past.
         bool ok = tubedRequest(req, resp, isPreview ? 12000 : 25000);
 
-        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
         if (!ok || !resp.value("ok", false)) {
             callback(false, "", "", VideoPlaybackMetadata());
+            finish(false, false);
             return;
         }
 
@@ -248,7 +297,8 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             meta.subscriber_count = m.value("subscriber_count", 0LL);
         }
 
-        if (url.empty()) { callback(false, "", "", VideoPlaybackMetadata()); return; }
+        if (url.empty()) { callback(false, "", "", VideoPlaybackMetadata()); finish(false, false); return; }
         callback(true, url, sub, meta);
+        finish(true, false);
     }).detach();
 }

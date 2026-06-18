@@ -339,6 +339,15 @@ void App::run() {
         Profiler::instance().endFrame();
     }
 
+    // Always drop a final profile snapshot at shutdown — costs ~1 ms and gives
+    // us a guaranteed snapshot to look at without the user having to remember
+    // to press SELECT+Y / F11 before quitting.
+#ifdef _WIN32
+    dumpProfileSnapshot("tubelite_profile_shutdown.json");
+#else
+    dumpProfileSnapshot("/dev/shm/tubelite_profile_shutdown.json");
+#endif
+
     saveSettings();
     // Spawn daemon if audio is playing OR if the user is in miniplayer/fullscreen mode
     // (covers paused state and search-screen miniplayer where isPlaying() may be false).
@@ -565,6 +574,146 @@ void App::showPlaybackToast(const std::string& text, bool withProgress) {
     if (withProgress) {
         mpv_player_.showProgress();
     }
+}
+
+std::string App::dumpProfileSnapshot(const std::string& path) {
+    // Choose a default path: fast tmpfs on Linux (survives only until reboot,
+    // but easy to find / scp), CWD on Windows.
+    std::string outPath = path;
+    if (outPath.empty()) {
+#ifdef _WIN32
+        outPath = "tubelite_profile.json";
+#else
+        outPath = "/dev/shm/tubelite_profile.json";
+#endif
+    }
+
+    using nlohmann::json;
+    json root;
+
+    // ── Wall-clock + frame stats ─────────────────────────────────────────────
+    const auto& prof = Profiler::instance();
+    root["wall_ts_ms"]      = (uint64_t)SDL_GetTicks();
+    root["frame_id"]        = prof.frameId();
+    root["last_frame_ms"]   = prof.lastFrameMs();
+    root["current_fps"]     = current_fps_;
+    root["render_latency_ms"] = render_latency_ms_;
+
+    // ── Frame history (oldest first; ms) ─────────────────────────────────────
+    float hist[Profiler::HIST_FRAMES];
+    int   histN = 0;
+    prof.getFrameHistory(hist, histN);
+    auto histArr = json::array();
+    for (int i = 0; i < histN; ++i) histArr.push_back(hist[i]);
+    root["frame_history_ms"] = std::move(histArr);
+
+    // ── Profiler sections (sorted by avg ms descending) ──────────────────────
+    struct Row { const char* name; float avg_ms; float max_ms; float avg_calls; };
+    std::vector<Row> rows;
+    rows.reserve(prof.sectionCount());
+    for (int i = 0; i < prof.sectionCount(); ++i) {
+        const auto& s = prof.section(i);
+        rows.push_back({s.name, s.avg_ns / 1.0e6f, s.max_ns / 1.0e6f, s.avg_calls});
+    }
+    std::sort(rows.begin(), rows.end(),
+              [](const Row& a, const Row& b){ return a.avg_ms > b.avg_ms; });
+    auto secArr = json::array();
+    for (const auto& r : rows) {
+        secArr.push_back({
+            {"name",      r.name ? r.name : "?"},
+            {"avg_ms",    r.avg_ms},
+            {"max_ms",    r.max_ms},
+            {"avg_calls", r.avg_calls},
+        });
+    }
+    root["sections"] = std::move(secArr);
+
+    // ── tubed (YouTubeAPI) telemetry ─────────────────────────────────────────
+    const auto& yt = youtube_api_.telemetry();
+    root["tubed"] = {
+        {"searches_inflight",   yt.searches_inflight.load()},
+        {"streams_inflight",    yt.streams_inflight.load()},
+        {"previews_inflight",   yt.previews_inflight.load()},
+        {"searches_total",      yt.searches_total.load()},
+        {"streams_total",       yt.streams_total.load()},
+        {"previews_total",      yt.previews_total.load()},
+        {"streams_failed",      yt.streams_failed.load()},
+        {"previews_cancelled",  yt.previews_cancelled.load()},
+        {"last_search_ms",      yt.last_search_ms.load()},
+        {"last_stream_ms",      yt.last_stream_ms.load()},
+        {"last_preview_ms",     yt.last_preview_ms.load()},
+        {"ema_search_ms",       yt.ema_search_ms_x10.load() / 10.0},
+        {"ema_stream_ms",       yt.ema_stream_ms_x10.load() / 10.0},
+        {"ema_preview_ms",      yt.ema_preview_ms_x10.load() / 10.0},
+        {"tubed_wait_ms_total", yt.tubed_wait_ms_total.load()},
+    };
+
+    // ── Image manager telemetry ──────────────────────────────────────────────
+    if (image_manager_) {
+        const auto& im = image_manager_->telemetry();
+        root["images"] = {
+            {"downloads_inflight",       im.downloads_inflight.load()},
+            {"queue_depth",              im.queue_depth.load()},
+            {"texture_queue_depth",      im.texture_queue_depth.load()},
+            {"cache_size",               im.cache_size.load()},
+            {"thumbnails_loaded_total",  im.thumbnails_loaded_total.load()},
+            {"thumbnails_failed_total",  im.thumbnails_failed_total.load()},
+        };
+    }
+
+    // ── State context — what was happening when the snapshot was taken ───────
+    const char* screen = "?";
+    switch (state_.currentScreen) {
+        case TubeState::Screen::Home:     screen = "Home";     break;
+        case TubeState::Screen::Search:   screen = "Search";   break;
+        case TubeState::Screen::Playback: screen = "Playback"; break;
+    }
+    size_t q_size = 0;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        q_size = main_thread_queue_.size();
+    }
+    root["state"] = {
+        {"screen",                screen},
+        {"current_video_id",      current_video_.id},
+        {"is_playing",            mpv_player_.isPlaying()},
+        {"is_playing_preview",    is_playing_preview_},
+        {"is_loading_preview",    is_loading_preview_},
+        {"miniplayer_active",     state_.miniplayerActive},
+        {"is_scrubbing",          state_.isScrubbing},
+        {"is_loading_video",      state_.isLoadingVideo},
+        {"is_searching",          state_.isSearching},
+        {"show_ui",               state_.showUi},
+        {"show_description",      state_.showDescriptionDrawer},
+        {"speed",                 state_.speed},
+        {"main_queue_size",       q_size},
+        {"vo_drops",              mpv_player_.getPropertyInt("vo-drop-frame-count")},
+        {"decoder_drops",         mpv_player_.getPropertyInt("decoder-frame-drop-count")},
+    };
+
+    // ── System (RAM / storage) ───────────────────────────────────────────────
+    double ram_mb = 0.0, storage_free = 0.0, storage_total = 0.0;
+    getSystemMemoryAndStorage(ram_mb, storage_free, storage_total);
+    root["system"] = {
+        {"ram_rss_mb",      ram_mb},
+        {"storage_free_gb", storage_free},
+        {"storage_total_gb", storage_total},
+    };
+
+    // ── Write to disk ────────────────────────────────────────────────────────
+    std::ofstream ofs(outPath);
+    if (!ofs) {
+        std::cerr << "[profile] FAILED to open " << outPath << " for write\n";
+        return {};
+    }
+    ofs << root.dump(2);
+    ofs.close();
+
+    std::cerr << "[profile] wrote snapshot to " << outPath
+              << " (sections=" << prof.sectionCount()
+              << ", frames=" << histN
+              << ", frame_id=" << prof.frameId() << ")\n";
+    return outPath;
 }
 
 void App::showPlaybackUi() {
@@ -1200,6 +1349,16 @@ void App::handleKey(SDL_Keycode key) {
         state_.showDebugOverlay = !state_.showDebugOverlay;
         uiDirty_ = true;
         break;
+    case SDLK_F11: {
+        std::string p = dumpProfileSnapshot();
+        if (!p.empty()) {
+            if (state_.currentScreen == TubeState::Screen::Playback) {
+                showPlaybackToast("Profile dumped: " + p);
+            }
+        }
+        uiDirty_ = true;
+        break;
+    }
     default: break;
     }
 }
@@ -1261,6 +1420,16 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 uiDirty_ = true;
                 return;
             }
+        } else if (button == SDL_CONTROLLER_BUTTON_Y) {
+            // SELECT+Y → profile dump.  Works anywhere; intended for the
+            // handheld where there's no F11.
+            std::string p = dumpProfileSnapshot();
+            if (!p.empty() && state_.currentScreen == TubeState::Screen::Playback) {
+                showPlaybackToast("Dumped: " + p);
+            }
+            select_action_triggered_ = true;
+            uiDirty_ = true;
+            return;
         }
     }
 

@@ -30,6 +30,17 @@ public:
     // Free all textures
     void clearCache();
 
+    // ── Telemetry (thread-safe; read from any thread) ────────────────────────
+    struct Telemetry {
+        std::atomic<int>      downloads_inflight{0};
+        std::atomic<uint64_t> thumbnails_loaded_total{0};
+        std::atomic<uint64_t> thumbnails_failed_total{0};
+        std::atomic<int>      queue_depth{0};          // refreshed by update()
+        std::atomic<int>      texture_queue_depth{0};  // refreshed by update()
+        std::atomic<int>      cache_size{0};           // refreshed by update()
+    };
+    const Telemetry& telemetry() const { return tele_; }
+
 private:
     void workerThread();
 
@@ -53,4 +64,5 @@ private:
     std::atomic<bool> running_{true};
     std::vector<std::thread> workers_;   // small pool; downloads are I/O-bound
     ThumbnailAtlas* atlas_{nullptr};
+    Telemetry tele_;
 };

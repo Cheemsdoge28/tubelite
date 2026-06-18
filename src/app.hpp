@@ -62,6 +62,11 @@ private:
     void stopBrowsePreviewState();
     void leavePlayback();
     void showPlaybackToast(const std::string& text, bool withProgress = false);
+
+    // Dump a JSON snapshot of the profiler + sidecar/image telemetry + current
+    // state to `path`.  Triggered by F11.  Path defaults to the fast tmpfs
+    // location on Linux so it survives an emulator launch.
+    std::string dumpProfileSnapshot(const std::string& path = "");
     void showPlaybackUi();
     bool isInputLocked() const;
     std::shared_ptr<ui::GridContainer> activeGrid() const;

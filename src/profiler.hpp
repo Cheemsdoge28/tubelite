@@ -127,6 +127,7 @@ public:
     int             sectionCount()       const { return num_sections_; }
     const Section&  section(int i)       const { return sections_[i]; }
     float           lastFrameMs()        const { return last_frame_ms_; }
+    uint64_t        frameId()            const { return frame_id_; }
     void            getFrameHistory(float* out, int& count) const {
         count = frame_count_;
         // Oldest-first ordering for sparkline display

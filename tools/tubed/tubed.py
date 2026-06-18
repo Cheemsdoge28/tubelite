@@ -245,19 +245,35 @@ def _run_ytdlp(args, timeout):
     try:
         # nice/taskset (when present) exec into yt-dlp, so the launched process
         # group still ends as yt-dlp and the group-wide kill below still works.
+        #
+        # stderr is captured (not DEVNULL'd) so when a video fails to play we
+        # can log yt-dlp's actual diagnostic — "Sign in to confirm you're not a
+        # bot", "Video unavailable", PO-token errors, etc.  Without this the
+        # silent-fail path was undebuggable from the user's side.
         p = subprocess.Popen(_SCHED_PREFIX + args, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.PIPE, start_new_session=True)
     except Exception as ex:
         log("yt-dlp launch failed:", ex)
         return ""
     with _active_lock:
         _active_procs.add(p)
 
+    def _emit_stderr(err_bytes):
+        if not err_bytes:
+            return
+        txt = err_bytes.decode("utf-8", "replace").rstrip()
+        if not txt:
+            return
+        # Tag each line so users can grep yt-dlp failures out of tubed.log.
+        for line in txt.splitlines():
+            log("yt-dlp:", line)
+
     def _reap(reason):
         log(reason)
         _kill_proc_group(p)
         try:
-            p.communicate(timeout=2)
+            _, err = p.communicate(timeout=2)
+            _emit_stderr(err)
         except Exception:
             pass
         return ""
@@ -269,7 +285,10 @@ def _run_ytdlp(args, timeout):
         deadline = time.time() + timeout
         while True:
             try:
-                out, _ = p.communicate(timeout=0.5)
+                out, err = p.communicate(timeout=0.5)
+                _emit_stderr(err)
+                if p.returncode not in (0, None):
+                    log(f"yt-dlp exited {p.returncode} for args={args[:4]}...")
                 return out.decode("utf-8", "replace") if out else ""
             except subprocess.TimeoutExpired:
                 pass

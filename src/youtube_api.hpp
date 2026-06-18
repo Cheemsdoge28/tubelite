@@ -51,6 +51,31 @@ public:
         bool isPreview = false,
         const std::string& parent_focus_id = "");
 
+    // ── Telemetry (thread-safe; read from any thread including the UI) ────────
+    // In-flight = currently running requests of that kind.
+    // total      = ever-issued counter (since process start).
+    // last_ms    = latency of the most recently completed request.
+    // ema_ms_x10 = exponentially-weighted average latency, multiplied by 10 so
+    //              we can store it in an integer atomic without locks.
+    struct Telemetry {
+        std::atomic<int>      searches_inflight{0};
+        std::atomic<int>      streams_inflight{0};
+        std::atomic<int>      previews_inflight{0};
+        std::atomic<uint64_t> searches_total{0};
+        std::atomic<uint64_t> streams_total{0};
+        std::atomic<uint64_t> previews_total{0};
+        std::atomic<uint64_t> streams_failed{0};
+        std::atomic<uint64_t> previews_cancelled{0};
+        std::atomic<uint32_t> last_search_ms{0};
+        std::atomic<uint32_t> last_stream_ms{0};
+        std::atomic<uint32_t> last_preview_ms{0};
+        std::atomic<uint32_t> ema_search_ms_x10{0};
+        std::atomic<uint32_t> ema_stream_ms_x10{0};
+        std::atomic<uint32_t> ema_preview_ms_x10{0};
+        std::atomic<uint64_t> tubed_wait_ms_total{0};   // sum of all tubed I/O
+    };
+    const Telemetry& telemetry() const { return tele_; }
+
 private:
     // Separate tokens so preview and main stream requests don't interfere.
     std::atomic<int> current_stream_request_id_{0};
@@ -58,4 +83,16 @@ private:
 
     std::mutex preview_mutex_;
     std::string current_preview_focus_id_;
+
+    Telemetry tele_;
+
+    // EMA helper: blend the new sample into the rolling average at weight 0.2.
+    static void ema_update(std::atomic<uint32_t>& slot, uint32_t new_ms) {
+        uint32_t cur = slot.load(std::memory_order_relaxed);
+        uint32_t sample_x10 = new_ms * 10u;
+        // smoothing: 80% old + 20% new
+        uint32_t next = (cur == 0) ? sample_x10
+                                    : (cur * 8u + sample_x10 * 2u) / 10u;
+        slot.store(next, std::memory_order_relaxed);
+    }
 };

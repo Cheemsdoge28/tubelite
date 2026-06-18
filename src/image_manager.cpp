@@ -73,6 +73,10 @@ bool ImageManager::update() {
     std::queue<PendingImage> pendingTextures;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        // Refresh the snapshot counters the debug overlay reads.
+        tele_.queue_depth.store((int)downloadQueue_.size(), std::memory_order_relaxed);
+        tele_.texture_queue_depth.store((int)textureQueue_.size(), std::memory_order_relaxed);
+        tele_.cache_size.store((int)cache_.size(), std::memory_order_relaxed);
         if (textureQueue_.empty()) return false;
         std::swap(pendingTextures, textureQueue_);
     }
@@ -146,10 +150,11 @@ void ImageManager::workerThread() {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait(lock, [this]() { return !downloadQueue_.empty() || !running_; });
             if (!running_) break;
-            
+
             videoId = downloadQueue_.front();
             downloadQueue_.pop();
         }
+        tele_.downloads_inflight.fetch_add(1, std::memory_order_relaxed);
         
         // mqdefault is 320x180 (true 16:9) — matches the card thumb aspect and
         // is ~1/3 the pixels of the 4:3 hqdefault, so it downloads, decodes and
@@ -196,8 +201,11 @@ void ImageManager::workerThread() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (data) {
             textureQueue_.push({videoId, w, h, data});
+            tele_.thumbnails_loaded_total.fetch_add(1, std::memory_order_relaxed);
         } else {
             textureQueue_.push({videoId, 0, 0, nullptr});
+            tele_.thumbnails_failed_total.fetch_add(1, std::memory_order_relaxed);
         }
+        tele_.downloads_inflight.fetch_sub(1, std::memory_order_relaxed);
     }
 }
