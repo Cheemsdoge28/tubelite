@@ -337,10 +337,11 @@ void Compositor::render(App* app, int width, int height) {
         }
     }
 
-    app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_);
+    { PROFILE_SCOPE("keyboard"); app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_); }
 
     // Draw telemetry overlay if enabled
     if (app->state_.showDebugOverlay) {
+        PROFILE_SCOPE("debug_overlay");
         // ── Snapshot profiler sections, sort by avg time, drop empties ────────
         struct Row { const char* name; float avg_ms; float max_ms; float avg_calls; };
         Row rows[Profiler::MAX_SECTIONS];
@@ -542,6 +543,7 @@ void Compositor::render(App* app, int width, int height) {
 
     // Browse status bar
     if (app->state_.showUi) {
+        PROFILE_SCOPE("status_overlay");
         app->status_.render(renderer_, app->state_, width, height, app->uiDirty_);
     }
     

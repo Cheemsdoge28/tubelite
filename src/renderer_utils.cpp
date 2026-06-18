@@ -171,8 +171,9 @@ FontAtlas g_atlas_small;
 FontAtlas g_atlas_medium;
 FontAtlas g_atlas_large;
 
-SDL_Texture* g_corner_mask_texture = nullptr;
+SDL_Texture* g_corner_mask_texture  = nullptr;
 SDL_Texture* g_solid_corner_texture = nullptr;
+SDL_Texture* g_ring_corner_texture  = nullptr;   // outline-only ring; used by drawRoundedRect
 
 static FontAtlas createFontAtlas(SDL_Renderer* renderer, TTF_Font* font) {
     FontAtlas atlas;
@@ -346,6 +347,57 @@ static void initSolidCorner(SDL_Renderer* renderer) {
     
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
     g_solid_corner_texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    SDL_FreeSurface(surf);
+}
+
+// Outline-only quarter-circle ring used by drawRoundedRect.  Source is 128x128
+// containing one full antialiased ring centred at (63.5, 63.5); drawRoundedRect
+// samples each 64x64 quadrant for the four corners.
+//
+// Native ring thickness ~3px so that a typical card-border radius (8-12) scales
+// it to ~0.4-0.6 px — bilinear filtering keeps the line visually crisp at 1 px
+// without blooming.  At larger radii (24-32) the line grows to ~1-1.5 px,
+// which still reads as a clean outline.
+//
+// Previously drawRoundedRect drew corners with a midpoint-circle loop calling
+// SDL_RenderDrawPoint per pixel — ~96 calls per corner pass, and renderFocusRing
+// stacks 3 of those, giving ~280 SDL ops per frame just for the focus ring.
+// The profiler measured 16.7 ms on the RG351MP.  Routing through this single
+// texture collapses it to 4 SDL_RenderCopy per drawRoundedRect call.
+static void initRingCorner(SDL_Renderer* renderer) {
+    int r = 64;
+    int size = r * 2;
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) return;
+
+    SDL_FillRect(surf, nullptr, 0x00000000);
+
+    uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
+
+    const double thickness = 3.0;
+    const double inner = (double)r - thickness * 0.5;
+    const double outer = (double)r + thickness * 0.5;
+
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            double dx = x - (r - 0.5);
+            double dy = y - (r - 0.5);
+            double dist = std::sqrt(dx * dx + dy * dy);
+
+            // Coverage = clamp(min(dist - (inner - 0.5), (outer + 0.5) - dist), 0, 1)
+            // → smooth 1px-AA edges on both sides of the ring band.
+            double cov = std::min(dist - (inner - 0.5), (outer + 0.5) - dist);
+            if (cov <= 0.0) continue;
+            if (cov > 1.0) cov = 1.0;
+
+            uint8_t a = static_cast<uint8_t>(cov * 255.0);
+            pixels[y * size + x] = SDL_MapRGBA(surf->format, 255, 255, 255, a);
+        }
+    }
+
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+    g_ring_corner_texture = SDL_CreateTextureFromSurface(renderer, surf);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_FreeSurface(surf);
 }
@@ -825,6 +877,7 @@ bool initFonts(SDL_Renderer* renderer) {
 
     initCornerMask(renderer);
     initSolidCorner(renderer);
+    initRingCorner(renderer);
 
     return true;
 }
@@ -861,6 +914,7 @@ void cleanupFonts() {
     if (g_atlas_large.texture)  { SDL_DestroyTexture(g_atlas_large.texture);  g_atlas_large.texture = nullptr; }
     if (g_corner_mask_texture)  { SDL_DestroyTexture(g_corner_mask_texture);  g_corner_mask_texture = nullptr; }
     if (g_solid_corner_texture) { SDL_DestroyTexture(g_solid_corner_texture); g_solid_corner_texture = nullptr; }
+    if (g_ring_corner_texture)  { SDL_DestroyTexture(g_ring_corner_texture);  g_ring_corner_texture = nullptr; }
     if (g_font_small)  { TTF_CloseFont(g_font_small);  g_font_small = nullptr; }
     if (g_font_medium) { TTF_CloseFont(g_font_medium); g_font_medium = nullptr; }
     if (g_font_large)  { TTF_CloseFont(g_font_large);  g_font_large = nullptr; }
@@ -1065,34 +1119,65 @@ void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
 }
 
 void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-
     int r = radius;
     if (r <= 0 || rect.w < 2 * r || rect.h < 2 * r) {
-        SDL_RenderDrawRect(renderer, &rect);  // too small to round — plain box
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        SDL_RenderDrawRect(renderer, &rect);
         return;
     }
 
     const int x = rect.x, y = rect.y, w = rect.w, h = rect.h;
 
-    // Straight edges, inset by the corner radius.
-    SDL_RenderDrawLine(renderer, x + r,         y,           x + w - r - 1, y);            // top
-    SDL_RenderDrawLine(renderer, x + r,         y + h - 1,   x + w - r - 1, y + h - 1);    // bottom
-    SDL_RenderDrawLine(renderer, x,             y + r,       x,             y + h - r - 1); // left
-    SDL_RenderDrawLine(renderer, x + w - 1,     y + r,       x + w - 1,     y + h - r - 1); // right
+    // ── Straight edges (4 line draws) ───────────────────────────────────────
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_RenderDrawLine(renderer, x + r,     y,         x + w - r - 1, y);            // top
+    SDL_RenderDrawLine(renderer, x + r,     y + h - 1, x + w - r - 1, y + h - 1);    // bottom
+    SDL_RenderDrawLine(renderer, x,         y + r,     x,             y + h - r - 1); // left
+    SDL_RenderDrawLine(renderer, x + w - 1, y + r,     x + w - 1,     y + h - r - 1); // right
 
-    // Four quarter-circle corners via the midpoint-circle algorithm.
+    // ── Corners ─────────────────────────────────────────────────────────────
+    // Fast path: blit each corner from the pre-built ring atlas.  This drops
+    // a typical drawRoundedRect from ~140 SDL ops (midpoint circle was 8
+    // SDL_RenderDrawPoint per loop iteration) to 8 (4 lines + 4 RenderCopy).
+    // On the RG351MP the previous focus-ring path was 16.7 ms per frame.
+    if (g_ring_corner_texture) {
+        SDL_SetTextureColorMod(g_ring_corner_texture,  color.r, color.g, color.b);
+        SDL_SetTextureAlphaMod(g_ring_corner_texture,  color.a);
+        SDL_SetTextureBlendMode(g_ring_corner_texture, SDL_BLENDMODE_BLEND);
+
+        const int r_base = 64;  // ring texture is 128x128; each 64x64 quadrant = one corner
+        SDL_Rect srcTL{0,      0,      r_base, r_base};
+        SDL_Rect srcTR{r_base, 0,      r_base, r_base};
+        SDL_Rect srcBL{0,      r_base, r_base, r_base};
+        SDL_Rect srcBR{r_base, r_base, r_base, r_base};
+
+        SDL_Rect dstTL{x,             y,             r, r};
+        SDL_Rect dstTR{x + w - r,     y,             r, r};
+        SDL_Rect dstBL{x,             y + h - r,     r, r};
+        SDL_Rect dstBR{x + w - r,     y + h - r,     r, r};
+
+        SDL_RenderCopy(renderer, g_ring_corner_texture, &srcTL, &dstTL);
+        SDL_RenderCopy(renderer, g_ring_corner_texture, &srcTR, &dstTR);
+        SDL_RenderCopy(renderer, g_ring_corner_texture, &srcBL, &dstBL);
+        SDL_RenderCopy(renderer, g_ring_corner_texture, &srcBR, &dstBR);
+        return;
+    }
+
+    // Fallback path (only hit if g_ring_corner_texture failed to initialise):
+    // midpoint-circle outline.  Pixel-exact at small radii but slow because
+    // every point is its own SDL call.
     const int cxL = x + r,         cxR = x + w - 1 - r;
     const int cyT = y + r,         cyB = y + h - 1 - r;
     int px = r, py = 0, err = 1 - r;
     while (px >= py) {
-        SDL_RenderDrawPoint(renderer, cxL - px, cyT - py);   // top-left
+        SDL_RenderDrawPoint(renderer, cxL - px, cyT - py);
         SDL_RenderDrawPoint(renderer, cxL - py, cyT - px);
-        SDL_RenderDrawPoint(renderer, cxR + px, cyT - py);   // top-right
+        SDL_RenderDrawPoint(renderer, cxR + px, cyT - py);
         SDL_RenderDrawPoint(renderer, cxR + py, cyT - px);
-        SDL_RenderDrawPoint(renderer, cxL - px, cyB + py);   // bottom-left
+        SDL_RenderDrawPoint(renderer, cxL - px, cyB + py);
         SDL_RenderDrawPoint(renderer, cxL - py, cyB + px);
-        SDL_RenderDrawPoint(renderer, cxR + px, cyB + py);   // bottom-right
+        SDL_RenderDrawPoint(renderer, cxR + px, cyB + py);
         SDL_RenderDrawPoint(renderer, cxR + py, cyB + px);
         ++py;
         if (err < 0) {

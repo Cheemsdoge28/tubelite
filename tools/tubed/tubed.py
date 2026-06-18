@@ -30,6 +30,9 @@ import socket
 import subprocess
 import threading
 import socketserver
+import urllib.request
+import urllib.error
+import re
 from collections import OrderedDict
 
 # ── Paths / config ──────────────────────────────────────────────────────────
@@ -194,10 +197,49 @@ def _have_cookies():
 
 
 def _find_ytdlp():
-    for p in ("/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp"):
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return shutil.which("yt-dlp") or "yt-dlp"
+    """Pick the first yt-dlp on disk that actually RUNS.
+
+    Just checking is_file + executable isn't enough: the standalone PyInstaller
+    yt-dlp at /usr/local/bin/yt-dlp ships a bundled Python whose _ssl module
+    can link against libssl.so.3 — which ArkOS / RG351MP doesn't have, so the
+    binary dies at startup with an ImportError before main() runs.  When that
+    happens we want to silently fall through to the next candidate (often a
+    pip-installed shebang script that uses the system Python's OpenSSL 1.1).
+    """
+    candidates = [
+        "/usr/local/bin/yt-dlp",
+        "/usr/bin/yt-dlp",
+        os.path.expanduser("~/.local/bin/yt-dlp"),
+    ]
+    extra = shutil.which("yt-dlp")
+    if extra and extra not in candidates:
+        candidates.append(extra)
+
+    for p in candidates:
+        if not (p and os.path.isfile(p) and os.access(p, os.X_OK)):
+            continue
+        # Don't probe with `--version`: PyInstaller-frozen yt-dlp binaries
+        # intercept it at the bootloader level (before the embedded Python
+        # even starts) and print metadata from the binary header.  A broken
+        # bundle whose embedded Python can't import _ssl (libssl.so.3
+        # missing on ArkOS / RG351MP) will still happily answer --version
+        # with exit 0.  `--help` instead forces a real `import yt_dlp`,
+        # which is what fails for real on a mismatched build.
+        try:
+            r = subprocess.run([p, "--help"],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE,
+                               timeout=8)
+            if r.returncode == 0:
+                log(f"yt-dlp resolved to {p}")
+                return p
+            err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+            tail = err[-1] if err else "no stderr"
+            log(f"yt-dlp at {p} unusable (exit {r.returncode}): {tail}")
+        except Exception as ex:
+            log(f"yt-dlp at {p} unusable: {ex}")
+    log("WARNING: no working yt-dlp found; falling back to 'yt-dlp' on PATH")
+    return "yt-dlp"
 
 # The device ships yt-dlp as a standalone binary (not an importable module), so
 # tubed drives that binary. The win over the old design is that tubed is
@@ -485,7 +527,163 @@ def _parse_stream_info(info):
     return stream_url, _best_subtitle_url(info), meta
 
 
+# ── Fast public-API resolvers (Invidious / Piped) ─────────────────────────────
+#
+# These mirror the c707db7 design: try a curl-equivalent HTTP GET against
+# public Invidious / Piped instances FIRST.  Each instance returns a direct
+# googlevideo.com stream URL plus metadata in ~200 ms.  We only fall back to
+# yt-dlp when every instance has failed.  This is what the user remembers
+# working 100% — yt-dlp was the rare last resort, not the common path.
+#
+# Instance lists rot fast.  These are seeded from publicly-tracked uptime
+# lists; if every one starts failing simultaneously, update them or add a
+# refresh mechanism (api.invidious.io / piped-instances.kavin.rocks).
+_INVIDIOUS_INSTANCES = [
+    "https://invidious.nerdvpn.de",
+    "https://invidious.projectsegfau.lt",
+    "https://yewtu.be",
+    "https://inv.nadeko.net",
+    "https://invidious.flokinet.to",
+]
+_PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://piped-api.lunar.icu",
+    "https://pipedapi.colt.top",
+]
+
+
+def _http_get_json(url, timeout=3):
+    """Minimal urllib GET that returns a parsed JSON dict or None."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (tubelite)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if r.status != 200:
+                return None
+            body = r.read(2 * 1024 * 1024)  # 2 MB cap
+            return json.loads(body.decode("utf-8", "replace"))
+    except (urllib.error.URLError, urllib.error.HTTPError,
+            socket.timeout, ConnectionError, ValueError, OSError):
+        return None
+
+
+def _fetch_invidious(video_id, max_height):
+    """Returns (url, subtitle_url, meta_dict) on success, else None."""
+    for instance in _INVIDIOUS_INSTANCES:
+        if not _client_is_alive():
+            return None
+        api = f"{instance}/api/v1/videos/{video_id}"
+        j = _http_get_json(api, timeout=3)
+        if not j or not isinstance(j, dict):
+            continue
+        streams = j.get("formatStreams") or []
+        best_url = ""
+        best_height = 0
+        for s in streams:
+            res = s.get("resolution", "")
+            m = re.match(r"^(\d+)x(\d+)$", res)
+            if not m:
+                continue
+            h = int(m.group(2))
+            if h <= 0 or h > max_height:
+                continue
+            container = s.get("container", "")
+            prefer = (container == "mp4")
+            if prefer or not best_url or h > best_height:
+                u = s.get("url", "")
+                if u:
+                    best_url = u
+                    best_height = h
+        if not best_url:
+            continue
+        meta = {
+            "description":      j.get("description", ""),
+            "view_count":       int(j.get("viewCount") or 0),
+            "like_count":       int(j.get("likeCount") or 0),
+            "subscriber_count": int(j.get("subCount") or 0),
+            "comment_count":    0,  # invidious doesn't expose this
+        }
+        # Invidious "captions" → first English/auto track if present.
+        sub = ""
+        for c in (j.get("captions") or []):
+            lc = (c.get("language_code") or "").lower()
+            if lc.startswith("en"):
+                u = c.get("url", "")
+                if u:
+                    # captions URLs from Invidious are relative — prefix host
+                    sub = u if u.startswith("http") else (instance + u)
+                    break
+        log(f"resolved via invidious={instance} for {video_id} @ {best_height}p")
+        return (best_url, sub, meta)
+    return None
+
+
+def _fetch_piped(video_id, max_height):
+    """Returns (url, subtitle_url, meta_dict) on success, else None."""
+    for instance in _PIPED_INSTANCES:
+        if not _client_is_alive():
+            return None
+        api = f"{instance}/streams/{video_id}"
+        j = _http_get_json(api, timeout=3)
+        if not j or not isinstance(j, dict):
+            continue
+        streams = j.get("videoStreams") or []
+        best_url = ""
+        best_height = 0
+        for s in streams:
+            if s.get("videoOnly", False):
+                continue
+            q = s.get("quality", "")
+            m = re.match(r"^(\d+)p", q)
+            if not m:
+                continue
+            h = int(m.group(1))
+            if h <= 0 or h > max_height:
+                continue
+            codec = s.get("codec", "")
+            prefer = ("avc1" in codec)
+            if prefer or not best_url or h > best_height:
+                u = s.get("url", "")
+                if u:
+                    best_url = u
+                    best_height = h
+        if not best_url:
+            continue
+        meta = {
+            "description":      j.get("description", ""),
+            "view_count":       int(j.get("views") or 0),
+            "like_count":       int(j.get("likes") or 0),
+            "subscriber_count": 0,
+            "comment_count":    0,
+        }
+        sub = ""
+        for c in (j.get("subtitles") or []):
+            code = (c.get("code") or "").lower()
+            if code.startswith("en"):
+                sub = c.get("url", "") or ""
+                if sub:
+                    break
+        log(f"resolved via piped={instance} for {video_id} @ {best_height}p")
+        return (best_url, sub, meta)
+    return None
+
+
 def _extract_stream(video_id, max_height, preview=False):
+    # FAST PATH: try public APIs first.  This was the design that "worked
+    # 100%" in the pre-tubed days — yt-dlp was only the rare fallback for
+    # videos the public mirrors couldn't resolve.
+    try:
+        res = _fetch_invidious(video_id, max_height)
+        if not res:
+            res = _fetch_piped(video_id, max_height)
+        if res:
+            return res
+    except Exception as ex:
+        log(f"fast-path error for {video_id}: {ex}")
+    # FALLBACK PATH: yt-dlp.
     url = f"https://www.youtube.com/watch?v={video_id}"
     fmt = (f"best[height<={max_height}][vcodec^=avc1]"
            f"/best[height<={max_height}]"
