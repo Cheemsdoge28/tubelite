@@ -226,10 +226,23 @@ def _find_ytdlp():
         # with exit 0.  `--help` instead forces a real `import yt_dlp`,
         # which is what fails for real on a mismatched build.
         try:
+            # Probe env must match the runtime env we'll use for real
+            # invocations (see _ytdlp_env) so a libssl3 side-load is visible.
+            # Otherwise the probe falsely rejects a binary that would work fine
+            # when actually run.  But _ytdlp_env is defined below, so we
+            # construct the env inline here:
+            probe_env = os.environ.copy()
+            extra = [d for d in ("/usr/local/lib", "/usr/local/lib64",
+                                 "/roms/tools/tubelite/lib")
+                     if os.path.isfile(os.path.join(d, "libssl.so.3"))]
+            if extra:
+                cur = probe_env.get("LD_LIBRARY_PATH", "")
+                probe_env["LD_LIBRARY_PATH"] = ":".join(extra + ([cur] if cur else []))
             r = subprocess.run([p, "--help"],
                                stdout=subprocess.DEVNULL,
                                stderr=subprocess.PIPE,
-                               timeout=8)
+                               timeout=8,
+                               env=probe_env)
             if r.returncode == 0:
                 log(f"yt-dlp resolved to {p}")
                 return p
@@ -280,6 +293,27 @@ def _ytdlp_base_args():
     return args
 
 
+def _ytdlp_env():
+    """Augment the subprocess env so a side-loaded libssl3 / libcrypto3 is
+    visible to yt-dlp's PyInstaller bundled Python.
+
+    ArkOS / RG351MP ships only libssl.so.1.1.  The user side-loads libssl3
+    + libcrypto3 into a non-system path (commonly /usr/local/lib) — but if
+    ldconfig hasn't been run, or /usr/local/lib isn't in /etc/ld.so.conf,
+    the loader can't find them when yt-dlp is forked from tubed.  Pinning
+    LD_LIBRARY_PATH per-spawn is a belt-and-suspenders guard so the user
+    doesn't have to remember the system-wide config step."""
+    env = os.environ.copy()
+    extra_dirs = []
+    for d in ("/usr/local/lib", "/usr/local/lib64", "/roms/tools/tubelite/lib"):
+        if os.path.isfile(os.path.join(d, "libssl.so.3")):
+            extra_dirs.append(d)
+    if extra_dirs:
+        cur = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([cur] if cur else []))
+    return env
+
+
 def _run_ytdlp(args, timeout):
     """Run yt-dlp and return stdout text (empty on failure). The child runs in
     its own process group and is force-killed (group-wide) on timeout/error, so
@@ -293,7 +327,8 @@ def _run_ytdlp(args, timeout):
         # bot", "Video unavailable", PO-token errors, etc.  Without this the
         # silent-fail path was undebuggable from the user's side.
         p = subprocess.Popen(_SCHED_PREFIX + args, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, start_new_session=True)
+                             stderr=subprocess.PIPE, start_new_session=True,
+                             env=_ytdlp_env())
     except Exception as ex:
         log("yt-dlp launch failed:", ex)
         return ""

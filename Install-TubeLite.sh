@@ -323,7 +323,13 @@ if [ "$DO_DEPS" -eq 1 ]; then
     if [ "$REINSTALL_DEPS" = "1" ]; then
         APT_FLAGS="$APT_FLAGS --reinstall"
         log_info "Forcing full system header & developer tools restore ritual..."
-        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev"
+        # libssl-dev pulls the OpenSSL runtime + headers — on ArkOS that's libssl1.1.
+        # Without it the curl/wget toolchain and any native code that links against
+        # OpenSSL goes missing after a partial OS image strip.  Note this does NOT
+        # solve the libssl.so.3 mismatch for yt-dlp's PyInstaller binary; that
+        # requires side-loading libssl3 + libcrypto3 into /usr/local/lib from a
+        # Debian Bookworm .deb (see docs / memory:yt-dlp-libssl).
+        DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev libssl-dev"
         apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
     fi
 
@@ -432,7 +438,7 @@ if [ "$DO_BINARY" -eq 1 ]; then
         if [ ! -f "/usr/include/features.h" ] || [ ! -f "/usr/include/SDL2/SDL.h" ]; then
             log_warn "Core C/C++ or SDL2 development headers are missing from filesystem."
             log_warn "Running header file restore ritual to repair the compilation environment..."
-            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev"
+            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev libssl-dev"
             apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
         fi
         
@@ -471,9 +477,21 @@ SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 cd "\$SCRIPT_DIR" || exit 1
 
 # Performance CPU governor for smooth rendering
-for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do 
+for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     if [ -w "\$gov" ]; then
         echo performance > "\$gov" 2>/dev/null || true
+    fi
+done
+
+# Surface side-loaded OpenSSL 3 to yt-dlp's PyInstaller bundle.  ArkOS / RG351MP
+# ships only libssl.so.1.1, but recent yt-dlp standalone builds bundle a Python
+# whose _ssl C ext links against libssl.so.3.  If libssl3+libcrypto3 have been
+# side-loaded into /usr/local/lib or /roms/tools/tubelite/lib (or similar
+# non-default locations), make sure tubed's forked yt-dlp subprocess can find
+# them even when EmulationStation launched us with a stripped environment.
+for d in /usr/local/lib /usr/local/lib64 "\$SCRIPT_DIR/lib"; do
+    if [ -f "\$d/libssl.so.3" ]; then
+        export LD_LIBRARY_PATH="\$d:\${LD_LIBRARY_PATH}"
     fi
 done
 
