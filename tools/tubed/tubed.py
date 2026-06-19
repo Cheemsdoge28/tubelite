@@ -153,6 +153,19 @@ class TTLCache:
 CACHE = TTLCache()
 _work_sem = threading.BoundedSemaphore(MAX_WORKERS)
 
+# Play-over-preview preemption.  Hover-previews (preview=True) and real plays
+# (preview=False) share the single worker slot.  A preview that's mid-resolve
+# would otherwise make the user wait the full yt-dlp cold-start before their
+# actual play even starts.  We count pending real plays; an in-flight PREVIEW
+# yt-dlp checks this and aborts itself the moment a real play is waiting, so the
+# play gets the worker within one poll tick (~0.5 s) instead of ~10 s.
+_pending_plays = 0
+_pending_plays_lock = threading.Lock()
+
+def _play_pending():
+    with _pending_plays_lock:
+        return _pending_plays > 0
+
 # Track every live yt-dlp child so we can guarantee none survive us. Each child
 # is started in its own session (process group) so we can kill the whole group
 # — yt-dlp's standalone binary can fork helpers that a plain kill() would miss.
@@ -280,13 +293,24 @@ def _ytdlp_env():
     if extra_dirs:
         cur = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([cur] if cur else []))
+    # SPEED: the PyInstaller one-file yt-dlp unpacks its entire bundle to
+    # $TMPDIR/_MEIxxxx on EVERY invocation.  On ArkOS /tmp is often on the SD
+    # card, so that extraction is the single biggest chunk of cold-start
+    # latency (several seconds on the A35).  Point it at /dev/shm (RAM tmpfs)
+    # so the unpack is memory-speed.  Falls back to default if /dev/shm is
+    # somehow absent.
+    if os.path.isdir("/dev/shm"):
+        env["TMPDIR"] = "/dev/shm"
     return env
 
 
-def _run_ytdlp(args, timeout):
+def _run_ytdlp(args, timeout, is_preview=False):
     """Run yt-dlp and return stdout text (empty on failure). The child runs in
     its own process group and is force-killed (group-wide) on timeout/error, so
-    a hung or slow yt-dlp can never leak into a stray background process."""
+    a hung or slow yt-dlp can never leak into a stray background process.
+
+    is_preview: when True, the run aborts the instant a real play is queued
+    (see _pending_plays) so hover-prefetch never delays an actual play."""
     try:
         # nice/taskset (when present) exec into yt-dlp, so the launched process
         # group still ends as yt-dlp and the group-wide kill below still works.
@@ -340,6 +364,8 @@ def _run_ytdlp(args, timeout):
                 pass
             if not _client_is_alive():
                 return _reap("client disconnected; killing yt-dlp")
+            if is_preview and _play_pending():
+                return _reap("preempting preview yt-dlp for a pending play")
             if time.time() >= deadline:
                 return _reap("yt-dlp timed out; killing process group")
     except Exception as ex:
@@ -828,7 +854,7 @@ def _extract_stream(video_id, max_height, preview=False):
             "--no-playlist", "--socket-timeout", "5",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ]
-        out = _run_ytdlp(args, timeout=run_timeout)
+        out = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
         for line in out.splitlines():
             line = line.strip()
             if not line:
@@ -860,24 +886,35 @@ def op_stream(req):
         log(f"op_stream: cache hit for {vid}")
         return {"ok": True, **cached}
 
-    with _work_sem:
-        # Re-check inside the gate; another thread may have just resolved it.
-        cached = CACHE.get(ck)
-        if cached is not None:
-            log(f"op_stream: cache hit (post-gate) for {vid}")
-            return {"ok": True, **cached}
-        # NOTE: we used to bail here with a pre-extract `_client_is_alive()`
-        # check, but that peek can spuriously report the client gone the
-        # instant after the request line is consumed (before the client's
-        # blocking read settles), which killed EVERY resolve with an empty
-        # log.  `_extract_stream` already re-checks liveness before each
-        # yt-dlp spawn, so dropping the redundant pre-check is safe and fixes
-        # the "resolve instantly fails" regression.
-        try:
-            url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
-        except Exception as ex:
-            log(f"op_stream: extract failed for {vid}: {ex}")
-            return {"ok": False, "error": str(ex)}
+    # A real play (preview=False) registers itself as pending so any in-flight
+    # preview yt-dlp aborts and frees the single worker for us (see _run_ytdlp).
+    global _pending_plays
+    if not preview:
+        with _pending_plays_lock:
+            _pending_plays += 1
+    try:
+        with _work_sem:
+            # Re-check inside the gate; another thread may have just resolved it.
+            cached = CACHE.get(ck)
+            if cached is not None:
+                log(f"op_stream: cache hit (post-gate) for {vid}")
+                return {"ok": True, **cached}
+            # NOTE: we used to bail here with a pre-extract `_client_is_alive()`
+            # check, but that peek can spuriously report the client gone the
+            # instant after the request line is consumed (before the client's
+            # blocking read settles), which killed EVERY resolve with an empty
+            # log.  `_extract_stream` already re-checks liveness before each
+            # yt-dlp spawn, so dropping the redundant pre-check is safe and fixes
+            # the "resolve instantly fails" regression.
+            try:
+                url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
+            except Exception as ex:
+                log(f"op_stream: extract failed for {vid}: {ex}")
+                return {"ok": False, "error": str(ex)}
+    finally:
+        if not preview:
+            with _pending_plays_lock:
+                _pending_plays -= 1
 
     payload = {"url": url, "audio_url": audio_url, "subtitle_url": sub, "meta": meta}
     CACHE.set(ck, payload, TTL_STREAM)
