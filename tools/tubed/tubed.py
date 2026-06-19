@@ -282,7 +282,7 @@ def _ytdlp_base_args():
     args = [
         YT_DLP, "--no-config", "--quiet", "--no-warnings", "--no-update",
         "--encoding", "utf-8", "--no-check-certificate", "--force-ipv4",
-        "--no-call-home", "--no-check-formats", "--cache-dir", CACHE_DIR,
+        "--no-check-formats", "--cache-dir", CACHE_DIR,
     ]
     if _have_cookies():
         args += ["--cookies", COOKIES]
@@ -609,6 +609,7 @@ def _fetch_invidious(video_id, max_height):
         api = f"{instance}/api/v1/videos/{video_id}"
         j = _http_get_json(api, timeout=3)
         if not j or not isinstance(j, dict):
+            log(f"invidious {instance}: no response for {video_id}")
             continue
         streams = j.get("formatStreams") or []
         best_url = ""
@@ -629,6 +630,7 @@ def _fetch_invidious(video_id, max_height):
                     best_url = u
                     best_height = h
         if not best_url:
+            log(f"invidious {instance}: no usable stream for {video_id} @ <={max_height}p (streams={len(streams)})")
             continue
         meta = {
             "description":      j.get("description", ""),
@@ -660,6 +662,7 @@ def _fetch_piped(video_id, max_height):
         api = f"{instance}/streams/{video_id}"
         j = _http_get_json(api, timeout=3)
         if not j or not isinstance(j, dict):
+            log(f"piped {instance}: no response for {video_id}")
             continue
         streams = j.get("videoStreams") or []
         best_url = ""
@@ -682,6 +685,7 @@ def _fetch_piped(video_id, max_height):
                     best_url = u
                     best_height = h
         if not best_url:
+            log(f"piped {instance}: no usable stream for {video_id} @ <={max_height}p (streams={len(streams)})")
             continue
         meta = {
             "description":      j.get("description", ""),
@@ -707,15 +711,21 @@ def _extract_stream(video_id, max_height, preview=False):
     # 100%" in the pre-tubed days — yt-dlp was only the rare fallback for
     # videos the public mirrors couldn't resolve.
     try:
+        log(f"trying invidious for {video_id} @ <={max_height}p")
         res = _fetch_invidious(video_id, max_height)
         if not res:
+            log(f"invidious exhausted for {video_id}, trying piped")
             res = _fetch_piped(video_id, max_height)
         if res:
             return res
+        log(f"all public APIs failed for {video_id}, falling back to yt-dlp")
     except Exception as ex:
         log(f"fast-path error for {video_id}: {ex}")
     # FALLBACK PATH: yt-dlp.
     url = f"https://www.youtube.com/watch?v={video_id}"
+    # Don't restrict to muxed-only (skip=dash,hls) — many recent videos only
+    # have DASH streams; that flag caused "Requested format is not available"
+    # for them.  The format string below already does height+codec selection.
     fmt = (f"best[height<={max_height}][vcodec^=avc1]"
            f"/best[height<={max_height}]"
            f"/best")
@@ -733,12 +743,12 @@ def _extract_stream(video_id, max_height, preview=False):
             raise RuntimeError("client gone")
         # player_skip=webpage,configs avoids the extra watch-page + config HTTP
         # round-trips the default path makes — a real chunk of first-play latency.
-        ea = "youtube:skip=dash,hls;player_skip=webpage,configs"
+        ea = "youtube:player_skip=webpage,configs"
         if clients:
             ea = (f"youtube:player_client={','.join(clients)}"
-                  f";skip=dash,hls;player_skip=webpage,configs")
+                  f";player_skip=webpage,configs")
         args = _ytdlp_base_args() + [
-            "--no-playlist", "--youtube-skip-dash-manifest", "--socket-timeout", "10",
+            "--no-playlist", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ]
         out = _run_ytdlp(args, timeout=run_timeout)
