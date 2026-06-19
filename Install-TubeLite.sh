@@ -397,6 +397,11 @@ if [ "$DO_DEPS" -eq 1 ]; then
         log_err "Please ensure python3 and yt-dlp are installed and available in the PATH."
         exit 1
     fi
+    if [ -x "$SCRIPT_DIR/vendor/deno" ]; then
+        log_ok "Bundled deno detected at $SCRIPT_DIR/vendor/deno"
+    else
+        log_warn "No bundled deno found at $SCRIPT_DIR/vendor/deno"
+    fi
     log_ok "Dependencies verified"
 fi
 
@@ -494,6 +499,10 @@ for d in /usr/local/lib /usr/local/lib64 "\$SCRIPT_DIR/lib"; do
         export LD_LIBRARY_PATH="\$d:\${LD_LIBRARY_PATH}"
     fi
 done
+
+if [ -x "\$SCRIPT_DIR/vendor/deno" ]; then
+    export PATH="\$SCRIPT_DIR/vendor:\${PATH}"
+fi
 
 # Launch the app
 LOGFILE="\$SCRIPT_DIR/tubelite.log"

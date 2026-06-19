@@ -46,6 +46,12 @@ if [ -f "$SCRIPT_DIR/bin/yt-dlp" ]; then
     copy_file "$SCRIPT_DIR/bin/yt-dlp" "$APP_DIR/bin/yt-dlp"
 fi
 
+if [ -d "$SCRIPT_DIR/vendor" ]; then
+    mkdir -p "$APP_DIR/vendor"
+    cp -r "$SCRIPT_DIR/vendor/"* "$APP_DIR/vendor/" 2>/dev/null || true
+    chmod +x "$APP_DIR/vendor/"* 2>/dev/null || true
+fi
+
 
 # Include controller menu scripts
 mkdir -p "$APP_DIR/scripts"

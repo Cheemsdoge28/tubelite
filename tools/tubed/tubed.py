@@ -309,6 +309,10 @@ def _ytdlp_env():
     if extra_dirs:
         cur = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([cur] if cur else []))
+    vendor_dir = os.path.join(BASE_DIR, "vendor")
+    if os.path.isfile(os.path.join(vendor_dir, "deno")):
+        cur = env.get("PATH", "")
+        env["PATH"] = vendor_dir + (":" + cur if cur else "")
     # SPEED: the PyInstaller one-file yt-dlp unpacks its entire bundle to
     # $TMPDIR/_MEIxxxx on EVERY invocation.  On ArkOS /tmp is often on the SD
     # card, so that extraction is the single biggest chunk of cold-start
@@ -569,15 +573,13 @@ def op_trending(req):
 # Flip _PO_TOKEN_AVAILABLE to True once a provider is running; that re-enables
 # the DASH ladder for signed-in users.  Cookies still matter: they keep android
 # resolves reliable and (later) unlock authenticated feeds.
-_PO_TOKEN_AVAILABLE = False
+_CLIENT_CHAIN_DASH  = [["android_vr"], ["android"], ["tv"], ["web"]]
+_CLIENT_CHAIN_MUXED = [["android"], ["android_vr"]]
 
-_CLIENT_CHAIN_DASH     = [["web"], ["tv"], ["android"]]   # needs PO token
-_CLIENT_CHAIN_MUXED    = [["android"]]                    # always works, 360p
-
-def _client_chain(authed):
-    if authed and _PO_TOKEN_AVAILABLE:
-        return _CLIENT_CHAIN_DASH
-    return _CLIENT_CHAIN_MUXED
+def _client_chain(max_height, preview=False):
+    if preview or max_height <= 360:
+        return _CLIENT_CHAIN_MUXED
+    return _CLIENT_CHAIN_DASH
 
 
 def _info_height(info):
@@ -893,11 +895,11 @@ def _extract_stream(video_id, max_height, preview=False):
     # a short timeout, and don't walk the fallback chain.  Real plays use the
     # auth-aware chain: android-only until the user signs in (cookies.txt), then
     # the full DASH ladder.
-    chain = [["android"]] if preview else _client_chain(_have_cookies())
+    chain = [_client_chain(max_height, preview=True)[0]] if preview else _client_chain(max_height, preview=False)
     # android (the only reliable no-PO-token client) resolves in ~10-15s; give
     # real plays a 20s ceiling.  When the DASH ladder is re-enabled (PO token),
     # bump this back up — web's nsig dance needs ~30s.
-    run_timeout = 10 if preview else (30 if _PO_TOKEN_AVAILABLE else 20)
+    run_timeout = 10 if preview else 32
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
     # case) we keep trying later clients for a proper DASH result, but stash
@@ -927,8 +929,7 @@ def _extract_stream(video_id, max_height, preview=False):
         # `configs` for the web client: it needs the player config to fetch the
         # JS for nsig signature deciphering — skipping it can yield throttled or
         # missing format URLs.  android (muxed, no nsig) keeps the full skip.
-        is_android = (clients == ["android"])
-        skip = "webpage,configs" if is_android else "webpage"
+        skip = "webpage"
         ea = f"youtube:player_skip={skip}"
         if clients:
             ea = (f"youtube:player_client={','.join(clients)}"

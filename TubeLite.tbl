@@ -9,6 +9,10 @@ for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     fi
 done
 
+if [ -x "$SCRIPT_DIR/vendor/deno" ]; then
+    export PATH="$SCRIPT_DIR/vendor:${PATH}"
+fi
+
 # Launch the app
 LOGFILE="$SCRIPT_DIR/tubelite.log"
 BINARIES=(

@@ -528,6 +528,9 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
     const uint64_t request_serial = ++daemon_request_serial;
     daemon_overlay_timer = 5.0f;
     overlay_active = true;
+    std::cerr << "[daemon] playCurrentTrack idx=" << daemon_current_index
+              << " id=" << video.id
+              << " cached=" << (!video.stream_url.empty() ? "yes" : "no") << "\n";
     mpv.stop();
 
     if (!video.stream_url.empty()) {
@@ -556,6 +559,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
            const std::string& audio_url,
            const VideoPlaybackMetadata&) {
             if (daemon_request_serial.load(std::memory_order_relaxed) != request_serial) {
+                std::cerr << "[daemon] Ignoring stale resolve serial=" << request_serial << "\n";
                 return;
             }
             std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
@@ -825,6 +829,13 @@ void runDaemon() {
             }
             if (finished) {
                 if (success) {
+                    std::string vid = (daemon_current_index >= 0 &&
+                                       daemon_current_index < (int)daemon_playlist.size())
+                        ? daemon_playlist[daemon_current_index].id
+                        : std::string("<out-of-range>");
+                    std::cerr << "[daemon] Resolve success idx=" << daemon_current_index
+                              << " id=" << vid
+                              << " audio=" << (!audio.empty() ? "yes" : "no") << "\n";
                     if (daemon_current_index >= 0 &&
                         daemon_current_index < (int)daemon_playlist.size()) {
                         auto& video = daemon_playlist[daemon_current_index];
@@ -839,6 +850,12 @@ void runDaemon() {
                     }
                     daemon_status = DaemonStatus::Playing;
                 } else {
+                    std::string vid = (daemon_current_index >= 0 &&
+                                       daemon_current_index < (int)daemon_playlist.size())
+                        ? daemon_playlist[daemon_current_index].id
+                        : std::string("<out-of-range>");
+                    std::cerr << "[daemon] Resolve failed idx=" << daemon_current_index
+                              << " id=" << vid << "\n";
                     daemon_status = DaemonStatus::Error;
                 }
                 last_render_pos = -1.0;

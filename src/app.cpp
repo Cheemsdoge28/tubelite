@@ -561,6 +561,11 @@ std::optional<std::string> App::getCachedStreamUrl(const std::string& key) {
 }
 
 void App::setCachedStreamUrl(const std::string& key, const std::string& url) {
+    if (url.empty()) {
+        stream_url_cache_.erase(key);
+        stream_url_cache_times_.erase(key);
+        return;
+    }
     stream_url_cache_[key] = url;
     stream_url_cache_times_[key] = std::chrono::steady_clock::now();
 
