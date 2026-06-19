@@ -350,9 +350,13 @@ _SCHED_PREFIX = _sched_prefix()
 def _ytdlp_base_args(use_cookies=True):
     args = [
         YT_DLP, "--no-config", "--quiet", "--no-warnings", "--no-update",
-        "--encoding", "utf-8", "--no-check-certificate", "--force-ipv4",
+        "--encoding", "utf-8", "--no-check-certificate",
         "--no-check-formats", "--cache-dir", CACHE_DIR,
     ]
+    # No --force-ipv4: on a carrier NAT (CGNAT) the v4 pool is shared with
+    # heavy scrapers and YouTube serves the "Sign in to confirm you're not a
+    # bot" challenge even to anonymous android_vr.  The working on-device
+    # manual test routed over IPv6.  Let happy-eyeballs pick.
     if use_cookies and _have_cookies():
         args += ["--cookies", COOKIES]
     return args
@@ -685,9 +689,15 @@ def op_trending(req):
 # bot-wall WITH cookies while working ANONYMOUSLY (proven: the bare rickroll
 # `-F` test had no cookies and returned the full ladder).  So each tier falls
 # back to an anonymous retry — cookies used when they help, never a hard block.
-_CLIENT_CHAIN_DASH  = [(["android_vr"], True), (["android_vr"], False),
-                       (["android"], False)]
-_CLIENT_CHAIN_MUXED = [(["android"], True), (["android"], False)]
+# First attempt = no client constraint: yt-dlp's defaults fetch the watch page
+# (visitor data) then pick android_vr — this is exactly the path the on-device
+# manual rickroll test took, and it returned the full DASH ladder anonymously.
+# We try anonymous first because cookies on android_vr trigger the bot challenge
+# (confirmed in production logs).  The cookied attempt is kept as a late fallback
+# so sign-in still helps for the rare video where it does.
+_CLIENT_CHAIN_DASH  = [([], False), (["android_vr"], False),
+                       ([], True), (["android"], False)]
+_CLIENT_CHAIN_MUXED = [(["android"], False), (["android"], True)]
 
 def _client_chain(max_height, preview=False):
     # DASH only makes sense if we actually have a JS runtime to de-throttle it;
@@ -1015,7 +1025,13 @@ def _extract_stream(video_id, max_height, preview=False):
     # android (the only reliable no-PO-token client) resolves in ~10-15s; give
     # real plays a 20s ceiling.  When the DASH ladder is re-enabled (PO token),
     # bump this back up — web's nsig dance needs ~30s.
-    run_timeout = 10 if preview else 32
+    # Preview budget bumped from 10s → 13s: on the A35, a cold yt-dlp + deno
+    # n-sig solve alone is 8-12s, so 10s was timing out healthy previews and
+    # (pre-fix) poisoning the negative cache for the subsequent real play.
+    # Capped under the C++ side's 14s preview socket budget so the preview
+    # always finishes (or self-kills) before C++ disconnects.  Real plays get
+    # 32s, which fits comfortably under the C++ 40s play budget.
+    run_timeout = 13 if preview else 32
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
     # case) we keep trying later clients for a proper DASH result, but stash
@@ -1041,20 +1057,24 @@ def _extract_stream(video_id, max_height, preview=False):
         # resolve before it ever started.  Only subsequent attempts gate on it.
         if attempt > 0 and not _client_is_alive():
             raise RuntimeError("client gone")
-        # player_skip=webpage trims the extra watch-page fetch.
-        skip = "webpage"
-        ea = f"youtube:player_skip={skip}"
+        # NB: we used to pass player_skip=webpage to trim one HTTP request, but
+        # the watch-page download is what supplies fresh visitor data — without
+        # it, android_vr requests look bot-like and YouTube returns the
+        # "Sign in to confirm you're not a bot" challenge.  Let yt-dlp fetch it.
         if clients:
-            ea = (f"youtube:player_client={','.join(clients)}"
-                  f";player_skip={skip}")
+            ea = f"youtube:player_client={','.join(clients)}"
+        else:
+            ea = ""
         # Plays need the JS runtime so android_vr's DASH n-sig is solved (full
         # speed, not throttled).  Previews are muxed itag-18 (no n-sig) so they
         # skip it and stay fast.
         js_args = [] if preview else _js_runtime_args()
         args = _ytdlp_base_args(use_cookies=use_cookies) + [
             "--no-playlist", "--socket-timeout", "10",
-            "--extractor-args", ea, "-f", fmt, "--dump-json", url,
+            "-f", fmt, "--dump-json", url,
         ] + js_args
+        if ea:
+            args += ["--extractor-args", ea]
         out = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
 
         got = None
@@ -1143,6 +1163,12 @@ def op_stream(req):
             if cached is not None:
                 log(f"op_stream: cache hit (post-gate) for {vid}")
                 return {"ok": True, **cached}
+            # Storm guard: a sibling request that started just ahead of us
+            # marked this vid as failed while we were waiting on the worker.
+            # Without this re-check, 7 duplicate clicks at the C++ side all
+            # queue behind the semaphore and each spawns its own yt-dlp.
+            if _recent_fail(ck):
+                return {"ok": False, "error": "recently failed"}
             # Last-chance preview bail: a play may have arrived while we waited
             # for the worker slot.
             if preview and _play_pending():
@@ -1159,7 +1185,13 @@ def op_stream(req):
                 url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
             except Exception as ex:
                 log(f"op_stream: extract failed for {vid}: {ex}")
-                _mark_fail(ck)        # back off — don't re-storm this vid
+                # Only PLAYS poison the negative cache.  A preview runs under a
+                # tight 13s ceiling and is cancelled when a play arrives, so a
+                # preview "failure" is usually a timeout or preempt — not proof
+                # the video is broken.  Pre-fix, that 10s preview timeout was
+                # locking the subsequent real play out of its own 32s budget.
+                if not preview:
+                    _mark_fail(ck)
                 return {"ok": False, "error": str(ex)}
     finally:
         if not preview:
