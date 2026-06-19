@@ -2003,6 +2003,26 @@ void App::loadSettings() {
 void App::saveDaemonQueue() {
     try {
         nlohmann::json j;
+        auto attachResolvedStream = [this](nlohmann::json& v, const std::string& videoId) {
+            std::optional<std::string> cached = getCachedStreamUrl(streamCacheKey(videoId, 360));
+            if (!cached && state_.maxQualityHeight != 360) {
+                cached = getCachedStreamUrl(streamCacheKey(videoId, state_.maxQualityHeight));
+            }
+            if (!cached || cached->empty()) {
+                return;
+            }
+
+            std::string url, sub_url, audio_url;
+            splitCachedStream(*cached, url, sub_url, audio_url);
+            if (url.empty()) {
+                return;
+            }
+
+            v["stream_url"] = url;
+            v["subtitle_url"] = sub_url;
+            v["audio_url"] = audio_url;
+        };
+
         std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
         if (!grid || grid->cards.empty()) {
             nlohmann::json v;
@@ -2011,15 +2031,8 @@ void App::saveDaemonQueue() {
             v["author"] = current_video_.author;
             v["duration_seconds"] = current_video_.duration_seconds;
             v["duration_string"] = current_video_.duration_string;
-            // Pass the already-resolved stream URL so the daemon can start instantly.
-            auto cached = getCachedStreamUrl(streamCacheKey(current_video_.id, 360));
-            if (cached) {
-                std::string url, sub_url, audio_url;
-                splitCachedStream(*cached, url, sub_url, audio_url);
-                v["stream_url"] = url;
-                v["subtitle_url"] = sub_url;
-                v["audio_url"] = audio_url;
-            }
+            // Pass any already-resolved stream we have so the daemon can start instantly.
+            attachResolvedStream(v, current_video_.id);
             j["videos"].push_back(v);
             j["current_index"] = 0;
         } else {
@@ -2032,16 +2045,9 @@ void App::saveDaemonQueue() {
                 v["author"] = vid.author;
                 v["duration_seconds"] = vid.duration_seconds;
                 v["duration_string"] = vid.duration_string;
-                // Pass any already-resolved 360p stream we have so the daemon
-                // can skip re-resolving when moving around the queue.
-                auto cached = getCachedStreamUrl(streamCacheKey(vid.id, 360));
-                if (cached) {
-                    std::string url, sub_url, audio_url;
-                    splitCachedStream(*cached, url, sub_url, audio_url);
-                    v["stream_url"] = url;
-                    v["subtitle_url"] = sub_url;
-                    v["audio_url"] = audio_url;
-                }
+                // Prefer the daemon's native 360p cache, but fall back to any
+                // already-resolved playback stream before forcing a re-resolve.
+                attachResolvedStream(v, vid.id);
                 if (vid.id == current_video_.id) {
                     current_idx = static_cast<int>(i);
                 }
