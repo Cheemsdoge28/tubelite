@@ -184,6 +184,15 @@ def _play_pending():
 _active_procs = set()
 _active_lock = threading.Lock()
 
+# Preview-only proc set so a play can kill in-flight previews INSTANTLY rather
+# than waiting for the 0.5s poll inside _run_ytdlp.  Production logs showed a
+# preview holding the worker for 24s while a play queued behind it on the
+# semaphore — the polled preempt was clearly unreliable under load.  This is
+# the hard belt: when a play arrives, op_stream signals here, the preview's
+# process group dies, the semaphore is released, the play runs.
+_preview_procs = set()
+_preview_lock  = threading.Lock()
+
 # ── Resilience: negative cache + yt-dlp circuit breaker ──────────────────────
 #
 # A misbehaving client (e.g. a hover-preview loop with no backoff) used to be
@@ -196,29 +205,46 @@ _active_lock = threading.Lock()
 #   2. CIRCUIT BREAKER — if yt-dlp reports it cannot create its temp dir (disk
 #      full), we stop spawning it entirely for _BREAKER_COOLDOWN so we don't
 #      pour fuel on a full-disk fire; requests fail fast until it clears.
-_FAIL_TTL          = 30.0     # seconds a failed vid is remembered
+_FAIL_TTL_PLAY     = 30.0     # play fail → back off briefly (user may retry)
+_FAIL_TTL_PREVIEW  = 120.0    # preview fail → long backoff; the C++ side prefetches
+                              # the same preview every ~30s on focus, and without
+                              # a longer fail TTL each retry spawns a fresh yt-dlp
+                              # that times out, looping for many minutes.
 _BREAKER_COOLDOWN  = 15.0     # seconds yt-dlp is paused after a temp-dir error
-_fail_cache        = {}       # ck -> fail_time
+_fail_play         = {}       # ck -> fail_time  (set by play failures)
+_fail_preview      = {}       # ck -> fail_time  (set by preview failures)
 _fail_lock         = threading.Lock()
 _breaker_until     = 0.0
 _breaker_lock      = threading.Lock()
 
-def _recent_fail(ck):
+def _recent_fail(ck, preview):
+    """Recent-failure check that does NOT let a preview poison plays.
+
+    Play requests check only the play-fail bucket.  Preview requests check
+    both: a recent play fail means the next preview will fail too, so save
+    the yt-dlp spawn; a recent preview fail blocks repeat previews."""
     now = time.time()
     with _fail_lock:
-        t = _fail_cache.get(ck)
-        if t is not None and (now - t) < _FAIL_TTL:
-            return True
+        t = _fail_play.get(ck)
         if t is not None:
-            _fail_cache.pop(ck, None)
+            if (now - t) < _FAIL_TTL_PLAY:
+                return True
+            _fail_play.pop(ck, None)
+        if preview:
+            t = _fail_preview.get(ck)
+            if t is not None:
+                if (now - t) < _FAIL_TTL_PREVIEW:
+                    return True
+                _fail_preview.pop(ck, None)
         return False
 
-def _mark_fail(ck):
+def _mark_fail(ck, preview):
     with _fail_lock:
-        _fail_cache[ck] = time.time()
-        if len(_fail_cache) > 256:                      # bound memory
-            oldest = min(_fail_cache, key=_fail_cache.get)
-            _fail_cache.pop(oldest, None)
+        d = _fail_preview if preview else _fail_play
+        d[ck] = time.time()
+        if len(d) > 256:                                # bound memory per bucket
+            oldest = min(d, key=d.get)
+            d.pop(oldest, None)
 
 def _breaker_open():
     with _breaker_lock:
@@ -260,6 +286,15 @@ def _kill_proc_group(p):
 def _kill_all_children():
     with _active_lock:
         procs = list(_active_procs)
+    for p in procs:
+        _kill_proc_group(p)
+
+def _kill_preview_procs():
+    """Force-kill every in-flight preview yt-dlp.  Called by op_stream the
+    instant a real play arrives, so the preview can't keep blocking the
+    single worker semaphore.  Safe to call when there are no preview procs."""
+    with _preview_lock:
+        procs = list(_preview_procs)
     for p in procs:
         _kill_proc_group(p)
 
@@ -460,6 +495,9 @@ def _run_ytdlp(args, timeout, is_preview=False):
         return ""
     with _active_lock:
         _active_procs.add(p)
+    if is_preview:
+        with _preview_lock:
+            _preview_procs.add(p)
 
     def _emit_stderr(err_bytes):
         if not err_bytes:
@@ -514,6 +552,9 @@ def _run_ytdlp(args, timeout, is_preview=False):
     finally:
         with _active_lock:
             _active_procs.discard(p)
+        if is_preview:
+            with _preview_lock:
+                _preview_procs.discard(p)
 
 
 def _uploaded_ago(info):
@@ -693,10 +734,16 @@ def op_trending(req):
 # (visitor data) then pick android_vr — this is exactly the path the on-device
 # manual rickroll test took, and it returned the full DASH ladder anonymously.
 # We try anonymous first because cookies on android_vr trigger the bot challenge
-# (confirmed in production logs).  The cookied attempt is kept as a late fallback
-# so sign-in still helps for the rare video where it does.
-_CLIENT_CHAIN_DASH  = [([], False), (["android_vr"], False),
-                       ([], True), (["android"], False)]
+# (confirmed in production logs).
+#
+# Attempt order is constrained by the per-resolve total budget (see
+# overall_deadline in _extract_stream): on the A35 only the first two attempts
+# typically fit under the C++ 40s socket budget.  So the muxed safety net is
+# slot #2 — that way even when the DASH default times out we still serve 360p
+# instead of nothing.  android_vr explicit + cookied attempts are kept as
+# late-budget options for fast videos.
+_CLIENT_CHAIN_DASH  = [([], False), (["android"], False),
+                       (["android_vr"], False), ([], True)]
 _CLIENT_CHAIN_MUXED = [(["android"], False), (["android"], True)]
 
 def _client_chain(max_height, preview=False):
@@ -1022,16 +1069,16 @@ def _extract_stream(video_id, max_height, preview=False):
     # auth-aware chain: android-only until the user signs in (cookies.txt), then
     # the full DASH ladder.
     chain = [_client_chain(max_height, preview=True)[0]] if preview else _client_chain(max_height, preview=False)
-    # android (the only reliable no-PO-token client) resolves in ~10-15s; give
-    # real plays a 20s ceiling.  When the DASH ladder is re-enabled (PO token),
-    # bump this back up — web's nsig dance needs ~30s.
-    # Preview budget bumped from 10s → 13s: on the A35, a cold yt-dlp + deno
-    # n-sig solve alone is 8-12s, so 10s was timing out healthy previews and
-    # (pre-fix) poisoning the negative cache for the subsequent real play.
-    # Capped under the C++ side's 14s preview socket budget so the preview
-    # always finishes (or self-kills) before C++ disconnects.  Real plays get
-    # 32s, which fits comfortably under the C++ 40s play budget.
-    run_timeout = 13 if preview else 32
+    # Total resolve budget — MUST sit under the C++ socket budget (preview
+    # 14s, play 40s) with a few seconds of margin for the reap and the network
+    # write-back, otherwise the C++ side disconnects mid-resolve (production
+    # log: client disconnected; killing yt-dlp at 12:03:48 after starting at
+    # 12:02:45 — 63s, way past the 40s play budget).  Per-attempt time is
+    # min(remaining_total, per_attempt_max) so the loop never overruns.
+    total_budget   = 11.0 if preview else 36.0
+    per_attempt_first  = 11.0 if preview else 22.0   # default chain entry
+    per_attempt_rest   =  0.0 if preview else 12.0   # muxed safety net
+    overall_deadline = time.time() + total_budget
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
     # case) we keep trying later clients for a proper DASH result, but stash
@@ -1057,6 +1104,16 @@ def _extract_stream(video_id, max_height, preview=False):
         # resolve before it ever started.  Only subsequent attempts gate on it.
         if attempt > 0 and not _client_is_alive():
             raise RuntimeError("client gone")
+        # Per-attempt timeout: clamp to whatever's left of the total budget so
+        # the chain never overruns the C++ socket.  If we have less than ~4s
+        # left, the next yt-dlp wouldn't even finish PyInstaller extraction —
+        # stop and let the caller fall through to the muxed fallback if any.
+        remaining = overall_deadline - time.time()
+        if remaining < 4.0:
+            log(f"stream extract: budget exhausted ({remaining:.1f}s left) for {video_id}")
+            break
+        per_max = per_attempt_first if attempt == 0 else per_attempt_rest
+        run_timeout = min(remaining, per_max)
         # NB: we used to pass player_skip=webpage to trim one HTTP request, but
         # the watch-page download is what supplies fresh visitor data — without
         # it, android_vr requests look bot-like and YouTube returns the
@@ -1139,7 +1196,7 @@ def op_stream(req):
     # spawning yt-dlp.  This is the hard stop for a runaway client (e.g. a
     # hover-preview loop) that would otherwise re-request the same dead video
     # hundreds of times a second.  (Logged sparsely on purpose.)
-    if _recent_fail(ck):
+    if _recent_fail(ck, preview):
         return {"ok": False, "error": "recently failed"}
 
     # Hover-preview, but a real play is already waiting for the worker?  Don't
@@ -1152,10 +1209,15 @@ def op_stream(req):
     # A real play (preview=False) registers itself as pending so any in-flight
     # preview yt-dlp aborts and frees the single worker for us (see _run_ytdlp),
     # and any preview still queued behind the worker bails at the check above.
+    # We also kill the preview's yt-dlp process group OUTRIGHT here — the 0.5s
+    # poll inside _run_ytdlp was empirically not preempting fast enough (a
+    # preview held the worker for 24s under load while the play queued behind
+    # it on the semaphore).  The direct kill makes preempt instant.
     global _pending_plays
     if not preview:
         with _pending_plays_lock:
             _pending_plays += 1
+        _kill_preview_procs()
     try:
         with _work_sem:
             # Re-check inside the gate; another thread may have just resolved it.
@@ -1167,7 +1229,7 @@ def op_stream(req):
             # marked this vid as failed while we were waiting on the worker.
             # Without this re-check, 7 duplicate clicks at the C++ side all
             # queue behind the semaphore and each spawns its own yt-dlp.
-            if _recent_fail(ck):
+            if _recent_fail(ck, preview):
                 return {"ok": False, "error": "recently failed"}
             # Last-chance preview bail: a play may have arrived while we waited
             # for the worker slot.
@@ -1185,13 +1247,11 @@ def op_stream(req):
                 url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
             except Exception as ex:
                 log(f"op_stream: extract failed for {vid}: {ex}")
-                # Only PLAYS poison the negative cache.  A preview runs under a
-                # tight 13s ceiling and is cancelled when a play arrives, so a
-                # preview "failure" is usually a timeout or preempt — not proof
-                # the video is broken.  Pre-fix, that 10s preview timeout was
-                # locking the subsequent real play out of its own 32s budget.
-                if not preview:
-                    _mark_fail(ck)
+                # Mark fail in the per-kind bucket: preview fails poison only
+                # future PREVIEWS (with a longer TTL — see _FAIL_TTL_PREVIEW —
+                # because the C++ side re-prefetches the same preview every
+                # ~30s on focus and we want one yt-dlp spawn, not 30).
+                _mark_fail(ck, preview)
                 return {"ok": False, "error": str(ex)}
     finally:
         if not preview:
