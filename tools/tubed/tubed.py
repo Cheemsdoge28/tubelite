@@ -764,6 +764,7 @@ def _fetch_piped(video_id, max_height):
     return None
 
 
+def _extract_stream(video_id, max_height, preview=False):
     # FAST PATH (Invidious / Piped): disabled.  As of 2026-06, every public
     # instance we've tracked is either auth-walled (401/403), DNS-gone, or
     # 5xx-down.  Cycling all of them takes ~26 s on the first request — long
