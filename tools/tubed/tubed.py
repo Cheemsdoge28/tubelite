@@ -384,7 +384,7 @@ _SCHED_PREFIX = _sched_prefix()
 # still wired up for the future authenticated-feeds path (search/home).
 def _ytdlp_base_args(use_cookies=True):
     args = [
-        YT_DLP, "--no-config", "--quiet", "--no-warnings", "--no-update",
+        YT_DLP, "--no-config", "--no-update",
         "--encoding", "utf-8", "--no-check-certificate",
         "--no-check-formats", "--cache-dir", CACHE_DIR,
     ]
