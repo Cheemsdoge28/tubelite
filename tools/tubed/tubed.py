@@ -543,18 +543,38 @@ def _parse_stream_info(info):
 # lists; if every one starts failing simultaneously, update them or add a
 # refresh mechanism (api.invidious.io / piped-instances.kavin.rocks).
 _INVIDIOUS_INSTANCES = [
-    "https://invidious.nerdvpn.de",
-    "https://invidious.projectsegfau.lt",
+    "https://inv.tux.pizza",
+    "https://invidious.privacyredirect.com",
+    "https://iv.ggtyler.dev",
+    "https://invidious.protokolla.fi",
+    "https://invidious.incogniweb.net",
     "https://yewtu.be",
     "https://inv.nadeko.net",
-    "https://invidious.flokinet.to",
 ]
 _PIPED_INSTANCES = [
+    "https://pipedapi.tokhmi.xyz",
+    "https://piped-api.privacy.com.de",
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
-    "https://piped-api.lunar.icu",
-    "https://pipedapi.colt.top",
 ]
+
+# Per-session instance health cache.  Any instance that returns a clear
+# failure (auth error, HTTP 4xx/5xx, DNS gone, empty body) is blacklisted
+# for the lifetime of this tubed process.  This means dead instances cost
+# us at most once per session — subsequent stream resolves skip straight to
+# yt-dlp instead of retrying every corpse.
+_instance_failures: dict = {}
+_instance_lock = threading.Lock()
+
+def _instance_ok(instance: str) -> bool:
+    with _instance_lock:
+        return _instance_failures.get(instance, 0) == 0
+
+def _instance_fail(instance: str) -> None:
+    with _instance_lock:
+        if _instance_failures.get(instance, 0) == 0:
+            log(f"blacklisting {instance} for this session")
+        _instance_failures[instance] = _instance_failures.get(instance, 0) + 1
 
 
 def _http_get_json(url, timeout=3, label=""):
@@ -598,9 +618,12 @@ def _fetch_invidious(video_id, max_height):
     for instance in _INVIDIOUS_INSTANCES:
         if not _client_is_alive():
             return None
+        if not _instance_ok(instance):
+            continue
         api = f"{instance}/api/v1/videos/{video_id}"
-        j = _http_get_json(api, timeout=3, label=f"invidious {instance}")
+        j = _http_get_json(api, timeout=2, label=f"invidious {instance}")
         if not j or not isinstance(j, dict):
+            _instance_fail(instance)
             continue
         streams = j.get("formatStreams") or []
         best_url = ""
@@ -622,6 +645,7 @@ def _fetch_invidious(video_id, max_height):
                     best_height = h
         if not best_url:
             log(f"invidious {instance}: no usable stream for {video_id} @ <={max_height}p (streams={len(streams)})")
+            # Don't blacklist — video-not-indexed is instance-independent
             continue
         meta = {
             "description":      j.get("description", ""),
@@ -650,9 +674,12 @@ def _fetch_piped(video_id, max_height):
     for instance in _PIPED_INSTANCES:
         if not _client_is_alive():
             return None
+        if not _instance_ok(instance):
+            continue
         api = f"{instance}/streams/{video_id}"
-        j = _http_get_json(api, timeout=3, label=f"piped {instance}")
+        j = _http_get_json(api, timeout=2, label=f"piped {instance}")
         if not j or not isinstance(j, dict):
+            _instance_fail(instance)
             continue
         streams = j.get("videoStreams") or []
         best_url = ""
@@ -697,21 +724,7 @@ def _fetch_piped(video_id, max_height):
 
 
 def _extract_stream(video_id, max_height, preview=False):
-    # FAST PATH: try public APIs first.  This was the design that "worked
-    # 100%" in the pre-tubed days — yt-dlp was only the rare fallback for
-    # videos the public mirrors couldn't resolve.
-    try:
-        log(f"trying invidious for {video_id} @ <={max_height}p")
-        res = _fetch_invidious(video_id, max_height)
-        if not res:
-            log(f"invidious exhausted for {video_id}, trying piped")
-            res = _fetch_piped(video_id, max_height)
-        if res:
-            return res
-        log(f"all public APIs failed for {video_id}, falling back to yt-dlp")
-    except Exception as ex:
-        log(f"fast-path error for {video_id}: {ex}")
-    # FALLBACK PATH: yt-dlp.
+    # yt-dlp only path (public API fast-path temporarily disabled for debugging).
     url = f"https://www.youtube.com/watch?v={video_id}"
     # Don't restrict to muxed-only (skip=dash,hls) — many recent videos only
     # have DASH streams; that flag caused "Requested format is not available"
