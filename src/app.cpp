@@ -1926,7 +1926,13 @@ void App::updateHoverPreviews() {
     // pegged all four A35 cores and stalled the UI. The dwell gate means simply
     // scrolling past cards resolves nothing; you must linger to warm a preview.
     if (grid && focusedCard->focusedTime_ >= 0.45f) {
-        if (!getCachedStreamUrl(cacheKey).has_value() &&
+        // Skip if this key failed recently (hard backstop against a runaway
+        // re-request loop), is already in flight, or is already resolved.
+        auto failIt = stream_prefetch_fail_until_.find(cacheKey);
+        bool cooling = (failIt != stream_prefetch_fail_until_.end() &&
+                        std::chrono::steady_clock::now() < failIt->second);
+        if (!cooling &&
+            !getCachedStreamUrl(cacheKey).has_value() &&
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
             is_loading_preview_ = true;
@@ -1936,8 +1942,12 @@ void App::updateHoverPreviews() {
                     is_loading_preview_ = false;
                     if (success && !url.empty()) {
                         setCachedStreamUrl(cacheKey, url + "|" + subtitle_url + "|" + audio_url);
+                        stream_prefetch_fail_until_.erase(cacheKey);
                     } else {
                         setCachedStreamUrl(cacheKey, ""); // Cache failure
+                        // Back off 30s before this key may be re-requested.
+                        stream_prefetch_fail_until_[cacheKey] =
+                            std::chrono::steady_clock::now() + std::chrono::seconds(30);
                     }
                     uiDirty_ = true;
                 });

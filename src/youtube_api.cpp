@@ -71,19 +71,24 @@ void spawnTubed() {
     if (pid > 0) return;  // parent
 
     ::setsid();
-    // stdin → /dev/null. stdout/stderr → tubed.log so yt-dlp errors are
-    // recoverable.  `tail -f /dev/shm/tubed.log` to watch resolves live.
+    // stdin → /dev/null.  stdout/stderr → a log on the ROMS partition (227G),
+    // NOT /dev/shm.  Putting it on the 320M tmpfs was catastrophic: a runaway
+    // resolve loop wrote thousands of lines/sec until /dev/shm filled, which
+    // then broke yt-dlp's temp-dir extraction (it also uses /dev/shm) and
+    // amplified the loop.  /roms can't be filled by a log, and yt-dlp keeps its
+    // fast tmpfs scratch space.  `tail -f /roms/tools/tubelite/tubed.log`.
     int devnull = ::open("/dev/null", O_RDONLY);
     if (devnull >= 0) { ::dup2(devnull, 0); ::close(devnull); }
-    int logfd = ::open("/dev/shm/tubed.log",
+    int logfd = ::open("/roms/tools/tubelite/tubed.log",
                        O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd < 0) {
+        // Fall back to /dev/shm only if the roms path isn't writable.
+        logfd = ::open("/dev/shm/tubed.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
     if (logfd >= 0) {
         ::dup2(logfd, 1);
         ::dup2(logfd, 2);
         ::close(logfd);
-    } else {
-        // Worst case: keep tubed's stderr on the parent's so the user can
-        // still see SOMETHING.  Better than silent failure.
     }
     ::execlp("python3", "python3", script.c_str(), static_cast<char*>(nullptr));
     ::execlp("python",  "python",  script.c_str(), static_cast<char*>(nullptr));

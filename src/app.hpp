@@ -136,7 +136,11 @@ private:
     std::unordered_map<std::string, std::string> stream_url_cache_;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> stream_url_cache_times_;
     std::unordered_set<std::string> stream_prefetch_inflight_;
-    
+    // Hard backstop against a runaway preview-prefetch loop: a cacheKey that
+    // just failed is not re-requested until this time passes.  Without it, a
+    // failing video could be hammered hundreds of times/sec.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> stream_prefetch_fail_until_;
+
     int last_playback_seconds_{-1};
     float scrub_hold_time_{0.0f};
     std::string prefetched_next_video_id_;

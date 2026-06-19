@@ -78,11 +78,23 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # ── Logging ─────────────────────────────────────────────────────────────────
 
 _log_lock = threading.Lock()
+_LOG_MAX_BYTES = 4 * 1024 * 1024   # rotate at 4 MB — never fills a disk
 
 def log(*args):
     line = "[tubed %s] %s" % (time.strftime("%H:%M:%S"), " ".join(str(a) for a in args))
     with _log_lock:
         try:
+            # Rotate: if the log exceeds 4 MB, keep only the last 1 MB tail so
+            # recent entries are preserved and the file can never grow unbounded.
+            try:
+                if os.path.getsize(LOG_PATH) > _LOG_MAX_BYTES:
+                    with open(LOG_PATH, "rb") as f:
+                        f.seek(-1024 * 1024, 2)
+                        tail = f.read()
+                    with open(LOG_PATH, "wb") as f:
+                        f.write(tail)
+            except OSError:
+                pass
             with open(LOG_PATH, "a") as f:
                 f.write(line + "\n")
         except Exception:
@@ -171,6 +183,54 @@ def _play_pending():
 # — yt-dlp's standalone binary can fork helpers that a plain kill() would miss.
 _active_procs = set()
 _active_lock = threading.Lock()
+
+# ── Resilience: negative cache + yt-dlp circuit breaker ──────────────────────
+#
+# A misbehaving client (e.g. a hover-preview loop with no backoff) used to be
+# able to storm tubed with the SAME failing video hundreds of times a second.
+# Each miss spawned a fresh yt-dlp; when /dev/shm filled, yt-dlp died instantly
+# and the loop tightened into a runaway that filled the disk and pinned the CPU.
+# Two guards stop that dead:
+#   1. NEGATIVE CACHE — a vid that just failed is remembered for _FAIL_TTL and
+#      its failure returned INSTANTLY (no yt-dlp spawn) until the TTL lapses.
+#   2. CIRCUIT BREAKER — if yt-dlp reports it cannot create its temp dir (disk
+#      full), we stop spawning it entirely for _BREAKER_COOLDOWN so we don't
+#      pour fuel on a full-disk fire; requests fail fast until it clears.
+_FAIL_TTL          = 30.0     # seconds a failed vid is remembered
+_BREAKER_COOLDOWN  = 15.0     # seconds yt-dlp is paused after a temp-dir error
+_fail_cache        = {}       # ck -> fail_time
+_fail_lock         = threading.Lock()
+_breaker_until     = 0.0
+_breaker_lock      = threading.Lock()
+
+def _recent_fail(ck):
+    now = time.time()
+    with _fail_lock:
+        t = _fail_cache.get(ck)
+        if t is not None and (now - t) < _FAIL_TTL:
+            return True
+        if t is not None:
+            _fail_cache.pop(ck, None)
+        return False
+
+def _mark_fail(ck):
+    with _fail_lock:
+        _fail_cache[ck] = time.time()
+        if len(_fail_cache) > 256:                      # bound memory
+            oldest = min(_fail_cache, key=_fail_cache.get)
+            _fail_cache.pop(oldest, None)
+
+def _breaker_open():
+    with _breaker_lock:
+        return time.time() < _breaker_until
+
+def _trip_breaker():
+    global _breaker_until
+    with _breaker_lock:
+        if time.time() >= _breaker_until:               # log once per trip
+            log(f"yt-dlp circuit breaker TRIPPED ({_BREAKER_COOLDOWN}s) — "
+                f"temp dir unavailable (disk full?)")
+        _breaker_until = time.time() + _BREAKER_COOLDOWN
 
 # Per-request liveness hook. The socket Handler stashes a callable here (scoped to
 # the handler thread) that reports whether the requesting client is still
@@ -375,6 +435,11 @@ def _run_ytdlp(args, timeout, is_preview=False):
 
     is_preview: when True, the run aborts the instant a real play is queued
     (see _pending_plays) so hover-prefetch never delays an actual play."""
+    # Circuit breaker: if yt-dlp recently couldn't make its temp dir (disk full),
+    # don't even spawn it — that only burns CPU and writes more error spam to the
+    # very disk that's full.  Fail fast until the cooldown clears.
+    if _breaker_open():
+        return ""
     try:
         # nice/taskset (when present) exec into yt-dlp, so the launched process
         # group still ends as yt-dlp and the group-wide kill below still works.
@@ -397,6 +462,12 @@ def _run_ytdlp(args, timeout, is_preview=False):
             return
         txt = err_bytes.decode("utf-8", "replace").rstrip()
         if not txt:
+            return
+        # Disk-full / temp-dir failure → trip the breaker and DON'T spam the log
+        # (the breaker logs once); logging every line here is what filled the
+        # tmpfs in the first place.
+        if "create temporary directory" in txt or "No space left" in txt:
+            _trip_breaker()
             return
         # Tag each line so users can grep yt-dlp failures out of tubed.log.
         for line in txt.splitlines():
@@ -606,11 +677,17 @@ def op_trending(req):
 # that serves the complete downloadable ladder.  android (muxed 360p) is the
 # safety net; tv/web are last-resort and usually SABR-gated.
 # MUXED chain (previews / <=360p): plain android, fast, no n-sig needed.
-# android_vr = the no-PO-token, no-SABR DASH client (needs a JS runtime for
-# n-sig).  android muxed 360p is the safety net.  tv/web are dropped: they're
-# SABR-gated / bot-walled and only burn ~15s per play before failing.
-_CLIENT_CHAIN_DASH  = [["android_vr"], ["android"]]
-_CLIENT_CHAIN_MUXED = [["android"], ["android_vr"]]
+# Each attempt is (client_list, use_cookies).  android_vr = the no-PO-token,
+# no-SABR DASH client (needs a JS runtime for n-sig); android muxed 360p is the
+# safety net.  tv/web are dropped (SABR-gated / bot-walled, ~15s wasted).
+#
+# Cookies are tried FIRST (the user wants sign-in to count) but android_vr can
+# bot-wall WITH cookies while working ANONYMOUSLY (proven: the bare rickroll
+# `-F` test had no cookies and returned the full ladder).  So each tier falls
+# back to an anonymous retry — cookies used when they help, never a hard block.
+_CLIENT_CHAIN_DASH  = [(["android_vr"], True), (["android_vr"], False),
+                       (["android"], False)]
+_CLIENT_CHAIN_MUXED = [(["android"], True), (["android"], False)]
 
 def _client_chain(max_height, preview=False):
     # DASH only makes sense if we actually have a JS runtime to de-throttle it;
@@ -956,7 +1033,7 @@ def _extract_stream(video_id, max_height, preview=False):
                 and not is_dash and height and height < 480)
         return (parsed, height, is_dash, poor)
 
-    for attempt, clients in enumerate(chain):
+    for attempt, (clients, use_cookies) in enumerate(chain):
         # If the requester already gave up (scrolled away), stop before spawning
         # ANOTHER yt-dlp for a result no one will read.  The first attempt always
         # runs: the liveness peek can race the client's blocking read right after
@@ -964,10 +1041,7 @@ def _extract_stream(video_id, max_height, preview=False):
         # resolve before it ever started.  Only subsequent attempts gate on it.
         if attempt > 0 and not _client_is_alive():
             raise RuntimeError("client gone")
-        # player_skip=webpage trims the extra watch-page fetch.  We do NOT skip
-        # `configs` for the web client: it needs the player config to fetch the
-        # JS for nsig signature deciphering — skipping it can yield throttled or
-        # missing format URLs.  android (muxed, no nsig) keeps the full skip.
+        # player_skip=webpage trims the extra watch-page fetch.
         skip = "webpage"
         ea = f"youtube:player_skip={skip}"
         if clients:
@@ -977,9 +1051,7 @@ def _extract_stream(video_id, max_height, preview=False):
         # speed, not throttled).  Previews are muxed itag-18 (no n-sig) so they
         # skip it and stay fast.
         js_args = [] if preview else _js_runtime_args()
-        # Streams resolve ANONYMOUSLY: cookies trigger the android_vr bot-wall
-        # (see _ytdlp_base_args).  The JS runtime, not cookies, is the unlock.
-        args = _ytdlp_base_args(use_cookies=False) + [
+        args = _ytdlp_base_args(use_cookies=use_cookies) + [
             "--no-playlist", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ] + js_args
@@ -1043,6 +1115,13 @@ def op_stream(req):
         log(f"op_stream: cache hit for {vid}")
         return {"ok": True, **cached}
 
+    # Negative cache: this vid failed very recently — return instantly without
+    # spawning yt-dlp.  This is the hard stop for a runaway client (e.g. a
+    # hover-preview loop) that would otherwise re-request the same dead video
+    # hundreds of times a second.  (Logged sparsely on purpose.)
+    if _recent_fail(ck):
+        return {"ok": False, "error": "recently failed"}
+
     # Hover-preview, but a real play is already waiting for the worker?  Don't
     # even queue — a speculative preview must never delay an actual play.  The
     # app re-requests the preview later if the card is still focused.
@@ -1080,6 +1159,7 @@ def op_stream(req):
                 url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
             except Exception as ex:
                 log(f"op_stream: extract failed for {vid}: {ex}")
+                _mark_fail(ck)        # back off — don't re-storm this vid
                 return {"ok": False, "error": str(ex)}
     finally:
         if not preview:
