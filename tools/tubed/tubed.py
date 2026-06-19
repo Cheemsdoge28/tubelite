@@ -274,6 +274,51 @@ def _client_is_alive():
     except Exception:
         return True
 
+def _cleanup_mei_dirs():
+    """Remove orphaned PyInstaller extraction dirs from /dev/shm.
+
+    Every yt-dlp invocation unpacks its bundle to /dev/shm/_MEIxxxxxx (~70 MB).
+    When we SIGKILL the process group, Python's atexit cleanup never runs and
+    the dir is left behind.  Four kills fills the 320 MB tmpfs and trips the
+    circuit breaker for all subsequent resolves.
+
+    We find orphans by scanning /proc/*/maps: any _MEI dir that no live process
+    has mapped is safe to delete.
+    """
+    import glob
+    in_use: set = set()
+    try:
+        for pid_entry in os.listdir("/proc"):
+            if not pid_entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid_entry}/maps") as fh:
+                    for line in fh:
+                        if "/dev/shm/_MEI" in line:
+                            parts = line.split()
+                            if parts:
+                                path = parts[-1]
+                                idx = path.find("/dev/shm/_MEI")
+                                if idx >= 0:
+                                    after = path[idx + len("/dev/shm/"):]
+                                    in_use.add("/dev/shm/" + after.split("/")[0])
+            except OSError:
+                pass
+    except OSError:
+        pass
+    cleaned = 0
+    for d in glob.glob("/dev/shm/_MEI*"):
+        if not os.path.isdir(d) or d in in_use:
+            continue
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+            cleaned += 1
+        except OSError:
+            pass
+    if cleaned:
+        log(f"cleaned {cleaned} orphaned _MEI dir(s) from /dev/shm")
+
+
 def _kill_proc_group(p):
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -479,6 +524,7 @@ def _run_ytdlp(args, timeout, is_preview=False):
     # very disk that's full.  Fail fast until the cooldown clears.
     if _breaker_open():
         return ""
+    _cleanup_mei_dirs()
     try:
         # nice/taskset (when present) exec into yt-dlp, so the launched process
         # group still ends as yt-dlp and the group-wide kill below still works.
@@ -508,7 +554,8 @@ def _run_ytdlp(args, timeout, is_preview=False):
         # Disk-full / temp-dir failure → trip the breaker and DON'T spam the log
         # (the breaker logs once); logging every line here is what filled the
         # tmpfs in the first place.
-        if "create temporary directory" in txt or "No space left" in txt:
+        if ("create temporary directory" in txt or "No space left" in txt
+                or "Failed to extract" in txt or "decompression resulted in return code" in txt):
             _trip_breaker()
             return
         # Tag each line so users can grep yt-dlp failures out of tubed.log.
@@ -1432,6 +1479,7 @@ def main():
     import atexit
     atexit.register(_kill_all_children)
 
+    _cleanup_mei_dirs()   # clear any stale extracts from a previous run
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
     _rt = _find_js_runtime()
     log(f"js runtime: {_rt[0]} @ {_rt[1]}" if _rt
