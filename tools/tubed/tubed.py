@@ -504,10 +504,12 @@ def op_trending(req):
 
 
 # Client fallback chain — if one player client is broken, try the next.
-# `ios` first and alone: it returns unthrottled progressive URLs plus full
-# videoDetails (view counts) in a single player request and is the fastest path.
-# Only fall back to heavier clients if it yields nothing.
-_CLIENT_CHAIN = [["ios"], ["android"], ["web", "tv"], None]
+# `android` first: YouTube no longer returns progressive avc1 formats to the
+# `ios` client (only HLS manifests), so our height+codec format selector
+# rejects everything ios sends and the call wastes ~10s before falling back.
+# `android` returns clean progressive mp4 with avc1 + view counts in one shot.
+# `web` is the slow last resort that does the signature dance.
+_CLIENT_CHAIN = [["android"], ["web"]]
 
 def _parse_stream_info(info):
     stream_url = info.get("url")
@@ -724,21 +726,27 @@ def _fetch_piped(video_id, max_height):
 
 
 def _extract_stream(video_id, max_height, preview=False):
-    # yt-dlp only path (public API fast-path temporarily disabled for debugging).
+    # FAST PATH: try public APIs first.  ~200ms per instance, and dead
+    # instances get session-blacklisted after one failure (see _instance_fail),
+    # so a fully-broken fast path costs us once per tubed process, not per
+    # video.  This matches the c707db7 design that "worked 100%".
+    try:
+        res = _fetch_invidious(video_id, max_height)
+        if not res:
+            res = _fetch_piped(video_id, max_height)
+        if res:
+            return res
+    except Exception as ex:
+        log(f"fast-path error for {video_id}: {ex}")
+    # FALLBACK PATH: yt-dlp.
     url = f"https://www.youtube.com/watch?v={video_id}"
-    # Don't restrict to muxed-only (skip=dash,hls) — many recent videos only
-    # have DASH streams; that flag caused "Requested format is not available"
-    # for them.  The format string below already does height+codec selection.
     fmt = (f"best[height<={max_height}][vcodec^=avc1]"
            f"/best[height<={max_height}]"
            f"/best")
     # Previews are best-effort eye-candy: only try the single fastest client with
-    # a short timeout, and don't walk the fallback chain. This caps a preview at
-    # one quick yt-dlp run (~seconds) instead of up to ~100s of chained attempts
-    # the user has usually scrolled past anyway. A real "play" (preview=False)
-    # still gets the full reliability chain.
-    chain = [["ios"]] if preview else _CLIENT_CHAIN
-    run_timeout = 12 if preview else 25
+    # a short timeout, and don't walk the fallback chain.
+    chain = [["android"]] if preview else _CLIENT_CHAIN
+    run_timeout = 10 if preview else 18
     for clients in chain:
         # If the requester already gave up (scrolled away), stop before spawning
         # another yt-dlp for a result no one will read.
@@ -751,7 +759,7 @@ def _extract_stream(video_id, max_height, preview=False):
             ea = (f"youtube:player_client={','.join(clients)}"
                   f";player_skip=webpage,configs")
         args = _ytdlp_base_args() + [
-            "--no-playlist", "--socket-timeout", "10",
+            "--no-playlist", "--socket-timeout", "5",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ]
         out = _run_ytdlp(args, timeout=run_timeout)
