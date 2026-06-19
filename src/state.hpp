@@ -27,6 +27,9 @@ struct TubeState {
     bool showDebugOverlay{false};
     bool miniplayerActive{false};
     bool showDescriptionDrawer{false};
+    bool showSignInHelp{false};      // modal: how to sign in via cookies.txt
+    bool authed{false};              // mirror of YouTubeAPI::isAuthed() (cookies present)
+    bool authChecked{false};         // has tubed been queried at least once
     bool backgroundDaemonEnabled{true};
 
     float leftStickX{0.0f};

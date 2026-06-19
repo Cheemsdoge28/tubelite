@@ -17,7 +17,8 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
         state.inputMode != last_input_mode_ ||
         state.currentScreen != last_screen_ ||
         state.maxQualityHeight != last_max_quality_ ||
-        state.backgroundDaemonEnabled != last_background_daemon_enabled_
+        state.backgroundDaemonEnabled != last_background_daemon_enabled_ ||
+        state.authed != last_authed_
     );
 
     if (needsRecreate || stateChanged) {
@@ -33,6 +34,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             last_screen_ = state.currentScreen;
             last_max_quality_ = state.maxQualityHeight;
             last_background_daemon_enabled_ = state.backgroundDaemonEnabled;
+            last_authed_ = state.authed;
 
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);
             SDL_SetRenderTarget(renderer, texture_);
@@ -79,8 +81,11 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     {"Y", green, "SEARCH"},
                     {"X", blue, std::to_string(state.maxQualityHeight) + "P"},
                     {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
-                    {"R3", textColor, "RELOAD"},
-                    {"R1", textColor, "UI"}
+                    {"R1", textColor, "UI"},
+                    // Sign-in state + entry point.  Green ●=signed in (full
+                    // quality), yellow ○=guest (360p).  SEL+X opens the help.
+                    {"SEL+X", state.authed ? green : yellow,
+                              state.authed ? "SIGNED IN" : "GUEST"},
                 };
             }
 

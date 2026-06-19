@@ -55,6 +55,15 @@ public:
         bool isPreview = false,
         const std::string& parent_focus_id = "");
 
+    // ── Auth (cookie-based sign-in) ──────────────────────────────────────────
+    // Stream auth is purely cookie-based: a valid cookies.txt on the device =
+    // signed in (unlocks the DASH quality ladder + lifts the bot-wall).  We
+    // can't block the UI on a tubed round-trip, so the status is fetched on a
+    // background thread and cached in atomics the UI reads cheaply.
+    void refreshAuthStatus();              // async; pings tubed `auth_status`
+    bool isAuthed()    const { return authed_.load(std::memory_order_relaxed); }
+    bool authChecked() const { return auth_checked_.load(std::memory_order_relaxed); }
+
     // ── Telemetry (thread-safe; read from any thread including the UI) ────────
     // In-flight = currently running requests of that kind.
     // total      = ever-issued counter (since process start).
@@ -87,6 +96,10 @@ private:
 
     std::mutex preview_mutex_;
     std::string current_preview_focus_id_;
+
+    std::atomic<bool> authed_{false};
+    std::atomic<bool> auth_checked_{false};
+    std::atomic<bool> auth_inflight_{false};
 
     Telemetry tele_;
 

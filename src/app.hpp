@@ -167,6 +167,7 @@ private:
     int description_scroll_row_{0};
     bool select_held_{false};
     bool select_action_triggered_{false};
+    bool auth_initial_check_done_{false};
 
     int headerTitleW_Home_{0};
     int headerTitleH_Home_{0};

@@ -209,7 +209,20 @@ void App::run() {
         if (dt > 0.1f) dt = 0.1f; // Clamp to prevent spikes after waking up
 
         { PROFILE_SCOPE("main_queue"); processMainThreadQueue(); }
-        
+
+        // Auth status: kick a first check once (tubed spawns lazily for it),
+        // then mirror the cached result into TubeState for the overlays.
+        if (!auth_initial_check_done_) {
+            youtube_api_.refreshAuthStatus();
+            auth_initial_check_done_ = true;
+        }
+        if (state_.authed != youtube_api_.isAuthed() ||
+            state_.authChecked != youtube_api_.authChecked()) {
+            state_.authed      = youtube_api_.isAuthed();
+            state_.authChecked = youtube_api_.authChecked();
+            uiDirty_ = true;
+        }
+
         // Handle Playback HUD timeout and fadeout
         if (state_.currentScreen == TubeState::Screen::Playback) {
             double remaining = duration<float>(playback_ui_timeout_ - start).count();
@@ -1180,6 +1193,26 @@ void App::handleKey(SDL_Keycode key) {
     if (state_.currentScreen == TubeState::Screen::Playback) {
         showPlaybackUi();
     }
+
+    // Sign-in help modal captures keys while open (dev/keyboard parity with the
+    // SEL+X / A / B controller flow). F1 toggles it open.
+    if (state_.showSignInHelp) {
+        if (key == SDLK_RETURN || key == SDLK_a) {
+            youtube_api_.refreshAuthStatus();
+        } else if (key == SDLK_ESCAPE || key == SDLK_b) {
+            state_.showSignInHelp = false;
+            youtube_api_.refreshAuthStatus();
+        }
+        uiDirty_ = true;
+        return;
+    }
+    if (key == SDLK_F1) {
+        state_.showSignInHelp = true;
+        youtube_api_.refreshAuthStatus();
+        uiDirty_ = true;
+        return;
+    }
+
     if (key == SDLK_TAB || key == SDLK_F3 || key == SDLK_LSHIFT) {
         select_held_ = true;
         select_action_triggered_ = false;
@@ -1382,6 +1415,20 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
     if (down && state_.currentScreen == TubeState::Screen::Playback) {
         showPlaybackUi();
     }
+
+    // Sign-in help modal: while open it captures input — A re-checks auth, B
+    // closes.  All other buttons are swallowed so nothing navigates behind it.
+    if (state_.showSignInHelp) {
+        if (down && button == SDL_CONTROLLER_BUTTON_A) {
+            youtube_api_.refreshAuthStatus();   // user just dropped cookies.txt
+        } else if (down && button == SDL_CONTROLLER_BUTTON_B) {
+            state_.showSignInHelp = false;
+            youtube_api_.refreshAuthStatus();   // re-check on close
+        }
+        if (down) { uiDirty_ = true; return; }
+        return;
+    }
+
     if (button == SDL_CONTROLLER_BUTTON_BACK) {
         select_held_ = down;
         if (down) {
@@ -1442,6 +1489,13 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             if (!p.empty() && state_.currentScreen == TubeState::Screen::Playback) {
                 showPlaybackToast("Dumped: " + p);
             }
+            select_action_triggered_ = true;
+            uiDirty_ = true;
+            return;
+        } else if (button == SDL_CONTROLLER_BUTTON_X) {
+            // SELECT+X → open the sign-in help modal (cookies.txt steps).
+            state_.showSignInHelp = true;
+            youtube_api_.refreshAuthStatus();
             select_action_triggered_ = true;
             uiDirty_ = true;
             return;

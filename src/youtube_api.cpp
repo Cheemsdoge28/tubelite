@@ -178,6 +178,29 @@ YouTubeVideo videoFromJson(const json& j) {
 YouTubeAPI::YouTubeAPI() {}
 YouTubeAPI::~YouTubeAPI() {}
 
+// ── Auth status ────────────────────────────────────────────────────────────────
+
+void YouTubeAPI::refreshAuthStatus() {
+    // Coalesce: if a check is already running, skip (the result lands soon).
+    bool expected = false;
+    if (!auth_inflight_.compare_exchange_strong(expected, true)) return;
+
+    std::thread([this]() {
+#ifndef _WIN32
+        json req = {{"op", "auth_status"}};
+        json resp;
+        bool ok = tubedRequest(req, resp, 4000);
+        if (ok && resp.value("ok", false)) {
+            authed_.store(resp.value("authed", false), std::memory_order_relaxed);
+        } else {
+            // tubed unreachable — leave the last known value, just mark checked.
+        }
+#endif
+        auth_checked_.store(true, std::memory_order_relaxed);
+        auth_inflight_.store(false, std::memory_order_relaxed);
+    }).detach();
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 void YouTubeAPI::search(const std::string& query, int page,

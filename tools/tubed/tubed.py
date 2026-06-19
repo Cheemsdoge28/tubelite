@@ -206,7 +206,23 @@ def _kill_all_children():
 # ── yt-dlp integration ───────────────────────────────────────────────────────
 
 def _have_cookies():
-    return os.path.isfile(COOKIES)
+    # A cookies.txt must exist AND be non-trivial.  A 0-byte or header-only
+    # file (the Netscape comment lines without any actual cookie rows) means
+    # the user hasn't really signed in, so treat it as guest.
+    try:
+        if not os.path.isfile(COOKIES):
+            return False
+        with open(COOKIES, "r", errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                # A real cookie row is tab-separated with several fields.
+                if "\t" in s and len(s.split("\t")) >= 6:
+                    return True
+        return False
+    except OSError:
+        return False
 
 
 def _find_ytdlp():
@@ -529,19 +545,25 @@ def op_trending(req):
     return op_search(req)
 
 
-# Client fallback chain — if one player client yields a poor result, try next.
+# Client fallback chain — depends on whether we're authenticated (cookies).
 #
-# Quality matters here: the `android` client, without a PO token, only returns
-# the muxed itag-18 (360p) progressive stream plus a couple of low formats — it
-# does NOT expose the separate high-res DASH video/audio tracks.  So if we ask
-# android first we get a "crushed" 360p muxed result and never try for better.
+# UNAUTHENTICATED (no cookies.txt): YouTube bot-walls the high-quality clients.
+# `tv` and `web` return "Sign in to confirm you're not a bot", so trying them
+# just burns ~10s per video before falling back.  The ONLY client that resolves
+# reliably without sign-in is `android`, but without a PO token it yields just
+# the muxed itag-18 (360p) progressive stream (audio baked in, no DASH).  So
+# unauthenticated we go android-only: reliable, fast, 360p.  This is the
+# "old android mux until the user signs in" path.
 #
-# `tv` (the living-room client) exposes the full adaptive DASH ladder up to
-# 1080p+ WITHOUT a PO token and skips the costly signature dance, so it's both
-# higher-quality AND fast — our preferred first client.  `web` is the heavy but
-# reliable fallback (does signature deciphering).  `android` is the last-resort
-# "always returns at least 360p muxed" safety net.
-_CLIENT_CHAIN = [["tv"], ["web"], ["android"]]
+# AUTHENTICATED (cookies.txt present): the bot-wall lifts and `tv` exposes the
+# full adaptive DASH ladder up to 1080p+ without the signature dance — our
+# preferred first client.  `web` is the heavy reliable fallback; `android` is
+# the last-resort 360p muxed safety net.
+_CLIENT_CHAIN_AUTHED   = [["tv"], ["web"], ["android"]]
+_CLIENT_CHAIN_NOAUTH   = [["android"]]
+
+def _client_chain(authed):
+    return _CLIENT_CHAIN_AUTHED if authed else _CLIENT_CHAIN_NOAUTH
 
 
 def _info_height(info):
@@ -854,8 +876,10 @@ def _extract_stream(video_id, max_height, preview=False):
                f"/best[height<={max_height}][vcodec^=avc1]"
                f"/best[height<={max_height}]/best")
     # Previews are best-effort eye-candy: only try the single fastest client with
-    # a short timeout, and don't walk the fallback chain.
-    chain = [["android"]] if preview else _CLIENT_CHAIN
+    # a short timeout, and don't walk the fallback chain.  Real plays use the
+    # auth-aware chain: android-only until the user signs in (cookies.txt), then
+    # the full DASH ladder.
+    chain = [["android"]] if preview else _client_chain(_have_cookies())
     run_timeout = 10 if preview else 18
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
@@ -942,7 +966,11 @@ def op_stream(req):
 
     log(f"op_stream: vid={vid} h={h} preview={preview}")
 
-    ck = f"stream:{vid}:{h}"
+    # Auth state is part of the cache key: a guest-resolved 360p muxed entry
+    # must NOT be served once the user signs in (they should get the DASH
+    # ladder), and vice-versa.  'a' = authed (cookies), 'g' = guest.
+    authed = _have_cookies()
+    ck = f"stream:{vid}:{h}:{'a' if authed else 'g'}"
     cached = CACHE.get(ck)
     if cached is not None:
         log(f"op_stream: cache hit for {vid}")
@@ -1001,8 +1029,23 @@ def op_ping(req):
     return {"ok": True, "version": 1, "authed": _have_cookies()}
 
 
+def op_auth_status(req):
+    """Report sign-in state so the app can show a Guest/Signed-in indicator and
+    decide whether to offer the sign-in screen.  Auth is purely cookie-based
+    (see the auth notes in _client_chain): a valid cookies.txt = signed in."""
+    authed = _have_cookies()
+    info = {"ok": True, "authed": authed, "cookies_path": COOKIES}
+    if authed:
+        try:
+            info["cookies_mtime"] = int(os.path.getmtime(COOKIES))
+        except OSError:
+            pass
+    return info
+
+
 OPS = {
     "ping": op_ping,
+    "auth_status": op_auth_status,
     "search": op_search,
     "trending": op_trending,
     "stream": op_stream,

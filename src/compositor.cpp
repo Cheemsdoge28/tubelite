@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
+#include <vector>
 static std::string truncateTextToWidth(const std::string& text, int scale, int maxWidth) {
     int w = 0;
     getTextSize(text, scale, &w, nullptr);
@@ -88,6 +90,11 @@ void Compositor::render(App* app, int width, int height) {
         // numbers without leaving the player.  The user-facing "stats" hint
         // already lives in the playback HUD's hint pill row.
         drawDebugOverlay(app, width, height);
+
+        // Sign-in modal can be opened from anywhere (SEL+X), including playback.
+        if (app->state_.showSignInHelp) {
+            drawSignInHelp(app, width, height);
+        }
 
         { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
         return;
@@ -364,7 +371,75 @@ void Compositor::render(App* app, int width, int height) {
         app->uiDirty_ = true;
     }
 
+    // Sign-in help modal (drawn last so it sits above everything)
+    if (app->state_.showSignInHelp) {
+        drawSignInHelp(app, width, height);
+    }
+
     { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
+}
+
+void Compositor::drawSignInHelp(App* app, int width, int height) {
+    PROFILE_SCOPE("signin_help");
+    // Dim the whole screen behind the modal.
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_Rect scrim{0, 0, width, height};
+    fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(190));
+
+    // Centered card.
+    const int cw = std::min(width - 40, 460);
+    const int ch = std::min(height - 40, 300);
+    const int cx = (width - cw) / 2;
+    const int cy = (height - ch) / 2;
+    SDL_Rect card{cx, cy, cw, ch};
+    fillRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::SURFACE);
+    drawRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::ACCENT.a8(220));
+
+    int x = cx + 20;
+    int y = cy + 16;
+
+    drawTextShadow(renderer_, x, y, "SIGN IN", 3, theme::ACCENT); y += 34;
+
+    const bool authed = app->state_.authed;
+    drawText(renderer_, x, y, authed ? "Status: SIGNED IN (full quality)"
+                                     : "Status: GUEST (360p, may be rate-limited)",
+             1, authed ? theme::GREEN : theme::YELLOW);
+    y += 24;
+
+    // Instructions — concise, wrapped manually to fit the card.
+    const char* lines[] = {
+        "YouTube limits guests to 360p and may block",
+        "playback. To unlock full quality, sign in with",
+        "a browser cookie file:",
+        "",
+        "1. On a PC, install a 'Get cookies.txt' browser",
+        "   extension and log in to youtube.com.",
+        "2. Export cookies for youtube.com as cookies.txt.",
+        "3. Copy it to:",
+        "     /roms/tools/tubelite/cookies.txt",
+        "4. Return here and press A to re-check.",
+        "",
+        "Cookies expire periodically; re-export if guest",
+        "mode returns.",
+    };
+    for (const char* ln : lines) {
+        // Highlight the path line in blue; everything else muted.
+        SDL_Color col = (std::strstr(ln, "/roms") != nullptr) ? SDL_Color(theme::BLUE)
+                                                              : SDL_Color(theme::TEXT_2);
+        drawText(renderer_, x, y, ln, 1, col);
+        y += 15;
+    }
+
+    // Footer hint bar.  drawHintButtons centers within [0,width]; pass
+    // 2*cx+cw so the row centers inside the card [cx, cx+cw].
+    std::vector<HintItem> hints = {
+        {"A", theme::GREEN,  "RE-CHECK"},
+        {"B", theme::YELLOW, "CLOSE"},
+    };
+    drawHintButtons(renderer_, hints, cy + ch - 26, 20, 1, 2 * cx + cw,
+                    theme::PANEL.a8(200), theme::CHIP.a8(180), theme::TEXT_ON);
+
+    app->uiDirty_ = true;
 }
 
 void Compositor::drawDebugOverlay(App* app, int width, int /*height*/) {

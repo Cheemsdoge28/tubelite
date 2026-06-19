@@ -166,6 +166,20 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "sub-font", "Atkinson Hyperlegible");
     mpv_set_option_string(mpv_, "sub-ass-override", "force");
 
+    // PERF: disable libass's system font provider (fontconfig).  Atkinson is a
+    // Latin-only font; the instant a subtitle contains a glyph it lacks (a
+    // non-Latin char, an auto-caption artifact, a smart quote, emoji) libass
+    // asks fontconfig to find a fallback font that HAS the glyph — which scans
+    // font files on the SD card, per missing glyph.  On RK3326 with a cold
+    // fontconfig cache that scan is the source of the subtitle lag, and the
+    // tofu box (□) is the visible symptom of the same missing-glyph event.
+    // "none" makes libass use ONLY our bundled fonts dir + any embedded fonts,
+    // so Latin subtitles still render via Atkinson with zero scanning; non-Latin
+    // shows boxes but no longer stalls the device.  (If we ever want real
+    // multilingual coverage, bundle a glyph-complete font like GO Noto Universal
+    // into res/fonts and set it as sub-font instead — but it's ~megabytes.)
+    mpv_set_option_string(mpv_, "sub-font-provider", "none");
+
 
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
