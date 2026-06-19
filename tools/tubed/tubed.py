@@ -338,13 +338,32 @@ def _kill_all_children():
         _kill_proc_group(p)
 
 def _kill_preview_procs():
-    """Force-kill every in-flight preview yt-dlp.  Called by op_stream the
-    instant a real play arrives, so the preview can't keep blocking the
-    single worker semaphore.  Safe to call when there are no preview procs."""
+    """Force-kill every in-flight preview yt-dlp and wait for them to be
+    fully reaped before returning.  Called by op_stream the instant a real
+    play arrives.
+
+    The wait is the important part: yt-dlp's PyInstaller extraction holds
+    ~70 MB of anon pages.  If we return before the kernel has reaped the
+    zombie and reclaimed those pages, the next yt-dlp (the play's) starts
+    its own ~70 MB extraction with the dying preview's RAM still booked —
+    on a 640 MB device that flips the OOM killer immediately."""
     with _preview_lock:
         procs = list(_preview_procs)
+    if not procs:
+        return
     for p in procs:
         _kill_proc_group(p)
+    # Wait for each killed process group to actually exit so the kernel
+    # releases their pages before we let the play spawn its yt-dlp.
+    deadline = time.time() + 2.0
+    for p in procs:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            p.wait(timeout=remaining)
+        except Exception:
+            pass
 
 # ── yt-dlp integration ───────────────────────────────────────────────────────
 
@@ -594,12 +613,16 @@ def _run_ytdlp(args, timeout, is_preview=False):
                 _emit_stderr(err)
                 if p.returncode not in (0, None):
                     if p.returncode == -9:
-                        # SIGKILL from the kernel OOM killer.  Log clearly and
-                        # trip the breaker — spawning another yt-dlp immediately
-                        # would likely OOM again; a short pause lets the system
-                        # reclaim pages from the just-killed process.
-                        log("yt-dlp OOM-killed (SIGKILL -9); tripping breaker to let memory recover")
-                        _trip_breaker()
+                        # SIGKILL from the kernel OOM killer.  DON'T trip the
+                        # breaker: that would slam the door on every subsequent
+                        # request for ~20 s with "circuit breaker open",
+                        # giving the user the "stream resolving → back to
+                        # browse" flicker for every video.  Instead, sleep
+                        # briefly so kernel reclaim catches up before the
+                        # caller's next attempt, and let that next attempt
+                        # actually run — most second tries succeed.
+                        log("yt-dlp OOM-killed (SIGKILL -9); pausing 1.5s for memory reclaim")
+                        time.sleep(1.5)
                     else:
                         log(f"yt-dlp exited {p.returncode} for args={args[:4]}...")
                 return out.decode("utf-8", "replace") if out else ""
@@ -1160,19 +1183,32 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
     # This mirrors what the user's working manual yt-dlp test does: no
     # --extractor-args, no forced client.  yt-dlp handles client selection,
     # SABR gating, and format negotiation internally.
-    # JS runtime is passed for plays (DASH n-sig); skipped for previews
-    # (muxed itag-18 has no n-sig throttle).
-    remaining = overall_deadline - time.time()
-    if remaining < 4.0:
-        raise RuntimeError("deadline exceeded")
-    # No JS runtime: yt-dlp picks android_vr by default; its URLs aren't
-    # n-sig-throttled.  ~5-10s typical, 20s ceiling for slow networks.
-    run_timeout = min(remaining - 2.0, 9.0 if preview else 20.0)
-    if run_timeout < 4.0:
-        raise RuntimeError("deadline exceeded")
-
-    info = _call([], run_timeout, is_preview=preview)
-    result = _result(info) if info else None
+    #
+    # We retry once on a fully-empty result (plays only).  Rationale: when a
+    # play preempts an in-flight preview, the first yt-dlp spawn often gets
+    # OOM-killed during PyInstaller decompression — the preview's pages
+    # haven't been fully reclaimed yet.  The 1.5s sleep in the OOM path
+    # plus this retry usually clears that window and the second try
+    # succeeds.  Previews don't retry: they're best-effort and we'd rather
+    # free the worker for the next preview/play than burn budget here.
+    tries = 1 if preview else 2
+    result = None
+    info   = None
+    for i in range(tries):
+        remaining = overall_deadline - time.time()
+        if remaining < 4.0:
+            break
+        # No JS runtime overhead: yt-dlp picks android_vr by default; those
+        # URLs aren't n-sig-throttled.  ~5-10s typical, 20s ceiling.
+        run_timeout = min(remaining - 2.0, 9.0 if preview else 20.0)
+        if run_timeout < 4.0:
+            break
+        info = _call([], run_timeout, is_preview=preview)
+        result = _result(info) if info else None
+        if result:
+            break
+        if i < tries - 1:
+            log(f"primary empty for {video_id}; retrying once")
     if result:
         height = _info_height(info)
         log(f"resolved {video_id}: {height or '?'}p dash={'yes' if result[1] else 'no'}")
