@@ -210,7 +210,7 @@ _FAIL_TTL_PREVIEW  = 120.0    # preview fail → long backoff; the C++ side pref
                               # the same preview every ~30s on focus, and without
                               # a longer fail TTL each retry spawns a fresh yt-dlp
                               # that times out, looping for many minutes.
-_BREAKER_COOLDOWN  = 15.0     # seconds yt-dlp is paused after a temp-dir error
+_BREAKER_COOLDOWN  = 20.0     # seconds yt-dlp is paused after OOM kill or temp-dir error
 _fail_play         = {}       # ck -> fail_time  (set by play failures)
 _fail_preview      = {}       # ck -> fail_time  (set by preview failures)
 _fail_lock         = threading.Lock()
@@ -398,22 +398,18 @@ def _find_ytdlp():
 # resolution path — no per-UI-action process storms.
 YT_DLP = _find_ytdlp()
 
-# yt-dlp is the only real CPU hog in the sidecar (Python start-up + extraction +
-# signature JS). We can't make the extraction itself cheaper, but we can stop it
-# from starving the foreground app/audio: each child runs at low priority and is
-# pinned to a single core, so on the quad-A35 it can never monopolise the SoC —
-# the other three cores stay free for the UI and the background audio daemon even
-# when previews are resolving back-to-back. Falls back to a plain launch if the
-# `nice`/`taskset` tools aren't installed.
+# Run yt-dlp at mildly reduced priority so it yields CPU to the foreground app,
+# but not so low that the OOM killer preferentially targets it.
+# taskset is intentionally NOT used: pinning yt-dlp + its deno child to a single
+# core makes the Python/deno execution slower, which extends the peak memory
+# window and increases the chance of an OOM kill on the RAM-constrained A35.
+# nice -n 5 still keeps the UI responsive (foreground tasks get priority) without
+# the extended peak-memory duration that -n 15 caused.
 def _sched_prefix():
     prefix = []
     nice_bin = shutil.which("nice")
     if nice_bin:
-        prefix += [nice_bin, "-n", "15"]
-    taskset_bin = shutil.which("taskset")
-    ncpu = os.cpu_count() or 1
-    if taskset_bin and ncpu > 1:
-        prefix += [taskset_bin, "-c", str(ncpu - 1)]  # pin to the last core
+        prefix += [nice_bin, "-n", "5"]
     return prefix
 
 _SCHED_PREFIX = _sched_prefix()
@@ -582,7 +578,15 @@ def _run_ytdlp(args, timeout, is_preview=False):
                 out, err = p.communicate(timeout=0.5)
                 _emit_stderr(err)
                 if p.returncode not in (0, None):
-                    log(f"yt-dlp exited {p.returncode} for args={args[:4]}...")
+                    if p.returncode == -9:
+                        # SIGKILL from the kernel OOM killer.  Log clearly and
+                        # trip the breaker — spawning another yt-dlp immediately
+                        # would likely OOM again; a short pause lets the system
+                        # reclaim pages from the just-killed process.
+                        log("yt-dlp OOM-killed (SIGKILL -9); tripping breaker to let memory recover")
+                        _trip_breaker()
+                    else:
+                        log(f"yt-dlp exited {p.returncode} for args={args[:4]}...")
                 return out.decode("utf-8", "replace") if out else ""
             except subprocess.TimeoutExpired:
                 pass
@@ -777,20 +781,13 @@ def op_trending(req):
 # bot-wall WITH cookies while working ANONYMOUSLY (proven: the bare rickroll
 # `-F` test had no cookies and returned the full ladder).  So each tier falls
 # back to an anonymous retry — cookies used when they help, never a hard block.
-# First attempt = no client constraint: yt-dlp's defaults fetch the watch page
-# (visitor data) then pick android_vr — this is exactly the path the on-device
-# manual rickroll test took, and it returned the full DASH ladder anonymously.
-# We try anonymous first because cookies on android_vr trigger the bot challenge
-# (confirmed in production logs).
-#
-# Attempt order is constrained by the per-resolve total budget (see
-# overall_deadline in _extract_stream): on the A35 only the first two attempts
-# typically fit under the C++ 40s socket budget.  So the muxed safety net is
-# slot #2 — that way even when the DASH default times out we still serve 360p
-# instead of nothing.  android_vr explicit + cookied attempts are kept as
-# late-budget options for fast videos.
-_CLIENT_CHAIN_DASH  = [([], False), (["android"], False),
-                       (["android_vr"], False), ([], True)]
+# android muxed is attempt 0: fast (~8-12s), no deno/n-sig needed, almost
+# never bot-walls.  If max_height > 480 it's flagged "poor" so fallback_muxed
+# is saved and the loop continues to DASH — but if DASH times out we fall back
+# to the saved 360p and the video plays rather than failing entirely.
+# Default chain (webpage + android_vr + deno n-sig) is attempt 1 for DASH
+# quality on the videos where it resolves in time.
+_CLIENT_CHAIN_DASH  = [(["android"], False), ([], False), (["android_vr"], False)]
 _CLIENT_CHAIN_MUXED = [(["android"], False), (["android"], True)]
 
 def _client_chain(max_height, preview=False):
@@ -1069,7 +1066,7 @@ def _fetch_piped(video_id, max_height):
     return None
 
 
-def _extract_stream(video_id, max_height, preview=False):
+def _extract_stream(video_id, max_height, preview=False, deadline=None):
     # FAST PATH (Invidious / Piped): disabled.  As of 2026-06, every public
     # instance we've tracked is either auth-walled (401/403), DNS-gone, or
     # 5xx-down.  Cycling all of them takes ~26 s on the first request — long
@@ -1116,16 +1113,15 @@ def _extract_stream(video_id, max_height, preview=False):
     # auth-aware chain: android-only until the user signs in (cookies.txt), then
     # the full DASH ladder.
     chain = [_client_chain(max_height, preview=True)[0]] if preview else _client_chain(max_height, preview=False)
-    # Total resolve budget — MUST sit under the C++ socket budget (preview
-    # 14s, play 40s) with a few seconds of margin for the reap and the network
-    # write-back, otherwise the C++ side disconnects mid-resolve (production
-    # log: client disconnected; killing yt-dlp at 12:03:48 after starting at
-    # 12:02:45 — 63s, way past the 40s play budget).  Per-attempt time is
-    # min(remaining_total, per_attempt_max) so the loop never overruns.
-    total_budget   = 11.0 if preview else 36.0
-    per_attempt_first  = 11.0 if preview else 22.0   # default chain entry
-    per_attempt_rest   =  0.0 if preview else 12.0   # muxed safety net
-    overall_deadline = time.time() + total_budget
+    # Deadline passed from op_stream so semaphore wait is included in the
+    # budget.  Fall back to a local computation only if called without one
+    # (shouldn't happen in normal operation).
+    overall_deadline = deadline if deadline is not None else time.time() + (11.0 if preview else 37.0)
+    # Per-attempt ceiling: android muxed resolves in ~8-12s; DASH with deno
+    # n-sig can take up to ~25s.  The min(remaining, ceiling) clamp ensures
+    # the chain never overruns the C++ socket budget regardless of how long
+    # the semaphore wait was.
+    per_attempt_ceiling = {0: 14.0, "rest": 22.0} if not preview else {0: 10.0, "rest": 0.0}
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
     # case) we keep trying later clients for a proper DASH result, but stash
@@ -1159,8 +1155,11 @@ def _extract_stream(video_id, max_height, preview=False):
         if remaining < 4.0:
             log(f"stream extract: budget exhausted ({remaining:.1f}s left) for {video_id}")
             break
-        per_max = per_attempt_first if attempt == 0 else per_attempt_rest
-        run_timeout = min(remaining, per_max)
+        ceiling = per_attempt_ceiling.get(attempt, per_attempt_ceiling["rest"])
+        run_timeout = min(remaining - 2.0, ceiling)   # -2s margin for reap + write
+        if run_timeout < 4.0:
+            log(f"stream extract: budget exhausted ({remaining:.1f}s left) for {video_id}")
+            break
         # NB: we used to pass player_skip=webpage to trim one HTTP request, but
         # the watch-page download is what supplies fresh visitor data — without
         # it, android_vr requests look bot-like and YouTube returns the
@@ -1228,6 +1227,11 @@ def op_stream(req):
         return {"ok": False, "error": "missing id"}
 
     log(f"op_stream: vid={vid} h={h} preview={preview}")
+    # Anchor the resolve deadline to NOW — before any semaphore wait — so that
+    # semaphore wait + yt-dlp time together stay inside the C++ socket budget
+    # (preview 14s, play 40s).  _extract_stream receives this deadline so it
+    # can't accidentally run over the budget even after a long semaphore wait.
+    req_deadline = time.time() + (11.0 if preview else 37.0)
 
     # Auth state is part of the cache key: a guest-resolved 360p muxed entry
     # must NOT be served once the user signs in (they should get the DASH
@@ -1291,7 +1295,8 @@ def op_stream(req):
             # yt-dlp spawn, so dropping the redundant pre-check is safe and fixes
             # the "resolve instantly fails" regression.
             try:
-                url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
+                url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview,
+                                                              deadline=req_deadline)
             except Exception as ex:
                 log(f"op_stream: extract failed for {vid}: {ex}")
                 # Mark fail in the per-kind bucket: preview fails poison only
