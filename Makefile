@@ -50,10 +50,16 @@ else ifeq ($(PLATFORM),arm64)
     # Tune precisely for the A35; +crc enables the CRC32 instructions it has.
     # LTO is on for this release path (whole-program optimization across all TUs).
     CXX ?= aarch64-linux-gnu-g++
+    # Two valid layouts:
+    #   1. Debian multiarch (cross-libs installed as :arm64 via dpkg --add-architecture)
+    #      Headers: /usr/include/   Libs: /usr/lib/aarch64-linux-gnu/   pkgconfig there.
+    #   2. Legacy cross-toolchain staging at /usr/aarch64-linux-gnu/
+    # We search both so the same Makefile works in either env.
     SDL2DIR ?= /usr/aarch64-linux-gnu
-    PKG_CONFIG_PATH := /usr/aarch64-linux-gnu/lib/pkgconfig
-    SDL_CFLAGS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags sdl2 SDL2_ttf harfbuzz freetype2 libdrm 2>/dev/null || echo "-I$(SDL2DIR)/include/SDL2 -I$(SDL2DIR)/include/freetype2 -I$(SDL2DIR)/include/harfbuzz -I$(SDL2DIR)/include/libdrm")
-    SDL_LIBS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs sdl2 SDL2_ttf harfbuzz freetype2 libdrm 2>/dev/null || echo "-L$(SDL2DIR)/lib -lSDL2 -lSDL2_ttf -lharfbuzz -lfreetype -ldrm") -lrt -lGLESv2
+    PKG_CONFIG_PATH := /usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig
+    PKG_CONFIG_LIBDIR := /usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig
+    SDL_CFLAGS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) PKG_CONFIG_LIBDIR=$(PKG_CONFIG_LIBDIR) pkg-config --cflags sdl2 SDL2_ttf harfbuzz freetype2 libdrm 2>/dev/null || echo "-I$(SDL2DIR)/include/SDL2 -I$(SDL2DIR)/include/freetype2 -I$(SDL2DIR)/include/harfbuzz -I$(SDL2DIR)/include/libdrm")
+    SDL_LIBS ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) PKG_CONFIG_LIBDIR=$(PKG_CONFIG_LIBDIR) pkg-config --libs sdl2 SDL2_ttf harfbuzz freetype2 libdrm 2>/dev/null || echo "-L$(SDL2DIR)/lib -lSDL2 -lSDL2_ttf -lharfbuzz -lfreetype -ldrm") -lrt -lGLESv2
     CXXFLAGS += -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35 -flto -fomit-frame-pointer
     LDFLAGS  += -flto
     TARGET_SUFFIX := .arm64

@@ -809,10 +809,13 @@ def _fetch_piped(video_id, max_height):
     # a short timeout, and don't walk the fallback chain.
     chain = [["android"]] if preview else _CLIENT_CHAIN
     run_timeout = 10 if preview else 18
-    for clients in chain:
+    for attempt, clients in enumerate(chain):
         # If the requester already gave up (scrolled away), stop before spawning
-        # another yt-dlp for a result no one will read.
-        if not _client_is_alive():
+        # ANOTHER yt-dlp for a result no one will read.  The first attempt always
+        # runs: the liveness peek can race the client's blocking read right after
+        # the request is sent and spuriously report "gone", which would kill the
+        # resolve before it ever started.  Only subsequent attempts gate on it.
+        if attempt > 0 and not _client_is_alive():
             raise RuntimeError("client gone")
         # player_skip=webpage,configs avoids the extra watch-page + config HTTP
         # round-trips the default path makes — a real chunk of first-play latency.
@@ -848,26 +851,36 @@ def op_stream(req):
     if not vid:
         return {"ok": False, "error": "missing id"}
 
+    log(f"op_stream: vid={vid} h={h} preview={preview}")
+
     ck = f"stream:{vid}:{h}"
     cached = CACHE.get(ck)
     if cached is not None:
+        log(f"op_stream: cache hit for {vid}")
         return {"ok": True, **cached}
 
     with _work_sem:
         # Re-check inside the gate; another thread may have just resolved it.
         cached = CACHE.get(ck)
         if cached is not None:
+            log(f"op_stream: cache hit (post-gate) for {vid}")
             return {"ok": True, **cached}
-        # The client may have moved on while we waited for the worker slot.
-        if not _client_is_alive():
-            return {"ok": False, "error": "client gone"}
+        # NOTE: we used to bail here with a pre-extract `_client_is_alive()`
+        # check, but that peek can spuriously report the client gone the
+        # instant after the request line is consumed (before the client's
+        # blocking read settles), which killed EVERY resolve with an empty
+        # log.  `_extract_stream` already re-checks liveness before each
+        # yt-dlp spawn, so dropping the redundant pre-check is safe and fixes
+        # the "resolve instantly fails" regression.
         try:
             url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
         except Exception as ex:
+            log(f"op_stream: extract failed for {vid}: {ex}")
             return {"ok": False, "error": str(ex)}
 
     payload = {"url": url, "audio_url": audio_url, "subtitle_url": sub, "meta": meta}
     CACHE.set(ck, payload, TTL_STREAM)
+    log(f"op_stream: resolved {vid} (audio={'yes' if audio_url else 'no'})")
     return {"ok": True, **payload}
 
 

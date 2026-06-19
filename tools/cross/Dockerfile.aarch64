@@ -1,0 +1,40 @@
+# Cross-build environment for TubeLite targeting ArkOS R36S (aarch64).
+# Debian Bookworm matches the device's glibc 2.36 + OpenSSL 3 layout, so the
+# binary we produce here will link cleanly against the ArkOS rootfs.
+#
+# Build the image once:
+#   docker build -f tools/cross/Dockerfile.aarch64 -t tubelite-cross .
+#
+# Then build the project on every change (fast — uses the host CPU):
+#   docker run --rm -v "$PWD":/src tubelite-cross make arm64
+#
+# Output: build/tubelite.arm64  →  scp to the device.
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Enable arm64 multiarch so we can apt-install the device's runtime libs.
+RUN dpkg --add-architecture arm64 \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+        make \
+        pkg-config \
+        ca-certificates \
+        g++-aarch64-linux-gnu \
+        libsdl2-dev:arm64 \
+        libsdl2-ttf-dev:arm64 \
+        libmpv-dev:arm64 \
+        libfreetype-dev:arm64 \
+        libharfbuzz-dev:arm64 \
+        libdrm-dev:arm64 \
+        libgles2-mesa-dev:arm64 \
+ && rm -rf /var/lib/apt/lists/*
+
+# pkg-config has to look at the arm64 .pc files, not the host's (there are none
+# anyway, but explicit is better than implicit).
+ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig
+ENV PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
+
+WORKDIR /src
+CMD ["make", "arm64"]
