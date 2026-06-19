@@ -197,14 +197,15 @@ def _have_cookies():
 
 
 def _find_ytdlp():
-    """Pick the first yt-dlp on disk that actually RUNS.
+    """Return the first yt-dlp executable found on disk.
 
-    Just checking is_file + executable isn't enough: the standalone PyInstaller
-    yt-dlp at /usr/local/bin/yt-dlp ships a bundled Python whose _ssl module
-    can link against libssl.so.3 — which ArkOS / RG351MP doesn't have, so the
-    binary dies at startup with an ImportError before main() runs.  When that
-    happens we want to silently fall through to the next candidate (often a
-    pip-installed shebang script that uses the system Python's OpenSSL 1.1).
+    We no longer probe with --help/--version at startup: the PyInstaller
+    one-file binary always extracts its entire bundle to /tmp/_MEI* before
+    the bootloader even parses argv, so --version still takes 15-20 s on
+    Cortex-A35 + SD card — long enough to timeout and reject a working binary.
+    Runtime stderr capture (already in place) is sufficient to surface any
+    import errors when yt-dlp is actually used. _ytdlp_env() injects libssl3
+    as belt-and-suspenders for the real invocations.
     """
     candidates = [
         "/usr/local/bin/yt-dlp",
@@ -216,38 +217,10 @@ def _find_ytdlp():
         candidates.append(extra)
 
     for p in candidates:
-        if not (p and os.path.isfile(p) and os.access(p, os.X_OK)):
-            continue
-        # Probe with --version: it's intercepted by the PyInstaller bootloader
-        # before Python starts, so it's near-instant (<0.5s) even on Cortex-A35
-        # where a full Python init takes 15-20s.  We accept the small risk of
-        # trusting a binary that might have a broken _ssl (libssl.so.3 missing)
-        # — if that happens, runtime stderr will show the ImportError, and
-        # Invidious/Piped handle the common case without yt-dlp anyway.
-        # _ytdlp_env() injects LD_LIBRARY_PATH as a belt-and-suspenders guard
-        # for the real invocations.
-        try:
-            probe_env = os.environ.copy()
-            extra_ssl = [d for d in ("/usr/local/lib", "/usr/local/lib64",
-                                     "/roms/tools/tubelite/lib")
-                         if os.path.isfile(os.path.join(d, "libssl.so.3"))]
-            if extra_ssl:
-                cur = probe_env.get("LD_LIBRARY_PATH", "")
-                probe_env["LD_LIBRARY_PATH"] = ":".join(extra_ssl + ([cur] if cur else []))
-            r = subprocess.run([p, "--version"],
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.PIPE,
-                               timeout=3,
-                               env=probe_env)
-            if r.returncode == 0:
-                log(f"yt-dlp resolved to {p}")
-                return p
-            err = r.stderr.decode("utf-8", "replace").strip().splitlines()
-            tail = err[-1] if err else "no stderr"
-            log(f"yt-dlp at {p} unusable (exit {r.returncode}): {tail}")
-        except Exception as ex:
-            log(f"yt-dlp at {p} unusable: {ex}")
-    log("WARNING: no working yt-dlp found; falling back to 'yt-dlp' on PATH")
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            log(f"yt-dlp resolved to {p}")
+            return p
+    log("WARNING: no yt-dlp found on disk; will try 'yt-dlp' on PATH")
     return "yt-dlp"
 
 # The device ships yt-dlp as a standalone binary (not an importable module), so
@@ -584,8 +557,14 @@ _PIPED_INSTANCES = [
 ]
 
 
-def _http_get_json(url, timeout=3):
-    """Minimal urllib GET that returns a parsed JSON dict or None."""
+def _http_get_json(url, timeout=3, label=""):
+    """Minimal urllib GET that returns a parsed JSON dict or None.
+
+    label: optional prefix for error log lines (e.g. "invidious yewtu.be").
+    """
+    def _err(msg):
+        if label:
+            log(f"{label}: {msg}")
     try:
         req = urllib.request.Request(
             url,
@@ -593,11 +572,24 @@ def _http_get_json(url, timeout=3):
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.status != 200:
+                _err(f"HTTP {r.status}")
                 return None
             body = r.read(2 * 1024 * 1024)  # 2 MB cap
             return json.loads(body.decode("utf-8", "replace"))
-    except (urllib.error.URLError, urllib.error.HTTPError,
-            socket.timeout, ConnectionError, ValueError, OSError):
+    except urllib.error.HTTPError as e:
+        _err(f"HTTP {e.code}")
+        return None
+    except socket.timeout:
+        _err("timeout")
+        return None
+    except urllib.error.URLError as e:
+        _err(f"URLError: {e.reason}")
+        return None
+    except (ConnectionError, OSError) as e:
+        _err(f"connection error: {e}")
+        return None
+    except (ValueError, Exception) as e:
+        _err(f"parse error: {e}")
         return None
 
 
@@ -607,9 +599,8 @@ def _fetch_invidious(video_id, max_height):
         if not _client_is_alive():
             return None
         api = f"{instance}/api/v1/videos/{video_id}"
-        j = _http_get_json(api, timeout=3)
+        j = _http_get_json(api, timeout=3, label=f"invidious {instance}")
         if not j or not isinstance(j, dict):
-            log(f"invidious {instance}: no response for {video_id}")
             continue
         streams = j.get("formatStreams") or []
         best_url = ""
@@ -660,9 +651,8 @@ def _fetch_piped(video_id, max_height):
         if not _client_is_alive():
             return None
         api = f"{instance}/streams/{video_id}"
-        j = _http_get_json(api, timeout=3)
+        j = _http_get_json(api, timeout=3, label=f"piped {instance}")
         if not j or not isinstance(j, dict):
-            log(f"piped {instance}: no response for {video_id}")
             continue
         streams = j.get("videoStreams") or []
         best_url = ""
