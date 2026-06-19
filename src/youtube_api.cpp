@@ -298,10 +298,10 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
         // instead of resolving a stream the user already scrolled past.
-        // Budget covers tubed's android play resolve (~10-15s, 20s ceiling)
-        // plus slack.  (If the DASH ladder / web client is ever re-enabled via
-        // a PO-token provider, bump this back to ~38s for web's nsig dance.)
-        bool ok = tubedRequest(req, resp, isPreview ? 14000 : 28000);
+        // Budget must exceed tubed's play run_timeout (32s) so the C++ side
+        // never disconnects a DASH resolve mid-flight: android_vr + the deno/node
+        // n-sig solve runs ~15-25s on the A35.  Previews are fast muxed.
+        bool ok = tubedRequest(req, resp, isPreview ? 14000 : 40000);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 

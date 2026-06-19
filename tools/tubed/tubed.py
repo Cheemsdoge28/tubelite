@@ -324,6 +324,43 @@ def _ytdlp_env():
     return env
 
 
+def _js_runtime_args():
+    """yt-dlp (2026+) solves YouTube's n-signature challenge with an EXTERNAL JS
+    runtime via its EJS system.  Without one the DASH formats come back throttled
+    or URL-less ("Only images are available").  A JS runtime is THE unlock for the
+    full DASH ladder via the android_vr client — confirmed on-device: `yt-dlp
+    --js-runtimes node -F <rickroll>` returned 144p..2160p adaptive formats with
+    no PO token needed.
+
+    We vendor a runtime under BASE_DIR/vendor and pass it EXPLICITLY (name:path)
+    rather than relying on PATH surviving the launcher→app→tubed fork chain."""
+    rt = _find_js_runtime()
+    return ["--js-runtimes", f"{rt[0]}:{rt[1]}"] if rt else []
+
+
+def _find_js_runtime():
+    """Return (name, path) of a usable JS runtime, or None.  Prefers a vendored
+    runtime under BASE_DIR/vendor, then anything on PATH.  deno is preferred
+    (yt-dlp's default + sandboxed); node works too."""
+    vendor = os.path.join(BASE_DIR, "vendor")
+    candidates = [
+        ("deno", os.path.join(vendor, "deno")),
+        ("node", os.path.join(vendor, "node", "bin", "node")),
+    ]
+    for name, path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return (name, path)
+    for name in ("deno", "node"):
+        p = shutil.which(name)
+        if p:
+            return (name, p)
+    return None
+
+
+def _have_js_runtime():
+    return _find_js_runtime() is not None
+
+
 def _run_ytdlp(args, timeout, is_preview=False):
     """Run yt-dlp and return stdout text (empty on failure). The child runs in
     its own process group and is force-killed (group-wide) on timeout/error, so
@@ -549,35 +586,27 @@ def op_trending(req):
     return op_search(req)
 
 
-# Client fallback chain — depends on whether we're authenticated (cookies).
+# Client fallback chain.
 #
-# UNAUTHENTICATED (no cookies.txt): YouTube bot-walls the high-quality clients.
-# `tv` and `web` return "Sign in to confirm you're not a bot", so trying them
-# just burns ~10s per video before falling back.  The ONLY client that resolves
-# reliably without sign-in is `android`, but without a PO token it yields just
-# the muxed itag-18 (360p) progressive stream (audio baked in, no DASH).  So
-# unauthenticated we go android-only: reliable, fast, 360p.  This is the
-# "old android mux until the user signs in" path.
+# THE KEY FINDING (2026, confirmed on-device): YouTube's high-quality DASH ladder
+# is unlocked NOT by cookies or PO tokens, but by giving yt-dlp an external JS
+# RUNTIME (deno/node) to solve the n-signature challenge.  With a runtime, the
+# `android_vr` client returns the full adaptive ladder (144p..2160p) over plain
+# https — no SABR, no PO token.  Without a runtime, yt-dlp can only offer the
+# muxed itag-18 360p stream (or "Only images available").
 #
-# The hard reality (2024-2026): YouTube now requires a **PO token** (proof-of-
-# origin) for the high-quality DASH formats from the `web`/`tv` clients.  COOKIES
-# ALONE ARE NOT ENOUGH — with just cookies, web/tv return "Requested format is
-# not available" or even still "Sign in to confirm you're not a bot".  The only
-# client that resolves reliably (authed or not) without a PO token is `android`,
-# which yields the muxed itag-18 360p stream.
-#
-# So until a PO-token provider is wired up (bgutil-ytdlp-pot-provider — a small
-# node service yt-dlp pulls tokens from), EVERY path is android-only: reliable
-# 360p, no 15s-per-play waste on web resolves that are doomed to fail.
-#
-# Flip _PO_TOKEN_AVAILABLE to True once a provider is running; that re-enables
-# the DASH ladder for signed-in users.  Cookies still matter: they keep android
-# resolves reliable and (later) unlock authenticated feeds.
+# DASH chain (max_height > 360, real plays): android_vr first — it's the client
+# that serves the complete downloadable ladder.  android (muxed 360p) is the
+# safety net; tv/web are last-resort and usually SABR-gated.
+# MUXED chain (previews / <=360p): plain android, fast, no n-sig needed.
 _CLIENT_CHAIN_DASH  = [["android_vr"], ["android"], ["tv"], ["web"]]
 _CLIENT_CHAIN_MUXED = [["android"], ["android_vr"]]
 
 def _client_chain(max_height, preview=False):
-    if preview or max_height <= 360:
+    # DASH only makes sense if we actually have a JS runtime to de-throttle it;
+    # otherwise the android_vr video-only URLs come back n-sig-throttled, so fall
+    # back to the muxed chain (reliable 360p).
+    if preview or max_height <= 360 or not _have_js_runtime():
         return _CLIENT_CHAIN_MUXED
     return _CLIENT_CHAIN_DASH
 
@@ -934,10 +963,14 @@ def _extract_stream(video_id, max_height, preview=False):
         if clients:
             ea = (f"youtube:player_client={','.join(clients)}"
                   f";player_skip={skip}")
+        # Plays need the JS runtime so android_vr's DASH n-sig is solved (full
+        # speed, not throttled).  Previews are muxed itag-18 (no n-sig) so they
+        # skip it and stay fast.
+        js_args = [] if preview else _js_runtime_args()
         args = _ytdlp_base_args() + [
             "--no-playlist", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
-        ]
+        ] + js_args
         out = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
 
         got = None
@@ -1216,6 +1249,9 @@ def main():
     atexit.register(_kill_all_children)
 
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
+    _rt = _find_js_runtime()
+    log(f"js runtime: {_rt[0]} @ {_rt[1]}" if _rt
+        else "js runtime: NONE — DASH disabled, muxed 360p only")
     log("yt-dlp launch prefix:", " ".join(_SCHED_PREFIX) if _SCHED_PREFIX else "(none)")
     wd = threading.Thread(target=_idle_watchdog, args=(server,), daemon=True)
     wd.start()
