@@ -886,8 +886,16 @@ def op_stream(req):
         log(f"op_stream: cache hit for {vid}")
         return {"ok": True, **cached}
 
+    # Hover-preview, but a real play is already waiting for the worker?  Don't
+    # even queue — a speculative preview must never delay an actual play.  The
+    # app re-requests the preview later if the card is still focused.
+    if preview and _play_pending():
+        log(f"op_stream: dropping preview {vid} — play pending")
+        return {"ok": False, "error": "deferred for play"}
+
     # A real play (preview=False) registers itself as pending so any in-flight
-    # preview yt-dlp aborts and frees the single worker for us (see _run_ytdlp).
+    # preview yt-dlp aborts and frees the single worker for us (see _run_ytdlp),
+    # and any preview still queued behind the worker bails at the check above.
     global _pending_plays
     if not preview:
         with _pending_plays_lock:
@@ -899,6 +907,11 @@ def op_stream(req):
             if cached is not None:
                 log(f"op_stream: cache hit (post-gate) for {vid}")
                 return {"ok": True, **cached}
+            # Last-chance preview bail: a play may have arrived while we waited
+            # for the worker slot.
+            if preview and _play_pending():
+                log(f"op_stream: dropping preview {vid} at gate — play pending")
+                return {"ok": False, "error": "deferred for play"}
             # NOTE: we used to bail here with a pre-extract `_client_is_alive()`
             # check, but that peek can spuriously report the client gone the
             # instant after the request line is consumed (before the client's
