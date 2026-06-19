@@ -1092,6 +1092,8 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
         except Exception as ex:
             log(f"fast-path error for {video_id}: {ex}")
     # FALLBACK PATH: yt-dlp.
+    if _breaker_open():
+        raise RuntimeError("circuit breaker open")
     url = f"https://www.youtube.com/watch?v={video_id}"
     # Quality strategy:
     #   max_height <= 360 OR preview → muxed progressive only.  This is the
@@ -1466,10 +1468,12 @@ def main():
 
     def _shutdown(*_):
         log("signal received — shutting down")
-        try:
-            server.shutdown()
-        except Exception:
-            pass
+        # server.shutdown() blocks waiting for serve_forever() to stop.
+        # Calling it directly from the signal handler deadlocks because
+        # serve_forever() runs in THIS thread (the signal interrupts it).
+        # Spawn a thread so the handler returns immediately and
+        # serve_forever() can notice the shutdown flag and exit cleanly.
+        threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
