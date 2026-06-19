@@ -555,11 +555,14 @@ def op_trending(req):
 # unauthenticated we go android-only: reliable, fast, 360p.  This is the
 # "old android mux until the user signs in" path.
 #
-# AUTHENTICATED (cookies.txt present): the bot-wall lifts and `tv` exposes the
-# full adaptive DASH ladder up to 1080p+ without the signature dance — our
-# preferred first client.  `web` is the heavy reliable fallback; `android` is
-# the last-resort 360p muxed safety net.
-_CLIENT_CHAIN_AUTHED   = [["tv"], ["web"], ["android"]]
+# AUTHENTICATED (cookies.txt present): with cookies the `web` client returns the
+# COMPLETE format set (DASH video+audio ladder up to 1080p+) reliably.  We tried
+# `tv` first for speed but it returns DASH video-only WITHOUT a matching audio
+# track unless a PO token is present, so the merge fails with "Requested format
+# is not available" — 15s wasted per video.  So authed = web only.  web does the
+# nsig signature dance so it's slower (~15-20s first play) but it actually works;
+# `android` stays as the 360p muxed safety net if web ever fails.
+_CLIENT_CHAIN_AUTHED   = [["web"], ["android"]]
 _CLIENT_CHAIN_NOAUTH   = [["android"]]
 
 def _client_chain(authed):
@@ -880,7 +883,10 @@ def _extract_stream(video_id, max_height, preview=False):
     # auth-aware chain: android-only until the user signs in (cookies.txt), then
     # the full DASH ladder.
     chain = [["android"]] if preview else _client_chain(_have_cookies())
-    run_timeout = 10 if preview else 18
+    # web (the authed client) does the nsig signature dance and is slower than
+    # android; give real plays a generous ceiling so a slow-but-working web
+    # resolve isn't killed mid-flight.  Previews stay snappy.
+    run_timeout = 10 if preview else 30
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
     # case) we keep trying later clients for a proper DASH result, but stash
@@ -906,14 +912,18 @@ def _extract_stream(video_id, max_height, preview=False):
         # resolve before it ever started.  Only subsequent attempts gate on it.
         if attempt > 0 and not _client_is_alive():
             raise RuntimeError("client gone")
-        # player_skip=webpage,configs avoids the extra watch-page + config HTTP
-        # round-trips the default path makes — a real chunk of first-play latency.
-        ea = "youtube:player_skip=webpage,configs"
+        # player_skip=webpage trims the extra watch-page fetch.  We do NOT skip
+        # `configs` for the web client: it needs the player config to fetch the
+        # JS for nsig signature deciphering — skipping it can yield throttled or
+        # missing format URLs.  android (muxed, no nsig) keeps the full skip.
+        is_android = (clients == ["android"])
+        skip = "webpage,configs" if is_android else "webpage"
+        ea = f"youtube:player_skip={skip}"
         if clients:
             ea = (f"youtube:player_client={','.join(clients)}"
-                  f";player_skip=webpage,configs")
+                  f";player_skip={skip}")
         args = _ytdlp_base_args() + [
-            "--no-playlist", "--socket-timeout", "5",
+            "--no-playlist", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ]
         out = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)

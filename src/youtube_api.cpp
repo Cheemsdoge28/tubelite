@@ -298,10 +298,12 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
         // instead of resolving a stream the user already scrolled past.
-        // Budget: fast path (~2s for live instance, ~1s for blacklisted) +
-        // android client (~10s typical) + small slack.  Previews skip the
-        // web fallback so their ceiling is tighter.
-        bool ok = tubedRequest(req, resp, isPreview ? 14000 : 25000);
+        // Budget: a signed-in play uses the web client (nsig signature dance,
+        // ~15-20s) so the play ceiling must comfortably exceed tubed's 30s
+        // run_timeout + slack — otherwise the C++ side disconnects and tubed
+        // kills a web resolve that was about to succeed.  Previews are android
+        // muxed (fast) so they keep a tight ceiling.
+        bool ok = tubedRequest(req, resp, isPreview ? 14000 : 38000);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
