@@ -554,6 +554,13 @@ def _run_ytdlp(args, timeout, is_preview=False):
                 or "Failed to extract" in txt or "decompression resulted in return code" in txt):
             _trip_breaker()
             return
+        # SABR-gated video: android client gets formats blocked by YouTube's SABR
+        # experiment.  This is normal; _extract_stream will fall through to the
+        # default client chain which is NOT SABR-blocked.  Summarise once instead
+        # of forwarding the noisy multi-line yt-dlp blurb.
+        if "android client https formats have been skipped" in txt:
+            log("yt-dlp: android SABR-blocked — falling through to default chain")
+            return
         # Tag each line so users can grep yt-dlp failures out of tubed.log.
         for line in txt.splitlines():
             log("yt-dlp:", line)
@@ -1404,47 +1411,37 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     allow_reuse_address = True
 
 
-def _ping_existing():
-    """True if a live tubed is already answering on the socket."""
-    if not os.path.exists(SOCK_PATH):
-        return False
+_lock_fd = None   # kept open to hold the flock for the lifetime of the process
+
+
+def _acquire_lock_or_exit():
+    """Grab an exclusive flock on PID_PATH so only one tubed runs at a time.
+    The kernel releases the lock automatically when the process exits, so this
+    is race-free even when two instances start at the exact same millisecond."""
+    global _lock_fd
+    import fcntl
     try:
-        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        c.settimeout(1.0)
-        c.connect(SOCK_PATH)
-        c.sendall(b'{"op":"ping"}\n')
-        alive = bool(c.recv(64))
-        c.close()
-        return alive
-    except Exception:
-        return False
-
-
-def _single_instance_or_exit():
-    if _ping_existing():
-        log("another tubed is already running; exiting")
+        fd = open(PID_PATH, "a+")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd.seek(0)
+        fd.truncate()
+        fd.write(str(os.getpid()) + "\n")
+        fd.flush()
+        _lock_fd = fd  # prevent GC from closing the fd (would release the lock)
+    except (IOError, OSError):
+        log("another tubed holds the instance lock; exiting")
         sys.exit(0)
-    # Stale socket left by a crashed instance — clear it.
+
+
+def _make_server():
+    """Create the server socket. We already hold the exclusive lock so there
+    is no simultaneous-start race to handle here."""
+    # Remove any stale socket left by a previous crashed instance.
     try:
         os.unlink(SOCK_PATH)
     except OSError:
         pass
-
-
-def _make_server():
-    """Create the server, tolerating a simultaneous-start race between the app
-    and the daemon both trying to spawn tubed."""
-    try:
-        return Server(SOCK_PATH, Handler)
-    except OSError:
-        if _ping_existing():
-            log("lost the start race to another tubed; exiting")
-            sys.exit(0)
-        try:
-            os.unlink(SOCK_PATH)
-        except OSError:
-            pass
-        return Server(SOCK_PATH, Handler)
+    return Server(SOCK_PATH, Handler)
 
 
 def _idle_watchdog(server):
@@ -1459,16 +1456,13 @@ def _idle_watchdog(server):
 
 
 def main():
-    _single_instance_or_exit()
+    _acquire_lock_or_exit()
 
     server = _make_server()
     try:
         os.chmod(SOCK_PATH, 0o660)
     except OSError:
         pass
-
-    with open(PID_PATH, "w") as f:
-        f.write(str(os.getpid()))
 
     def _shutdown(*_):
         log("signal received — shutting down")
