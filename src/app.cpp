@@ -2032,16 +2032,17 @@ void App::saveDaemonQueue() {
                 v["author"] = vid.author;
                 v["duration_seconds"] = vid.duration_seconds;
                 v["duration_string"] = vid.duration_string;
-                // Pass the already-resolved URL for the currently-playing track only.
+                // Pass any already-resolved 360p stream we have so the daemon
+                // can skip re-resolving when moving around the queue.
+                auto cached = getCachedStreamUrl(streamCacheKey(vid.id, 360));
+                if (cached) {
+                    std::string url, sub_url, audio_url;
+                    splitCachedStream(*cached, url, sub_url, audio_url);
+                    v["stream_url"] = url;
+                    v["subtitle_url"] = sub_url;
+                    v["audio_url"] = audio_url;
+                }
                 if (vid.id == current_video_.id) {
-                    auto cached = getCachedStreamUrl(streamCacheKey(vid.id, 360));
-                    if (cached) {
-                        std::string url, sub_url, audio_url;
-                        splitCachedStream(*cached, url, sub_url, audio_url);
-                        v["stream_url"] = url;
-                        v["subtitle_url"] = sub_url;
-                        v["audio_url"] = audio_url;
-                    }
                     current_idx = static_cast<int>(i);
                 }
                 j["videos"].push_back(v);

@@ -538,9 +538,6 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
             daemon_start_position = 0.0;
         }
         daemon_status = DaemonStatus::Playing;
-        video.stream_url.clear();
-        video.subtitle_url.clear();
-        video.audio_url.clear();
         return;
     }
 
@@ -828,6 +825,13 @@ void runDaemon() {
             }
             if (finished) {
                 if (success) {
+                    if (daemon_current_index >= 0 &&
+                        daemon_current_index < (int)daemon_playlist.size()) {
+                        auto& video = daemon_playlist[daemon_current_index];
+                        video.stream_url   = url;
+                        video.subtitle_url = sub;
+                        video.audio_url    = audio;
+                    }
                     mpv.play(url, sub, audio);
                     if (daemon_start_position > 0.0) {
                         mpv.setPendingSeekPosition(daemon_start_position);
