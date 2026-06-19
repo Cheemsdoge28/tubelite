@@ -767,43 +767,59 @@ def op_trending(req):
     return op_search(req)
 
 
-# Client fallback chain.
-#
-# THE KEY FINDING (2026, confirmed on-device): YouTube's high-quality DASH ladder
-# is unlocked NOT by cookies or PO tokens, but by giving yt-dlp an external JS
-# RUNTIME (deno/node) to solve the n-signature challenge.  With a runtime, the
-# `android_vr` client returns the full adaptive ladder (144p..2160p) over plain
-# https — no SABR, no PO token.  Without a runtime, yt-dlp can only offer the
-# muxed itag-18 360p stream (or "Only images available").
-#
-# DASH chain (max_height > 360, real plays): android_vr first — it's the client
-# that serves the complete downloadable ladder.  android (muxed 360p) is the
-# safety net; tv/web are last-resort and usually SABR-gated.
-# MUXED chain (previews / <=360p): plain android, fast, no n-sig needed.
-# Each attempt is (client_list, use_cookies).  android_vr = the no-PO-token,
-# no-SABR DASH client (needs a JS runtime for n-sig); android muxed 360p is the
-# safety net.  tv/web are dropped (SABR-gated / bot-walled, ~15s wasted).
-#
-# Cookies are tried FIRST (the user wants sign-in to count) but android_vr can
-# bot-wall WITH cookies while working ANONYMOUSLY (proven: the bare rickroll
-# `-F` test had no cookies and returned the full ladder).  So each tier falls
-# back to an anonymous retry — cookies used when they help, never a hard block.
-# android muxed is attempt 0: fast (~8-12s), no deno/n-sig needed, almost
-# never bot-walls.  If max_height > 480 it's flagged "poor" so fallback_muxed
-# is saved and the loop continues to DASH — but if DASH times out we fall back
-# to the saved 360p and the video plays rather than failing entirely.
-# Default chain (webpage + android_vr + deno n-sig) is attempt 1 for DASH
-# quality on the videos where it resolves in time.
-_CLIENT_CHAIN_DASH  = [(["android"], False), ([], False), (["android_vr"], False)]
-_CLIENT_CHAIN_MUXED = [(["android"], False), (["android"], True)]
+def _pick_from_formats(formats, max_height, preview):
+    """
+    Select the best (video_url, audio_url) from a yt-dlp formats list.
 
-def _client_chain(max_height, preview=False):
-    # DASH only makes sense if we actually have a JS runtime to de-throttle it;
-    # otherwise the android_vr video-only URLs come back n-sig-throttled, so fall
-    # back to the muxed chain (reliable 360p).
-    if preview or max_height <= 360 or not _have_js_runtime():
-        return _CLIENT_CHAIN_MUXED
-    return _CLIENT_CHAIN_DASH
+    When yt-dlp is run with a JS runtime, it solves n-sig for all adaptive
+    format URLs during extraction, so the URLs in the formats list are ready
+    to use directly.  Picking here (rather than relying on a hard-coded -f
+    selector) means we work with whatever YouTube actually serves and handle
+    codec/format landscape changes gracefully.
+
+    For previews / <=360p: best muxed progressive (fast, one URL, no deno).
+    For plays: best DASH video-only + audio-only pair; muxed as fallback.
+    Codec preference: avc1 video (RK3326 HW decode), mp4a audio.
+    """
+    http = [f for f in (formats or [])
+            if isinstance(f.get("url"), str) and f["url"].startswith("http")]
+
+    def vc(f):  return (f.get("vcodec") or "none").lower()
+    def ac(f):  return (f.get("acodec") or "none").lower()
+    def h(f):   return f.get("height") or 0
+
+    if preview or max_height <= 360:
+        muxed = [f for f in http
+                 if vc(f) not in ("none", "") and ac(f) not in ("none", "")
+                 and h(f) <= max_height]
+        if muxed:
+            muxed.sort(key=lambda f: (h(f), 1 if vc(f).startswith("avc1") else 0), reverse=True)
+            f = muxed[0]
+            log(f"  formats: muxed {h(f)}p {vc(f)}")
+            return f["url"], ""
+        return None
+
+    # DASH pair preferred for plays
+    vid = [f for f in http
+           if vc(f) not in ("none", "") and ac(f) in ("none", "") and h(f) <= max_height]
+    aud = [f for f in http
+           if ac(f) not in ("none", "") and vc(f) in ("none", "")]
+    if vid and aud:
+        vid.sort(key=lambda f: (1 if vc(f).startswith("avc1") else 0, h(f), f.get("tbr") or 0), reverse=True)
+        aud.sort(key=lambda f: (1 if ac(f).startswith("mp4a") else 0, f.get("abr") or 0), reverse=True)
+        v, a = vid[0], aud[0]
+        log(f"  formats: DASH {h(v)}p {vc(v)} + {ac(a)} {a.get('abr','?')}k")
+        return v["url"], a["url"]
+
+    # No DASH pair — fall back to best muxed at any height
+    muxed = [f for f in http if vc(f) not in ("none", "") and ac(f) not in ("none", "")]
+    if muxed:
+        muxed.sort(key=lambda f: (h(f), 1 if vc(f).startswith("avc1") else 0), reverse=True)
+        f = muxed[0]
+        log(f"  formats: muxed fallback {h(f)}p {vc(f)}")
+        return f["url"], ""
+
+    return None
 
 
 def _info_height(info):
@@ -1074,13 +1090,8 @@ def _fetch_piped(video_id, max_height):
 
 
 def _extract_stream(video_id, max_height, preview=False, deadline=None):
-    # FAST PATH (Invidious / Piped): disabled.  As of 2026-06, every public
-    # instance we've tracked is either auth-walled (401/403), DNS-gone, or
-    # 5xx-down.  Cycling all of them takes ~26 s on the first request — long
-    # enough to blow past the C++-side stream timeout and KILL the yt-dlp
-    # fallback before it even gets to run.  Yt-dlp is now reliable enough to
-    # be the primary path.  Re-enable this by setting FAST_PATH_ENABLED=True
-    # if a working instance list is discovered.
+    # Fast path (Invidious/Piped): disabled as of 2026-06 — every tracked
+    # public instance is either auth-walled, DNS-gone, or 5xx-down.
     FAST_PATH_ENABLED = False
     if FAST_PATH_ENABLED:
         try:
@@ -1091,140 +1102,110 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
                 return res
         except Exception as ex:
             log(f"fast-path error for {video_id}: {ex}")
-    # FALLBACK PATH: yt-dlp.
+
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    # Quality strategy:
-    #   max_height <= 360 OR preview → muxed progressive only.  This is the
-    #     daemon (background-audio) path and short previews.  YouTube still
-    #     serves itag 18 (360p AVC muxed) reliably, so we get a single URL
-    #     with audio baked in — no audio-add gymnastics needed downstream.
-    #   max_height >  360 → DASH adaptive preferred.  YouTube stopped serving
-    #     muxed progressive >360p in 2024+, so for high-res playback we MUST
-    #     pick a video-only + audio-only pair and tell mpv to overlay them.
-    #     Order:
-    #       1. DASH avc1 video + m4a audio — hardware-decoded on RK3326 via
-    #          rkmpp, lowest CPU + battery cost.
-    #       2. DASH any-codec video + any audio — software fallback for
-    #          videos missing avc1 (rare).
-    #       3. Muxed progressive — last-ditch 360p when nothing else works.
-    if preview or max_height <= 360:
-        fmt = (f"best[height<={max_height}][vcodec^=avc1]"
-               f"/best[height<={max_height}]/best")
-    else:
-        fmt = (f"bestvideo[height<={max_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]"
-               f"/bestvideo[height<={max_height}]+bestaudio"
-               f"/best[height<={max_height}][vcodec^=avc1]"
-               f"/best[height<={max_height}]/best")
-    # Previews are best-effort eye-candy: only try the single fastest client with
-    # a short timeout, and don't walk the fallback chain.  Real plays use the
-    # auth-aware chain: android-only until the user signs in (cookies.txt), then
-    # the full DASH ladder.
-    chain = [_client_chain(max_height, preview=True)[0]] if preview else _client_chain(max_height, preview=False)
-    # Deadline passed from op_stream so semaphore wait is included in the
-    # budget.  Fall back to a local computation only if called without one
-    # (shouldn't happen in normal operation).
+
+    yt_url  = f"https://www.youtube.com/watch?v={video_id}"
     overall_deadline = deadline if deadline is not None else time.time() + (11.0 if preview else 37.0)
-    # Per-attempt ceiling: android muxed resolves in ~8-12s; DASH with deno
-    # n-sig can take up to ~25s.  The min(remaining, ceiling) clamp ensures
-    # the chain never overruns the C++ socket budget regardless of how long
-    # the semaphore wait was.
-    per_attempt_ceiling = {0: 14.0, "rest": 22.0} if not preview else {0: 10.0, "rest": 0.0}
+    authed  = _have_cookies()
 
-    # If a client yields only a low-res muxed stream (the "crushed quality"
-    # case) we keep trying later clients for a proper DASH result, but stash
-    # the muxed one so a video that genuinely has nothing better still plays.
-    fallback_muxed = None
-
-    def _pick(info):
-        """Return (parsed, height, is_dash, poor) or None if unusable."""
-        parsed = _parse_stream_info(info)
-        if not parsed:
-            return None
-        height = _info_height(info)
-        is_dash = bool(parsed[1])      # audio_url present ⇒ DASH pair
-        poor = (not preview and max_height > 480
-                and not is_dash and height and height < 480)
-        return (parsed, height, is_dash, poor)
-
-    for attempt, (clients, use_cookies) in enumerate(chain):
-        # If the requester already gave up (scrolled away), stop before spawning
-        # ANOTHER yt-dlp for a result no one will read.  The first attempt always
-        # runs: the liveness peek can race the client's blocking read right after
-        # the request is sent and spuriously report "gone", which would kill the
-        # resolve before it ever started.  Only subsequent attempts gate on it.
-        if attempt > 0 and not _client_is_alive():
-            raise RuntimeError("client gone")
-        # Per-attempt timeout: clamp to whatever's left of the total budget so
-        # the chain never overruns the C++ socket.  If we have less than ~4s
-        # left, the next yt-dlp wouldn't even finish PyInstaller extraction —
-        # stop and let the caller fall through to the muxed fallback if any.
-        remaining = overall_deadline - time.time()
-        if remaining < 4.0:
-            log(f"stream extract: budget exhausted ({remaining:.1f}s left) for {video_id}")
-            break
-        ceiling = per_attempt_ceiling.get(attempt, per_attempt_ceiling["rest"])
-        run_timeout = min(remaining - 2.0, ceiling)   # -2s margin for reap + write
-        if run_timeout < 4.0:
-            log(f"stream extract: budget exhausted ({remaining:.1f}s left) for {video_id}")
-            break
-        # NB: we used to pass player_skip=webpage to trim one HTTP request, but
-        # the watch-page download is what supplies fresh visitor data — without
-        # it, android_vr requests look bot-like and YouTube returns the
-        # "Sign in to confirm you're not a bot" challenge.  Let yt-dlp fetch it.
-        if clients:
-            ea = f"youtube:player_client={','.join(clients)}"
-        else:
-            ea = ""
-        # Plays need the JS runtime so android_vr's DASH n-sig is solved (full
-        # speed, not throttled).  Previews are muxed itag-18 (no n-sig) so they
-        # skip it and stay fast.
-        js_args = [] if preview else _js_runtime_args()
-        args = _ytdlp_base_args(use_cookies=use_cookies) + [
+    def _call(extra_args, timeout, is_preview):
+        """Run yt-dlp --dump-single-json and return parsed info dict or None."""
+        args = _ytdlp_base_args(use_cookies=authed) + [
             "--no-playlist", "--socket-timeout", "10",
-            "-f", fmt, "--dump-json", url,
-        ] + js_args
-        if ea:
-            args += ["--extractor-args", ea]
-        out = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
+            "--dump-single-json", yt_url,
+        ] + extra_args
+        raw = _run_ytdlp(args, timeout=timeout, is_preview=is_preview)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw.strip())
+        except Exception as ex:
+            log(f"yt-dlp JSON parse for {video_id}: {ex}")
+            return None
 
-        got = None
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                info = json.loads(line)
-            except Exception:
-                continue
-            if isinstance(info, dict):
-                picked = _pick(info)
-                if picked:
-                    got = picked
-                    break
+    def _result(info):
+        """Extract (url, audio_url, sub, meta) from info dict, or None."""
+        if not isinstance(info, dict):
+            return None
+        sub  = _best_subtitle_url(info)
+        meta = {
+            "description":      info.get("description") or "",
+            "view_count":       int(info.get("view_count") or 0),
+            "like_count":       int(info.get("like_count") or 0),
+            "comment_count":    int(info.get("comment_count") or 0),
+            "subscriber_count": int(info.get("channel_follower_count") or 0),
+        }
+        # Primary: pick directly from the formats list.  With a JS runtime,
+        # yt-dlp solves n-sig for all adaptive format URLs during extraction,
+        # so the URLs are ready to use.  This is more robust than a fixed -f
+        # selector: if YouTube changes its format landscape (new codecs,
+        # retired itags) the pick logic just selects the next best thing.
+        picked = _pick_from_formats(info.get("formats"), max_height, preview)
+        if picked:
+            return picked[0], picked[1], sub, meta
+        # Secondary: fall back to yt-dlp's own selection in requested_formats.
+        legacy = _parse_stream_info(info)
+        return legacy  # may be None
 
-        if got is None:
-            log(f"stream extract (client={clients}) found nothing for {video_id}")
-            continue
+    # ── PRIMARY: no client spec — let yt-dlp choose ────────────────────────
+    # This mirrors what the user's working manual yt-dlp test does: no
+    # --extractor-args, no forced client.  yt-dlp handles client selection,
+    # SABR gating, and format negotiation internally.
+    # JS runtime is passed for plays (DASH n-sig); skipped for previews
+    # (muxed itag-18 has no n-sig throttle).
+    remaining = overall_deadline - time.time()
+    if remaining < 4.0:
+        raise RuntimeError("deadline exceeded")
+    run_timeout = min(remaining - 2.0, 10.0 if preview else 33.0)
+    if run_timeout < 4.0:
+        raise RuntimeError("deadline exceeded")
 
-        parsed, height, is_dash, poor = got
-        if poor and attempt < len(chain) - 1:
-            log(f"client={clients}: only {height}p muxed for {video_id}; "
-                f"trying next client for DASH")
-            if fallback_muxed is None:
-                fallback_muxed = parsed
-            continue
+    js_args = [] if preview else _js_runtime_args()
+    info = _call(js_args, run_timeout, is_preview=preview)
+    result = _result(info) if info else None
+    if result:
+        height = _info_height(info)
+        log(f"resolved {video_id}: {height or '?'}p dash={'yes' if result[1] else 'no'}")
+        return result
 
-        log(f"resolved {video_id} via client={clients}: "
-            f"{height or '?'}p dash={'yes' if is_dash else 'no'}")
-        return parsed
+    # ── FALLBACK: android muxed 360p — signed-out users only ───────────────
+    # Authenticated users already had cookies on the primary call; retrying
+    # with the android client is unlikely to recover if that failed.
+    # For anonymous users, android reliably returns itag-18 (360p AVC muxed)
+    # without SABR gating, giving a watchable stream even when yt-dlp's
+    # default client selection fails.
+    if not authed:
+        remaining2 = overall_deadline - time.time()
+        if remaining2 >= 6.0:
+            fb_info = _call(
+                ["--extractor-args", "youtube:player_client=android"],
+                timeout=min(remaining2 - 2.0, 13.0),
+                is_preview=preview,
+            )
+            if fb_info:
+                fmts  = fb_info.get("formats") or []
+                http  = [f for f in fmts
+                         if isinstance(f.get("url"), str) and f["url"].startswith("http")]
+                muxed = [f for f in http
+                         if (f.get("vcodec") or "none").lower() not in ("none", "")
+                         and (f.get("acodec") or "none").lower() not in ("none", "")
+                         and (f.get("height") or 999) <= 360]
+                if muxed:
+                    muxed.sort(key=lambda f: f.get("height") or 0, reverse=True)
+                    f   = muxed[0]
+                    sub = _best_subtitle_url(fb_info)
+                    meta = {
+                        "description":      fb_info.get("description") or "",
+                        "view_count":       int(fb_info.get("view_count") or 0),
+                        "like_count":       int(fb_info.get("like_count") or 0),
+                        "comment_count":    int(fb_info.get("comment_count") or 0),
+                        "subscriber_count": int(fb_info.get("channel_follower_count") or 0),
+                    }
+                    log(f"resolved {video_id}: android 360p muxed (signed out)")
+                    return f["url"], "", sub, meta
 
-    # All clients exhausted.  Use a stashed low-res muxed result if we have one
-    # — 360p beats "won't play at all".
-    if fallback_muxed is not None:
-        log(f"all clients exhausted for {video_id}; using muxed fallback")
-        return fallback_muxed
     raise RuntimeError("no playable URL")
 
 
@@ -1332,7 +1313,7 @@ def op_ping(req):
 def op_auth_status(req):
     """Report sign-in state so the app can show a Guest/Signed-in indicator and
     decide whether to offer the sign-in screen.  Auth is purely cookie-based
-    (see the auth notes in _client_chain): a valid cookies.txt = signed in."""
+    a valid cookies.txt = signed in."""
     authed = _have_cookies()
     info = {"ok": True, "authed": authed, "cookies_path": COOKIES}
     if authed:
