@@ -82,7 +82,13 @@ void Compositor::render(App* app, int width, int height) {
         }
 
         app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_);
+
+        // Debug stats overlay (F12 / L3 toggle) now renders during playback too,
+        // composited over the player HUD so the user can watch FPS/profiler
+        // numbers without leaving the player.  The user-facing "stats" hint
+        // already lives in the playback HUD's hint pill row.
         drawDebugOverlay(app, width, height);
+
         { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
         return;
     }
@@ -184,9 +190,12 @@ void Compositor::render(App* app, int width, int height) {
 
         const SDL_Rect miniplayerBounds{mX - 2, mY - 2, mW + 4, mH + 4};
 
-        // Clear the screen region to prevent card thumbnail bleed-through.
-        // Rounded to match the card so the underlay doesn't show square corners
-        // behind the rounded miniplayer.
+        // Per-frame backplate: opaque BG fill behind the video so cards
+        // scrolling underneath can't bleed through during the brief window
+        // before the live video texture catches up.  This is what prevents
+        // flicker on a fullscreen↔miniplayer toggle where the video FBO
+        // gets re-created at a new size (640×480 → 240×135) and is empty
+        // for a frame.  Cheap: one rounded blit.
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         fillRoundedRect(renderer_, miniplayerBounds, theme::RADIUS_CARD, theme::BG);
 
@@ -787,36 +796,66 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
         // ── Top Panel ─────────────────────────────────────────────────────────
-        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 220);
-        SDL_Rect topPanel{0, 0, width, 56};
-        SDL_RenderFillRect(renderer_, &topPanel);
+        // 52px two-row layout: title row + meta row.  Layered scrim fades the
+        // background toward transparent at the bottom so the video shows
+        // through.  Left red accent bar mirrors the browse header.
+        const int topH = 52;
+        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 235);
+        SDL_Rect topPanelHi{0, 0, width, topH - 16};
+        SDL_RenderFillRect(renderer_, &topPanelHi);
+        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 170);
+        SDL_Rect topPanelLo{0, topH - 16, width, 16};
+        SDL_RenderFillRect(renderer_, &topPanelLo);
 
-        SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 220);
-        SDL_Rect topBorder{0, 56, width, 2};
+        // Left red accent bar (matches browse header)
+        SDL_SetRenderDrawColor(renderer_, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 220);
+        SDL_Rect leftBar{0, 0, 3, topH};
+        SDL_RenderFillRect(renderer_, &leftBar);
+
+        // Bottom hairline (single 1px — feels cleaner than the old 2px slab)
+        SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 200);
+        SDL_Rect topBorder{0, topH, width, 1};
         SDL_RenderFillRect(renderer_, &topBorder);
 
-        drawTextShadow(renderer_, 14, 6, hud_title_, 2, theme::WHITE);
+        // Title row
+        drawTextShadow(renderer_, 12, 4, hud_title_, 2, theme::WHITE);
 
+        // Speed badge (top-right corner)
+        int titleRightLimit = width - 12;
         if (hasBadge) {
             char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
             int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
-            SDL_Rect badge{width - sw - 20, 10, sw + 12, sh + 6};
-            fillRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::BLUE.a8(200));
+            SDL_Rect badge{width - sw - 18, 7, sw + 12, sh + 6};
+            fillRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::BLUE.a8(220));
+            drawRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::WHITE.a8(60));
             drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, theme::WHITE);
+            titleRightLimit = badge.x - 8;
         }
 
-        drawText(renderer_, width - 14 - hud_stats_w_, 32, hud_stats_, 1, theme::TEXT_ON.a8(200));
-        if (!hud_author_.empty())
-            drawText(renderer_, 14, 32, hud_author_, 1, theme::ACCENT);
+        // Meta row (channel · stats) — second line, smaller, muted
+        const int metaY = 32;
+        if (!hud_author_.empty()) {
+            drawText(renderer_, 12, metaY, hud_author_, 1, theme::ACCENT);
+        }
+        // Stats right-aligned; uses dimmer color so the title still owns the
+        // visual emphasis.
+        if (titleRightLimit - hud_stats_w_ - 12 >= 0) {
+            drawText(renderer_, width - 12 - hud_stats_w_, metaY,
+                     hud_stats_, 1, theme::TEXT_3);
+        }
 
-        // ── Bottom Panel (background + border + hint buttons; progress bar
-        //    and timestamps stay dynamic) ──────────────────────────────────────
-        const int botH = 60;
-        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 225);
-        SDL_Rect botPanel{0, height - botH, width, botH};
-        SDL_RenderFillRect(renderer_, &botPanel);
+        // ── Bottom Panel ──────────────────────────────────────────────────────
+        // Tighter 52px bar.  Layered scrim like the top panel.
+        const int botH = 52;
+        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 175);
+        SDL_Rect botPanelHi{0, height - botH, width, 12};
+        SDL_RenderFillRect(renderer_, &botPanelHi);
+        SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 235);
+        SDL_Rect botPanelLo{0, height - botH + 12, width, botH - 12};
+        SDL_RenderFillRect(renderer_, &botPanelLo);
 
-        SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
+        // Top hairline
+        SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 200);
         SDL_Rect botBorder{0, height - botH, width, 1};
         SDL_RenderFillRect(renderer_, &botBorder);
 
@@ -828,7 +867,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         const SDL_Color yellow = theme::YELLOW;
         const SDL_Color green  = theme::GREEN;
         const SDL_Color purple = theme::PURPLE;
-        const SDL_Color panel  = theme::PANEL.a8(200);
+        const SDL_Color panel  = theme::PANEL.a8(180);
 
         std::vector<HintItem> activeHints;
         if (drawerOpen) {
@@ -852,7 +891,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 {"L2/R2", textColor, "VOL"}
             };
         }
-        drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(180), textColor);
+        drawHintButtons(renderer_, activeHints, height - 24, 20, 1, width, panel, theme::CHIP.a8(160), textColor);
 
         hud_static_layer_.end(renderer_);
 
@@ -952,20 +991,15 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
     }
 
-    // ── Bottom Panel ──────────────────────────────────────────────────────────
-    const int botH = 60; // was 72; saved 12px
-    SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 225);
-    SDL_Rect botPanel{0, height - botH, width, botH};
-    SDL_RenderFillRect(renderer_, &botPanel);
-    // Top separator
-    SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
-    SDL_Rect botBorder{0, height - botH, width, 1};
-    SDL_RenderFillRect(renderer_, &botBorder);
+    // ── Dynamic bottom panel content ──────────────────────────────────────────
+    // The bottom-panel BACKGROUND lives in hud_static_layer_; here we only draw
+    // the live progress bar, timestamps, and scrub thumbnail.
+    const int botH = 52;
 
-    // Progress bar
-    const int mg  = 14;
-    const int pbY = height - botH + 5;
-    const int pbH = 6;
+    // Progress bar — flatter (4px), pulled right against the top of the panel
+    const int mg  = 12;
+    const int pbY = height - botH + 4;
+    const int pbH = 4;
     const int pbW = width - mg * 2;
 
     // Track (background)
@@ -993,13 +1027,13 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     // Playhead circle (using fillRoundedRect for a proper disc)
     {
         int dotX = mg + static_cast<int>(pbW * frac);
-        int dotR = 6;
+        int dotR = 5;
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         // White outer disc
         SDL_Rect dotOuter{dotX - dotR, pbY - dotR + pbH / 2, dotR * 2, dotR * 2};
         fillRoundedRect(renderer_, dotOuter, dotR, theme::WHITE);
         // Red inner disc
-        int iR = 4;
+        int iR = 3;
         SDL_Rect dotInner{dotX - iR, pbY - iR + pbH / 2, iR * 2, iR * 2};
         fillRoundedRect(renderer_, dotInner, iR, theme::ACCENT);
     }
@@ -1048,10 +1082,10 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         }
     }
 
-    // Timestamps
+    // Timestamps — pulled in tight under the bar
     {
         std::string posStr = fmtTime(displayTime);
-        int tsY = pbY + pbH + 5;
+        int tsY = pbY + pbH + 3;
         drawText(renderer_, mg, tsY, posStr, 1, theme::TEXT_ON);
         if (dur > 0.0) {
             std::string remStr = "-" + fmtTime(dur - displayTime);
@@ -1062,7 +1096,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
     // ── Description Drawer ─────────────────────────────────────────────────────
     if (app->state_.showDescriptionDrawer) {
-        SDL_Rect drawerRect{width - 300, 58, 300, height - 120}; // 60px bottom + 58px header + 2px margin
+        // 52px top bar (+1 hairline) + 52px bottom bar + 6px breathing room.
+        SDL_Rect drawerRect{width - 300, 56, 300, height - 114};
         fillRoundedRect(renderer_, drawerRect, 0, theme::BG.a8(240));
 
         SDL_SetRenderDrawColor(renderer_, theme::CHIP.r, theme::CHIP.g, theme::CHIP.b, 255);
@@ -1101,40 +1136,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         }
     }
 
-    // Bottom hint line
-    SDL_Color textColor    = theme::TEXT_ON;
-    const SDL_Color red    = theme::ACCENT;
-    const SDL_Color blue   = theme::BLUE;
-    const SDL_Color yellow = theme::YELLOW;
-    const SDL_Color green  = theme::GREEN;
-    const SDL_Color purple = theme::PURPLE;
-    const SDL_Color panel  = theme::PANEL.a8(200);
-
-    std::vector<HintItem> activeHints;
-    if (app->state_.showDescriptionDrawer) {
-        activeHints = {
-            {"A", red, playing ? "PAUSE" : "PLAY"},
-            {"B", yellow, "CLOSE"},
-            {"UP/DOWN", textColor, "SCROLL"},
-            {"FN+A", purple, "TOGGLE DESC"},
-            {"L1/R1", textColor, "SPEED"},
-            {"L2/R2", textColor, "VOL"}
-        };
-    } else {
-        activeHints = {
-            {"A", red, playing ? "PAUSE" : "PLAY"},
-            {"B", yellow, "EXIT"},
-            {"FN+A", purple, "DESC"},
-            {"SEL", textColor, "MINI"},
-            {"Y", green, "SUBS"},
-            {"L3", blue, "STATS"},
-            {"L1/R1", textColor, "SPEED"},
-            {"L2/R2", textColor, "VOL"}
-        };
-    }
-
-    // Hint bar sits inside the 60px bottom panel, below the timestamp row
-    drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(180), textColor);
+    // Hint pills are baked into hud_static_layer_ (cached), so no per-frame
+    // draw here. The cache invalidates on play/pause + drawer-state change.
 
     if (use_fbo) {
         hud_layer_.end(renderer_);

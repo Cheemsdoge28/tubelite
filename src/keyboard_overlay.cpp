@@ -353,6 +353,16 @@ void KeyboardOverlay::render(SDL_Renderer* renderer, const TubeState& state, int
         SDL_SetRenderDrawColor(renderer, theme::PANEL.r, theme::PANEL.g, theme::PANEL.b, 255);
         SDL_RenderClear(renderer);
 
+        // Cheap 1px outline + 1px inner hairline so the panel reads as a card,
+        // not a flat fill that bleeds into the screen edge.  Drawn directly
+        // with SDL_RenderDrawRect — no rounded math, no extra textures.
+        SDL_SetRenderDrawColor(renderer, theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b, 220);
+        SDL_Rect outline{0, 0, layoutInfo.panel.w, layoutInfo.panel.h};
+        SDL_RenderDrawRect(renderer, &outline);
+        SDL_SetRenderDrawColor(renderer, theme::HAIRLINE.r, theme::HAIRLINE.g, theme::HAIRLINE.b, 255);
+        SDL_Rect outlineInner{1, 1, layoutInfo.panel.w - 2, layoutInfo.panel.h - 2};
+        SDL_RenderDrawRect(renderer, &outlineInner);
+
         SDL_Color textColor = theme::TEXT;
         SDL_Color accent    = theme::ACCENT;   // unified red accent (was blue)
 

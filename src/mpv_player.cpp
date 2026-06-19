@@ -400,26 +400,32 @@ SDL_Texture* MpvPlayer::renderToTexture(SDL_Renderer* renderer, int w, int h) {
     // Per-frame dedup: if multiple UI elements (preview card + miniplayer)
     // both consume the video in the same frame, only the FIRST call drives a
     // new mpv render — subsequent callers re-use whatever was just produced.
-    // This guards against texture-recreation thrash if the two callers happen
-    // to request different sizes within one frame.
     if (last_rendered_frame_id_ == current_frame_id_ && video_layer_.getTexture()) {
         PROFILE_COUNT("mpv_render_dedup_hit");
         return video_layer_.getTexture();
     }
 
-    // Render mpv at the size the CALLER actually wants, not at the full window
-    // resolution.  This is the big one: a preview thumbnail (160x90) used to
-    // pay for a 640x480 mpv shader pass + a 640x480→160x90 SDL_RenderCopy
-    // downscale every frame — ~21x more fragment work than necessary.  Now
-    // mpv writes straight into the thumbnail-sized FBO and SDL blits 1:1.
+    // RENDER AT FULL WINDOW SIZE, ALWAYS.  This was the 04fe884 fix for the
+    // continuous Mali-G31 flicker.  Reverting it (to "honour caller w/h" for
+    // perf) re-introduced the regression — every renderToTexture call from
+    // a different caller (preview 160×90, miniplayer 240×135, fullscreen
+    // 640×480) thrashes the FBO each frame.  On a tile-based GPU each FBO
+    // resize forces a tile flush which is visible as flicker.
     //
-    // The historical "always full window" hack was supposed to avoid texture
-    // thrash when the preview size jitters.  In practice all three consumers
-    // (preview, miniplayer, fullscreen) request stable sizes within their own
-    // mode and only change on mode transitions, so the FBO is recreated once
-    // per transition, not per frame.
-    const int targetW = w;
-    const int targetH = h;
+    // The fragment-work cost of rendering 640×480 for a 240×135 preview is
+    // real but bounded (~12× more pixels).  Callers do the downscale on the
+    // *SDL blit* (theme::RenderCopy stretch), which is a single textured
+    // quad — cheap on Mali-G31 vs. another mpv shader pass.
+    int targetW = w;
+    int targetH = h;
+    if (window_) {
+        int winW = 0, winH = 0;
+        SDL_GetWindowSize(window_, &winW, &winH);
+        if (winW > 0 && winH > 0) {
+            targetW = winW;
+            targetH = winH;
+        }
+    }
 
     bool texture_just_recreated = false;
     if (!video_layer_.getTexture() || video_layer_.getWidth() != targetW || video_layer_.getHeight() != targetH) {
