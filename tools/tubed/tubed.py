@@ -555,18 +555,29 @@ def op_trending(req):
 # unauthenticated we go android-only: reliable, fast, 360p.  This is the
 # "old android mux until the user signs in" path.
 #
-# AUTHENTICATED (cookies.txt present): with cookies the `web` client returns the
-# COMPLETE format set (DASH video+audio ladder up to 1080p+) reliably.  We tried
-# `tv` first for speed but it returns DASH video-only WITHOUT a matching audio
-# track unless a PO token is present, so the merge fails with "Requested format
-# is not available" — 15s wasted per video.  So authed = web only.  web does the
-# nsig signature dance so it's slower (~15-20s first play) but it actually works;
-# `android` stays as the 360p muxed safety net if web ever fails.
-_CLIENT_CHAIN_AUTHED   = [["web"], ["android"]]
-_CLIENT_CHAIN_NOAUTH   = [["android"]]
+# The hard reality (2024-2026): YouTube now requires a **PO token** (proof-of-
+# origin) for the high-quality DASH formats from the `web`/`tv` clients.  COOKIES
+# ALONE ARE NOT ENOUGH — with just cookies, web/tv return "Requested format is
+# not available" or even still "Sign in to confirm you're not a bot".  The only
+# client that resolves reliably (authed or not) without a PO token is `android`,
+# which yields the muxed itag-18 360p stream.
+#
+# So until a PO-token provider is wired up (bgutil-ytdlp-pot-provider — a small
+# node service yt-dlp pulls tokens from), EVERY path is android-only: reliable
+# 360p, no 15s-per-play waste on web resolves that are doomed to fail.
+#
+# Flip _PO_TOKEN_AVAILABLE to True once a provider is running; that re-enables
+# the DASH ladder for signed-in users.  Cookies still matter: they keep android
+# resolves reliable and (later) unlock authenticated feeds.
+_PO_TOKEN_AVAILABLE = False
+
+_CLIENT_CHAIN_DASH     = [["web"], ["tv"], ["android"]]   # needs PO token
+_CLIENT_CHAIN_MUXED    = [["android"]]                    # always works, 360p
 
 def _client_chain(authed):
-    return _CLIENT_CHAIN_AUTHED if authed else _CLIENT_CHAIN_NOAUTH
+    if authed and _PO_TOKEN_AVAILABLE:
+        return _CLIENT_CHAIN_DASH
+    return _CLIENT_CHAIN_MUXED
 
 
 def _info_height(info):
@@ -883,10 +894,10 @@ def _extract_stream(video_id, max_height, preview=False):
     # auth-aware chain: android-only until the user signs in (cookies.txt), then
     # the full DASH ladder.
     chain = [["android"]] if preview else _client_chain(_have_cookies())
-    # web (the authed client) does the nsig signature dance and is slower than
-    # android; give real plays a generous ceiling so a slow-but-working web
-    # resolve isn't killed mid-flight.  Previews stay snappy.
-    run_timeout = 10 if preview else 30
+    # android (the only reliable no-PO-token client) resolves in ~10-15s; give
+    # real plays a 20s ceiling.  When the DASH ladder is re-enabled (PO token),
+    # bump this back up — web's nsig dance needs ~30s.
+    run_timeout = 10 if preview else (30 if _PO_TOKEN_AVAILABLE else 20)
 
     # If a client yields only a low-res muxed stream (the "crushed quality"
     # case) we keep trying later clients for a proper DASH result, but stash

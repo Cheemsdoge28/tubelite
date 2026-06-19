@@ -11,6 +11,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <atomic>
@@ -43,6 +44,7 @@ struct DaemonVideo {
     std::string duration_string;
     std::string stream_url;
     std::string subtitle_url;
+    std::string audio_url;
 };
 
 static std::vector<DaemonVideo> daemon_playlist;
@@ -53,8 +55,10 @@ static std::atomic<bool> daemon_running{true};
 static std::atomic<DaemonStatus> daemon_status{DaemonStatus::Idle};
 static std::atomic<bool> daemon_request_finished{false};
 static std::atomic<bool> daemon_request_success{false};
+static std::atomic<uint64_t> daemon_request_serial{0};
 static std::string daemon_resolved_url;
 static std::string daemon_subtitle_url;
+static std::string daemon_audio_url;
 static std::mutex daemon_resolved_mutex;
 
 static float overlay_alpha = 0.0f;
@@ -145,6 +149,7 @@ static bool loadDaemonQueue() {
                 v.duration_string  = item.value("duration_string", "");
                 v.stream_url       = item.value("stream_url", "");
                 v.subtitle_url     = item.value("subtitle_url", "");
+                v.audio_url        = item.value("audio_url", "");
                 daemon_playlist.push_back(v);
             }
         }
@@ -520,12 +525,14 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         daemon_current_index >= (int)daemon_playlist.size()) return;
 
     auto& video = daemon_playlist[daemon_current_index];
+    const uint64_t request_serial = ++daemon_request_serial;
     daemon_overlay_timer = 5.0f;
     overlay_active = true;
+    mpv.stop();
 
     if (!video.stream_url.empty()) {
         std::cerr << "[daemon] Using pre-resolved URL for " << video.id << "\n";
-        mpv.play(video.stream_url, video.subtitle_url);
+        mpv.play(video.stream_url, video.subtitle_url, video.audio_url);
         if (daemon_start_position > 0.0) {
             mpv.setPendingSeekPosition(daemon_start_position);
             daemon_start_position = 0.0;
@@ -533,6 +540,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         daemon_status = DaemonStatus::Playing;
         video.stream_url.clear();
         video.subtitle_url.clear();
+        video.audio_url.clear();
         return;
     }
 
@@ -543,18 +551,20 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         daemon_request_success   = false;
         daemon_resolved_url      = "";
         daemon_subtitle_url      = "";
+        daemon_audio_url         = "";
     }
 
     yt.getStreamUrl(video.id, 360,
-        [](bool ok, const std::string& url, const std::string& sub,
-           const std::string& /*audio_url*/,
+        [request_serial](bool ok, const std::string& url, const std::string& sub,
+           const std::string& audio_url,
            const VideoPlaybackMetadata&) {
-            // The background-audio daemon always asks for 360p, where YouTube
-            // still serves a muxed progressive stream (itag 18) with baked-in
-            // audio, so audio_url is unused here.
+            if (daemon_request_serial.load(std::memory_order_relaxed) != request_serial) {
+                return;
+            }
             std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
             daemon_resolved_url     = url;
             daemon_subtitle_url     = sub;
+            daemon_audio_url        = audio_url;
             daemon_request_success  = ok;
             daemon_request_finished = true;
         });
@@ -807,17 +817,18 @@ void runDaemon() {
         // ── Async resolve ─────────────────────────────────────────────────
         if (daemon_status == DaemonStatus::Resolving) {
             bool finished, success;
-            std::string url, sub;
+            std::string url, sub, audio;
             {
                 std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
                 finished = daemon_request_finished;
                 success  = daemon_request_success;
                 url      = daemon_resolved_url;
                 sub      = daemon_subtitle_url;
+                audio    = daemon_audio_url;
             }
             if (finished) {
                 if (success) {
-                    mpv.play(url, sub);
+                    mpv.play(url, sub, audio);
                     if (daemon_start_position > 0.0) {
                         mpv.setPendingSeekPosition(daemon_start_position);
                         daemon_start_position = 0.0;
@@ -848,6 +859,35 @@ void runDaemon() {
                     if (ev.code == 708) { fn_held = down; }
 
                     if (down && fn_held) {
+                        if (ev.code == 310) {
+                            constexpr double kRestartThresholdSec = 3.0;
+                            double cur = mpv.getPlaybackTime();
+                            bool restartCurrent =
+                                (daemon_status == DaemonStatus::Playing ||
+                                 daemon_status == DaemonStatus::Paused) &&
+                                cur > kRestartThresholdSec;
+                            if (restartCurrent) {
+                                mpv.seekAbsoluteExact(0.0);
+                            } else {
+                                daemon_current_index =
+                                    (daemon_current_index - 1 + (int)daemon_playlist.size())
+                                    % (int)daemon_playlist.size();
+                                playCurrentTrack(mpv, yt);
+                            }
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
+                            last_render_pos = -1.0;
+                            continue;
+                        }
+                        if (ev.code == 311) {
+                            daemon_current_index =
+                                (daemon_current_index + 1) % (int)daemon_playlist.size();
+                            playCurrentTrack(mpv, yt);
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
+                            last_render_pos = -1.0;
+                            continue;
+                        }
                         if (ev.code == 305) { // A → pause/resume
                             if (daemon_status == DaemonStatus::Playing) {
                                 mpv.pause();
@@ -861,17 +901,6 @@ void runDaemon() {
                             last_render_pos = -1.0;
                         } else if (ev.code == 304) { // B → exit
                             daemon_running = false;
-                        } else if (ev.code == 310) { // L1 → prev
-                            daemon_current_index =
-                                (daemon_current_index - 1 + (int)daemon_playlist.size())
-                                % (int)daemon_playlist.size();
-                            playCurrentTrack(mpv, yt);
-                            last_render_pos = -1.0;
-                        } else if (ev.code == 311) { // R1 → next
-                            daemon_current_index =
-                                (daemon_current_index + 1) % (int)daemon_playlist.size();
-                            playCurrentTrack(mpv, yt);
-                            last_render_pos = -1.0;
                         } else if (ev.code == 103 || ev.code == 544) { // UP → show
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;

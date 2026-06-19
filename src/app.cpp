@@ -2014,10 +2014,11 @@ void App::saveDaemonQueue() {
             // Pass the already-resolved stream URL so the daemon can start instantly.
             auto cached = getCachedStreamUrl(streamCacheKey(current_video_.id, 360));
             if (cached) {
-                std::string url, sub_url, audio_unused;
-                splitCachedStream(*cached, url, sub_url, audio_unused);
+                std::string url, sub_url, audio_url;
+                splitCachedStream(*cached, url, sub_url, audio_url);
                 v["stream_url"] = url;
                 v["subtitle_url"] = sub_url;
+                v["audio_url"] = audio_url;
             }
             j["videos"].push_back(v);
             j["current_index"] = 0;
@@ -2035,10 +2036,11 @@ void App::saveDaemonQueue() {
                 if (vid.id == current_video_.id) {
                     auto cached = getCachedStreamUrl(streamCacheKey(vid.id, 360));
                     if (cached) {
-                        std::string url, sub_url, audio_unused;
-                        splitCachedStream(*cached, url, sub_url, audio_unused);
+                        std::string url, sub_url, audio_url;
+                        splitCachedStream(*cached, url, sub_url, audio_url);
                         v["stream_url"] = url;
                         v["subtitle_url"] = sub_url;
+                        v["audio_url"] = audio_url;
                     }
                     current_idx = static_cast<int>(i);
                 }
