@@ -44,10 +44,14 @@ public:
         std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback);
 
     // Resolve a direct playback URL for libmpv via tubed.
+    // `audio_url` is non-empty when tubed picks a DASH adaptive stream
+    // (separate video + audio tracks). The caller passes it to mpv via
+    // audio-add so >360p video has sound — YouTube no longer serves
+    // muxed progressive above 360p.
     // isPreview=true uses a separate request token so preview prefetches don't
     // cancel main playback resolutions and vice versa.
     void getStreamUrl(const std::string& video_id, int max_height,
-        std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta)> callback,
+        std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& meta)> callback,
         bool isPreview = false,
         const std::string& parent_focus_id = "");
 

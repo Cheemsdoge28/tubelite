@@ -513,6 +513,23 @@ std::string App::streamCacheKey(const std::string& videoId, int maxHeight) const
     return videoId + "#" + std::to_string(maxHeight);
 }
 
+void App::splitCachedStream(const std::string& cached,
+                            std::string& video_url,
+                            std::string& subtitle_url,
+                            std::string& audio_url) {
+    video_url.clear(); subtitle_url.clear(); audio_url.clear();
+    size_t p1 = cached.find('|');
+    if (p1 == std::string::npos) { video_url = cached; return; }
+    video_url = cached.substr(0, p1);
+    size_t p2 = cached.find('|', p1 + 1);
+    if (p2 == std::string::npos) {
+        subtitle_url = cached.substr(p1 + 1);
+    } else {
+        subtitle_url = cached.substr(p1 + 1, p2 - p1 - 1);
+        audio_url    = cached.substr(p2 + 1);
+    }
+}
+
 std::optional<std::string> App::getCachedStreamUrl(const std::string& key) {
     auto it = stream_url_cache_.find(key);
     if (it == stream_url_cache_.end()) return std::nullopt;
@@ -864,16 +881,10 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
         mpv_player_.setVolume(state_.volume);
         mpv_player_.setSpeed(state_.speed);
 
-        std::string cached_val = cachedOpt.value();
-        std::string stream_url = cached_val;
-        std::string subtitle_url = "";
-        size_t pipe_pos = cached_val.find('|');
-        if (pipe_pos != std::string::npos) {
-            stream_url = cached_val.substr(0, pipe_pos);
-            subtitle_url = cached_val.substr(pipe_pos + 1);
-        }
+        std::string stream_url, subtitle_url, audio_url;
+        splitCachedStream(cachedOpt.value(), stream_url, subtitle_url, audio_url);
 
-        mpv_player_.play(stream_url, subtitle_url);
+        mpv_player_.play(stream_url, subtitle_url, audio_url);
         mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
         triggerVideoFade();
         if (!keepMiniplayer) {
@@ -888,7 +899,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
         // stat row stuck on "loading stats". Fetch stats/description from the
         // backend — a tubed cache hit, so it's fast and spawns no yt-dlp.
         youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight,
-            [this, video](bool ok, const std::string&, const std::string&, const VideoPlaybackMetadata& meta) {
+            [this, video](bool ok, const std::string&, const std::string&, const std::string&, const VideoPlaybackMetadata& meta) {
                 if (!ok) return;
                 queueOnMainThread([this, video, meta]() {
                     if (current_video_.id != video.id) return;
@@ -900,14 +911,14 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
         return;
     }
 
-    youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight, [this, video, cacheKey, keepMiniplayer](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta) {
-        queueOnMainThread([this, video, cacheKey, success, url, subtitle_url, meta, keepMiniplayer]() {
+    youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight, [this, video, cacheKey, keepMiniplayer](bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& meta) {
+        queueOnMainThread([this, video, cacheKey, success, url, subtitle_url, audio_url, meta, keepMiniplayer]() {
             if (!state_.isLoadingVideo || current_video_.id != video.id) return;
             state_.isLoadingVideo = false;
             if (success) {
                 active_video_metadata_ = meta;
                 wrapped_description_lines_ = wrapText(meta.description, 280, 1);
-                setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
+                setCachedStreamUrl(cacheKey, url + "|" + subtitle_url + "|" + audio_url);
                 if (keepMiniplayer) {
                     state_manager_.transitionTo(state_.currentScreen);
                     state_manager_.setMiniplayerActive(true);
@@ -919,7 +930,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                 mpv_player_.setMute(state_.muted);
                 mpv_player_.setVolume(state_.volume);
                 mpv_player_.setSpeed(state_.speed);
-                mpv_player_.play(url, subtitle_url);
+                mpv_player_.play(url, subtitle_url, audio_url);
                 mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
                 triggerVideoFade();
 
@@ -1856,12 +1867,12 @@ void App::updateHoverPreviews() {
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
             is_loading_preview_ = true;
-            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
-                queueOnMainThread([this, cacheKey, success, url, subtitle_url]() {
+            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& /*meta*/) {
+                queueOnMainThread([this, cacheKey, success, url, subtitle_url, audio_url]() {
                     stream_prefetch_inflight_.erase(cacheKey);
                     is_loading_preview_ = false;
                     if (success && !url.empty()) {
-                        setCachedStreamUrl(cacheKey, url + "|" + subtitle_url);
+                        setCachedStreamUrl(cacheKey, url + "|" + subtitle_url + "|" + audio_url);
                     } else {
                         setCachedStreamUrl(cacheKey, ""); // Cache failure
                     }
@@ -1897,12 +1908,10 @@ void App::updateHoverPreviews() {
         }
 
         mpv_player_.setMute(true);
-        std::string cached_val = cachedOpt.value();
-        std::string stream_url = cached_val;
-        size_t pipe_pos = cached_val.find('|');
-        if (pipe_pos != std::string::npos) {
-            stream_url = cached_val.substr(0, pipe_pos);
-        }
+        std::string stream_url, subtitle_url_unused, audio_url;
+        splitCachedStream(cachedOpt.value(), stream_url, subtitle_url_unused, audio_url);
+        // Previews are muted so no audio_url needed.  The video-only DASH
+        // stream still plays back fine in mpv as a silent track.
         mpv_player_.play(stream_url);
         is_playing_preview_ = true;
         focusedCard->is_previewing = true;
@@ -1947,13 +1956,8 @@ void App::saveDaemonQueue() {
             // Pass the already-resolved stream URL so the daemon can start instantly.
             auto cached = getCachedStreamUrl(streamCacheKey(current_video_.id, 360));
             if (cached) {
-                std::string url = *cached;
-                auto pipe_pos = url.find('|');
-                std::string sub_url = "";
-                if (pipe_pos != std::string::npos) {
-                    sub_url = url.substr(pipe_pos + 1);
-                    url = url.substr(0, pipe_pos);
-                }
+                std::string url, sub_url, audio_unused;
+                splitCachedStream(*cached, url, sub_url, audio_unused);
                 v["stream_url"] = url;
                 v["subtitle_url"] = sub_url;
             }
@@ -1973,13 +1977,8 @@ void App::saveDaemonQueue() {
                 if (vid.id == current_video_.id) {
                     auto cached = getCachedStreamUrl(streamCacheKey(vid.id, 360));
                     if (cached) {
-                        std::string url = *cached;
-                        auto pipe_pos = url.find('|');
-                        std::string sub_url = "";
-                        if (pipe_pos != std::string::npos) {
-                            sub_url = url.substr(pipe_pos + 1);
-                            url = url.substr(0, pipe_pos);
-                        }
+                        std::string url, sub_url, audio_unused;
+                        splitCachedStream(*cached, url, sub_url, audio_unused);
                         v["stream_url"] = url;
                         v["subtitle_url"] = sub_url;
                     }
@@ -2229,10 +2228,10 @@ void App::prefetchNextVideo() {
     
     // Start background prefetch request (using isPreview=true so it doesn't cancel main playback requests)
     std::cerr << "[prefetch] Prefetching next video stream URL: " << nextVideo.title << "\n";
-    youtube_api_.getStreamUrl(nextVideo.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& /*meta*/) {
-        queueOnMainThread([this, nextCacheKey, success, url, subtitle_url]() {
+    youtube_api_.getStreamUrl(nextVideo.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& /*meta*/) {
+        queueOnMainThread([this, nextCacheKey, success, url, subtitle_url, audio_url]() {
             if (success && !url.empty()) {
-                setCachedStreamUrl(nextCacheKey, url + "|" + subtitle_url);
+                setCachedStreamUrl(nextCacheKey, url + "|" + subtitle_url + "|" + audio_url);
                 std::cerr << "[prefetch] Next video stream URL cached successfully.\n";
             }
         });

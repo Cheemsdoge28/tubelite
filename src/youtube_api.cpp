@@ -221,7 +221,7 @@ void YouTubeAPI::search(const std::string& query, int page,
 // ── Stream resolution ──────────────────────────────────────────────────────────
 
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
-    std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const VideoPlaybackMetadata& meta)> callback,
+    std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& meta)> callback,
     bool isPreview,
     const std::string& parent_focus_id) {
 
@@ -267,7 +267,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             }
         };
 
-        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); finish(false, true); return; }
+        if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
         json req = {{"op", "stream"}, {"id", video_id}, {"max_height", max_height}};
         if (isPreview) req["preview"] = true;
@@ -280,16 +280,17 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // web fallback so their ceiling is tighter.
         bool ok = tubedRequest(req, resp, isPreview ? 14000 : 25000);
 
-        if (!stillWanted()) { callback(false, "", "", VideoPlaybackMetadata()); finish(false, true); return; }
+        if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
         if (!ok || !resp.value("ok", false)) {
-            callback(false, "", "", VideoPlaybackMetadata());
+            callback(false, "", "", "", VideoPlaybackMetadata());
             finish(false, false);
             return;
         }
 
-        std::string url = resp.value("url", std::string());
-        std::string sub = resp.value("subtitle_url", std::string());
+        std::string url    = resp.value("url", std::string());
+        std::string sub    = resp.value("subtitle_url", std::string());
+        std::string audio  = resp.value("audio_url", std::string());
         VideoPlaybackMetadata meta;
         if (resp.contains("meta") && resp["meta"].is_object()) {
             const auto& m = resp["meta"];
@@ -300,8 +301,8 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
             meta.subscriber_count = m.value("subscriber_count", 0LL);
         }
 
-        if (url.empty()) { callback(false, "", "", VideoPlaybackMetadata()); finish(false, false); return; }
-        callback(true, url, sub, meta);
+        if (url.empty()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, false); return; }
+        callback(true, url, sub, audio, meta);
         finish(true, false);
     }).detach();
 }

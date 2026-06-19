@@ -512,17 +512,54 @@ def op_trending(req):
 _CLIENT_CHAIN = [["android"], ["web"]]
 
 def _parse_stream_info(info):
-    stream_url = info.get("url")
+    """Returns (video_url, audio_url, subtitle_url, meta).
+    audio_url is non-empty only when yt-dlp picked a DASH adaptive format
+    (separate video+audio); for muxed progressive it's "" and the audio is
+    baked into video_url.
+    """
+    stream_url = ""
+    audio_url  = ""
+
+    # Preferred path: yt-dlp filled in requested_formats (a list).  For a DASH
+    # selector like `bestvideo+bestaudio` this is [video_format, audio_format].
+    # For muxed it's typically a single entry.
+    reqd = info.get("requested_formats") or info.get("requested_downloads")
+    if isinstance(reqd, list) and reqd:
+        # Disambiguate: a format with vcodec != "none" is the video track.
+        vid_f = None
+        aud_f = None
+        for f in reqd:
+            vc = (f.get("vcodec") or "").lower()
+            ac = (f.get("acodec") or "").lower()
+            has_v = vc and vc != "none"
+            has_a = ac and ac != "none"
+            if has_v and has_a:
+                # Muxed entry — use it as the sole stream.
+                vid_f = f
+                aud_f = None
+                break
+            if has_v and not vid_f:
+                vid_f = f
+            elif has_a and not aud_f:
+                aud_f = f
+        if vid_f:
+            stream_url = vid_f.get("url") or ""
+        if aud_f:
+            audio_url = aud_f.get("url") or ""
+
+    # Fallback: top-level url (older yt-dlp / single-format selection).
     if not stream_url:
-        reqd = info.get("requested_downloads") or info.get("requested_formats")
-        if reqd:
-            stream_url = reqd[0].get("url")
+        stream_url = info.get("url") or ""
+
+    # Last resort: walk formats[] for any URL.
     if not stream_url:
         fmts = info.get("formats") or []
         if fmts:
-            stream_url = fmts[-1].get("url")
+            stream_url = fmts[-1].get("url") or ""
+
     if not stream_url:
         return None
+
     meta = {
         "description": info.get("description") or "",
         "view_count": int(info.get("view_count") or 0),
@@ -530,7 +567,7 @@ def _parse_stream_info(info):
         "comment_count": int(info.get("comment_count") or 0),
         "subscriber_count": int(info.get("channel_follower_count") or 0),
     }
-    return stream_url, _best_subtitle_url(info), meta
+    return stream_url, audio_url, _best_subtitle_url(info), meta
 
 
 # ── Fast public-API resolvers (Invidious / Piped) ─────────────────────────────
@@ -616,7 +653,7 @@ def _http_get_json(url, timeout=3, label=""):
 
 
 def _fetch_invidious(video_id, max_height):
-    """Returns (url, subtitle_url, meta_dict) on success, else None."""
+    """Returns (video_url, audio_url, subtitle_url, meta_dict) or None."""
     for instance in _INVIDIOUS_INSTANCES:
         if not _client_is_alive():
             return None
@@ -667,12 +704,13 @@ def _fetch_invidious(video_id, max_height):
                     sub = u if u.startswith("http") else (instance + u)
                     break
         log(f"resolved via invidious={instance} for {video_id} @ {best_height}p")
-        return (best_url, sub, meta)
+        # Fast path is progressive (muxed) only — audio is baked in, so audio_url="".
+        return (best_url, "", sub, meta)
     return None
 
 
 def _fetch_piped(video_id, max_height):
-    """Returns (url, subtitle_url, meta_dict) on success, else None."""
+    """Returns (video_url, audio_url, subtitle_url, meta_dict) or None."""
     for instance in _PIPED_INSTANCES:
         if not _client_is_alive():
             return None
@@ -721,7 +759,8 @@ def _fetch_piped(video_id, max_height):
                 if sub:
                     break
         log(f"resolved via piped={instance} for {video_id} @ {best_height}p")
-        return (best_url, sub, meta)
+        # Fast path is progressive (muxed) only — audio is baked in, so audio_url="".
+        return (best_url, "", sub, meta)
     return None
 
 
@@ -740,9 +779,28 @@ def _extract_stream(video_id, max_height, preview=False):
         log(f"fast-path error for {video_id}: {ex}")
     # FALLBACK PATH: yt-dlp.
     url = f"https://www.youtube.com/watch?v={video_id}"
-    fmt = (f"best[height<={max_height}][vcodec^=avc1]"
-           f"/best[height<={max_height}]"
-           f"/best")
+    # Quality strategy:
+    #   max_height <= 360 OR preview → muxed progressive only.  This is the
+    #     daemon (background-audio) path and short previews.  YouTube still
+    #     serves itag 18 (360p AVC muxed) reliably, so we get a single URL
+    #     with audio baked in — no audio-add gymnastics needed downstream.
+    #   max_height >  360 → DASH adaptive preferred.  YouTube stopped serving
+    #     muxed progressive >360p in 2024+, so for high-res playback we MUST
+    #     pick a video-only + audio-only pair and tell mpv to overlay them.
+    #     Order:
+    #       1. DASH avc1 video + m4a audio — hardware-decoded on RK3326 via
+    #          rkmpp, lowest CPU + battery cost.
+    #       2. DASH any-codec video + any audio — software fallback for
+    #          videos missing avc1 (rare).
+    #       3. Muxed progressive — last-ditch 360p when nothing else works.
+    if preview or max_height <= 360:
+        fmt = (f"best[height<={max_height}][vcodec^=avc1]"
+               f"/best[height<={max_height}]/best")
+    else:
+        fmt = (f"bestvideo[height<={max_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]"
+               f"/bestvideo[height<={max_height}]+bestaudio"
+               f"/best[height<={max_height}][vcodec^=avc1]"
+               f"/best[height<={max_height}]/best")
     # Previews are best-effort eye-candy: only try the single fastest client with
     # a short timeout, and don't walk the fallback chain.
     chain = [["android"]] if preview else _CLIENT_CHAIN
@@ -800,11 +858,11 @@ def op_stream(req):
         if not _client_is_alive():
             return {"ok": False, "error": "client gone"}
         try:
-            url, sub, meta = _extract_stream(vid, h, preview=preview)
+            url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview)
         except Exception as ex:
             return {"ok": False, "error": str(ex)}
 
-    payload = {"url": url, "subtitle_url": sub, "meta": meta}
+    payload = {"url": url, "audio_url": audio_url, "subtitle_url": sub, "meta": meta}
     CACHE.set(ck, payload, TTL_STREAM)
     return {"ok": True, **payload}
 

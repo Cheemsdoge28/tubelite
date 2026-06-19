@@ -18,7 +18,7 @@ struct TubeState {
     int keyboardSelectedIndex{0};
     bool replaceBufferOnNextInput{false};
     bool showUi{true};
-    int maxQualityHeight{360};
+    int maxQualityHeight{720};
     int volume{100};
     bool muted{false};
     double speed{1.0};

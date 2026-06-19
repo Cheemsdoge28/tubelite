@@ -82,6 +82,7 @@ void Compositor::render(App* app, int width, int height) {
         }
 
         app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_);
+        drawDebugOverlay(app, width, height);
         { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
         return;
     }
@@ -340,8 +341,27 @@ void Compositor::render(App* app, int width, int height) {
     { PROFILE_SCOPE("keyboard"); app->keyboard_.render(renderer_, app->state_, width, height, app->uiDirty_); }
 
     // Draw telemetry overlay if enabled
-    if (app->state_.showDebugOverlay) {
-        PROFILE_SCOPE("debug_overlay");
+    drawDebugOverlay(app, width, height);
+
+    // Browse status bar
+    if (app->state_.showUi) {
+        PROFILE_SCOPE("status_overlay");
+        app->status_.render(renderer_, app->state_, width, height, app->uiDirty_);
+    }
+
+    // Loading overlay
+    if (app->state_.isLoadingVideo) {
+        drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, theme::WHITE, true);
+        app->uiDirty_ = true;
+    }
+
+    { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
+}
+
+void Compositor::drawDebugOverlay(App* app, int width, int /*height*/) {
+    if (!app->state_.showDebugOverlay) return;
+    PROFILE_SCOPE("debug_overlay");
+    {
         // ── Snapshot profiler sections, sort by avg time, drop empties ────────
         struct Row { const char* name; float avg_ms; float max_ms; float avg_calls; };
         Row rows[Profiler::MAX_SECTIONS];
@@ -540,20 +560,6 @@ void Compositor::render(App* app, int width, int height) {
             }
         }
     }
-
-    // Browse status bar
-    if (app->state_.showUi) {
-        PROFILE_SCOPE("status_overlay");
-        app->status_.render(renderer_, app->state_, width, height, app->uiDirty_);
-    }
-    
-    // Loading overlay
-    if (app->state_.isLoadingVideo) {
-        drawLoadingOverlay(renderer_, width, height, app->loading_status_text_, SDL_GetTicks() / 1000.0f, theme::WHITE, true);
-        app->uiDirty_ = true;
-    }
-
-    { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
 }
 
 void Compositor::drawVideoFade(App* app, const SDL_Rect& region, int radius) {

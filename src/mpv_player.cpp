@@ -334,6 +334,14 @@ bool MpvPlayer::update() {
         if (!ev || ev->event_id == MPV_EVENT_NONE) break;
 
         if (ev->event_id == MPV_EVENT_FILE_LOADED) {
+            if (!pending_audio_url_.empty()) {
+                // DASH adaptive: the main file is the video-only track; overlay
+                // the separate audio track. "select" makes it the active audio
+                // stream immediately.
+                const char* audioCmd[] = {"audio-add", pending_audio_url_.c_str(), "select", nullptr};
+                mpv_command_async(mpv_, 0, audioCmd);
+                pending_audio_url_.clear();
+            }
             if (!pending_subtitle_url_.empty()) {
                 const char* subCmd[] = {"sub-add", pending_subtitle_url_.c_str(), "select", nullptr};
                 mpv_command_async(mpv_, 0, subCmd);
@@ -453,12 +461,14 @@ void MpvPlayer::destroyPreviewTexture() {
 
 // ── Playback controls ─────────────────────────────────────────────────────────
 
-void MpvPlayer::play(const std::string& url, const std::string& subtitle_url) {
+void MpvPlayer::play(const std::string& url, const std::string& subtitle_url,
+                     const std::string& audio_url) {
     if (!mpv_) return;
     file_ended_ = false;
     has_new_frame_ = true;
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     pending_subtitle_url_ = subtitle_url;
+    pending_audio_url_    = audio_url;
     const char* cmd[] = {"loadfile", url.c_str(), nullptr};
     mpv_command_async(mpv_, 0, cmd);
     resume();
@@ -475,6 +485,7 @@ void MpvPlayer::stop() {
     if (!mpv_) return;
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     pending_subtitle_url_.clear();
+    pending_audio_url_.clear();
     const char* cmdStop[] = {"stop", nullptr};
     mpv_command_async(mpv_, 0, cmdStop);
     const char* cmdClear[] = {"playlist-clear", nullptr};

@@ -31,7 +31,8 @@ public:
     bool update();
 
     // ── Playback controls ─────────────────────────────────────────────────────
-    void play(const std::string& url, const std::string& subtitle_url = "");
+    void play(const std::string& url, const std::string& subtitle_url = "",
+              const std::string& audio_url = "");
     void pause();
     void resume();
     void stop();
@@ -90,6 +91,7 @@ private:
     uint64_t     last_rendered_frame_id_{0};
 
     std::string pending_subtitle_url_;
+    std::string pending_audio_url_;
     bool file_ended_ = false;
     double pending_seek_position_ = -1.0;
 

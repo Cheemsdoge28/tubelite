@@ -74,6 +74,11 @@ private:
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
     std::optional<std::string> getCachedStreamUrl(const std::string& key);
     void setCachedStreamUrl(const std::string& key, const std::string& url);
+    // Cache encoding: "video_url|subtitle_url|audio_url" — last two may be empty.
+    static void splitCachedStream(const std::string& cached,
+                                  std::string& video_url,
+                                  std::string& subtitle_url,
+                                  std::string& audio_url);
     void renderBrowseLoadingState(int width, int height, const std::string& text);
 
 

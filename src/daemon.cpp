@@ -547,7 +547,11 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 
     yt.getStreamUrl(video.id, 360,
         [](bool ok, const std::string& url, const std::string& sub,
+           const std::string& /*audio_url*/,
            const VideoPlaybackMetadata&) {
+            // The background-audio daemon always asks for 360p, where YouTube
+            // still serves a muxed progressive stream (itag 18) with baked-in
+            // audio, so audio_url is unused here.
             std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
             daemon_resolved_url     = url;
             daemon_subtitle_url     = sub;
