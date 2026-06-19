@@ -278,15 +278,22 @@ def _sched_prefix():
 
 _SCHED_PREFIX = _sched_prefix()
 
-# Flags shared by every yt-dlp invocation. Mirrors the command that played
-# reliably before, plus cookies when present.
-def _ytdlp_base_args():
+# Flags shared by every yt-dlp invocation.
+#
+# use_cookies: STREAM resolves pass use_cookies=False.  Counter-intuitively,
+# attaching an account (cookies) to the `android_vr` client makes YouTube demand
+# extra verification → "Sign in to confirm you're not a bot", whereas the SAME
+# client ANONYMOUSLY returns the full DASH ladder (proven: the bare
+# `yt-dlp --js-runtimes node -F <video>` test had no cookies and worked).  The
+# JS runtime is the unlock, not cookies — so streams go cookie-less.  Cookies are
+# still wired up for the future authenticated-feeds path (search/home).
+def _ytdlp_base_args(use_cookies=True):
     args = [
         YT_DLP, "--no-config", "--quiet", "--no-warnings", "--no-update",
         "--encoding", "utf-8", "--no-check-certificate", "--force-ipv4",
         "--no-check-formats", "--cache-dir", CACHE_DIR,
     ]
-    if _have_cookies():
+    if use_cookies and _have_cookies():
         args += ["--cookies", COOKIES]
     return args
 
@@ -599,7 +606,10 @@ def op_trending(req):
 # that serves the complete downloadable ladder.  android (muxed 360p) is the
 # safety net; tv/web are last-resort and usually SABR-gated.
 # MUXED chain (previews / <=360p): plain android, fast, no n-sig needed.
-_CLIENT_CHAIN_DASH  = [["android_vr"], ["android"], ["tv"], ["web"]]
+# android_vr = the no-PO-token, no-SABR DASH client (needs a JS runtime for
+# n-sig).  android muxed 360p is the safety net.  tv/web are dropped: they're
+# SABR-gated / bot-walled and only burn ~15s per play before failing.
+_CLIENT_CHAIN_DASH  = [["android_vr"], ["android"]]
 _CLIENT_CHAIN_MUXED = [["android"], ["android_vr"]]
 
 def _client_chain(max_height, preview=False):
@@ -967,7 +977,9 @@ def _extract_stream(video_id, max_height, preview=False):
         # speed, not throttled).  Previews are muxed itag-18 (no n-sig) so they
         # skip it and stay fast.
         js_args = [] if preview else _js_runtime_args()
-        args = _ytdlp_base_args() + [
+        # Streams resolve ANONYMOUSLY: cookies trigger the android_vr bot-wall
+        # (see _ytdlp_base_args).  The JS runtime, not cookies, is the unlock.
+        args = _ytdlp_base_args(use_cookies=False) + [
             "--no-playlist", "--socket-timeout", "10",
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ] + js_args
