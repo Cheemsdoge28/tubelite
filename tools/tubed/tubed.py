@@ -99,8 +99,11 @@ def log(*args):
                 f.write(line + "\n")
         except Exception:
             pass
-    sys.stderr.write(line + "\n")
-    sys.stderr.flush()
+    # Stderr write is intentionally NOT done: the launcher redirects tubed's
+    # stderr into the same LOG_PATH (so PyInstaller / Python startup errors
+    # are captured), which would double every line we explicitly write to the
+    # file.  yt-dlp stderr from child processes is still captured by
+    # _emit_stderr() via subprocess.PIPE — it never touches our stderr.
 
 # ── TTL cache (RAM, with best-effort disk persistence) ──────────────────────
 
@@ -428,6 +431,15 @@ def _ytdlp_base_args(use_cookies=True):
         YT_DLP, "--no-config", "--no-update",
         "--encoding", "utf-8", "--no-check-certificate",
         "--no-check-formats", "--cache-dir", CACHE_DIR,
+        # Default --extractor-retries=3 + --socket-timeout=10 means a single
+        # Innertube/player-JS endpoint hiccup burns ~30 s in silent retries
+        # before yt-dlp gives up — exactly the 35 s timeouts observed in
+        # tubed.log while a plain `yt-dlp -g` finishes in ~2 s.  One try is
+        # enough: tubed already has its own retry layer (per-attempt budget
+        # + the C++ side re-requests on failure).
+        "--extractor-retries", "1",
+        "--retries", "1",
+        "--socket-timeout", "8",
     ]
     # No --force-ipv4: on a carrier NAT (CGNAT) the v4 pool is shared with
     # heavy scrapers and YouTube serves the "Sign in to confirm you're not a
@@ -472,17 +484,13 @@ def _ytdlp_env():
 
 
 def _js_runtime_args():
-    """yt-dlp (2026+) solves YouTube's n-signature challenge with an EXTERNAL JS
-    runtime via its EJS system.  Without one the DASH formats come back throttled
-    or URL-less ("Only images are available").  A JS runtime is THE unlock for the
-    full DASH ladder via the android_vr client — confirmed on-device: `yt-dlp
-    --js-runtimes node -F <rickroll>` returned 144p..2160p adaptive formats with
-    no PO token needed.
-
-    We vendor a runtime under BASE_DIR/vendor and pass it EXPLICITLY (name:path)
-    rather than relying on PATH surviving the launcher→app→tubed fork chain."""
-    rt = _find_js_runtime()
-    return ["--js-runtimes", f"{rt[0]}:{rt[1]}"] if rt else []
+    """No-op.  The launcher prepends BASE_DIR/vendor to PATH, so yt-dlp
+    auto-discovers deno when it actually needs to run JS.  Passing
+    `--js-runtimes <path>` explicitly is redundant when PATH is already
+    set.  Note: android_vr URLs have no `n=` parameter and don't need
+    n-sig solving at all — verified by a manual `yt-dlp -f 137+140 -g`
+    that returns working URLs in ~2 s with no flags."""
+    return []
 
 
 def _find_js_runtime():
@@ -1113,8 +1121,7 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
     def _call(extra_args, timeout, is_preview):
         """Run yt-dlp --dump-single-json and return parsed info dict or None."""
         args = _ytdlp_base_args(use_cookies=authed) + [
-            "--no-playlist", "--socket-timeout", "10",
-            "--dump-single-json", yt_url,
+            "--no-playlist", "--dump-single-json", yt_url,
         ] + extra_args
         raw = _run_ytdlp(args, timeout=timeout, is_preview=is_preview)
         if not raw:
@@ -1158,12 +1165,13 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    run_timeout = min(remaining - 2.0, 10.0 if preview else 33.0)
+    # No JS runtime: yt-dlp picks android_vr by default; its URLs aren't
+    # n-sig-throttled.  ~5-10s typical, 20s ceiling for slow networks.
+    run_timeout = min(remaining - 2.0, 9.0 if preview else 20.0)
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
-    js_args = [] if preview else _js_runtime_args()
-    info = _call(js_args, run_timeout, is_preview=preview)
+    info = _call([], run_timeout, is_preview=preview)
     result = _result(info) if info else None
     if result:
         height = _info_height(info)
