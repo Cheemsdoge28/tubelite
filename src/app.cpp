@@ -615,6 +615,10 @@ std::string App::dumpProfileSnapshot(const std::string& path) {
     root["last_frame_ms"]   = prof.lastFrameMs();
     root["current_fps"]     = current_fps_;
     root["render_latency_ms"] = render_latency_ms_;
+    // Profiler self-overhead so we can subtract measurement noise from sections.
+    root["profiler_overhead_ms"]      = prof.avgOverheadMs();
+    root["profiler_per_scope_ns"]     = prof.perScopeOverheadNs();
+    root["profiler_scope_calls"]      = prof.lastTotalScopeCalls();
 
     // ── Frame history (oldest first; ms) ─────────────────────────────────────
     float hist[Profiler::HIST_FRAMES];

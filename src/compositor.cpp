@@ -381,7 +381,7 @@ void Compositor::drawDebugOverlay(App* app, int width, int /*height*/) {
         const int maxShown = std::min(nRows, 14);
 
         // Panel sized to fit header rows + sidecar block + profiler rows + sparkline
-        const int headerRows  = 6;     // FPS, latency, drops, queue, RAM, storage
+        const int headerRows  = 7;     // FPS, profiler, latency, drops, queue, RAM, storage
         const int sidecarRows = 5;     // tubed status + 3 latency lines + image stats
         const int sparkH      = 28;
         const int rowH        = 12;
@@ -401,6 +401,13 @@ void Compositor::drawDebugOverlay(App* app, int width, int /*height*/) {
         std::snprintf(buf, sizeof(buf), "FPS: %.1f   Frame: %.2f ms",
                       app->current_fps_, prof.lastFrameMs());
         drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;
+
+        // Profiler self-overhead: per-scope cost × calls this frame.  Subtract
+        // from frame total to see "useful" work vs. measurement noise.
+        std::snprintf(buf, sizeof(buf), "Profiler: %.2f ms (%d scopes @ %.0f ns)",
+                      prof.avgOverheadMs(), prof.lastTotalScopeCalls(),
+                      prof.perScopeOverheadNs());
+        drawText(renderer_, panelX + 10, textY, buf, 1, theme::TEXT_3); textY += 16;
 
         std::snprintf(buf, sizeof(buf), "Render Latency: %.2f ms", app->render_latency_ms_);
         drawText(renderer_, panelX + 10, textY, buf, 1, theme::WHITE); textY += 16;

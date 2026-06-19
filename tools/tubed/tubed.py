@@ -764,19 +764,23 @@ def _fetch_piped(video_id, max_height):
     return None
 
 
-def _extract_stream(video_id, max_height, preview=False):
-    # FAST PATH: try public APIs first.  ~200ms per instance, and dead
-    # instances get session-blacklisted after one failure (see _instance_fail),
-    # so a fully-broken fast path costs us once per tubed process, not per
-    # video.  This matches the c707db7 design that "worked 100%".
-    try:
-        res = _fetch_invidious(video_id, max_height)
-        if not res:
-            res = _fetch_piped(video_id, max_height)
-        if res:
-            return res
-    except Exception as ex:
-        log(f"fast-path error for {video_id}: {ex}")
+    # FAST PATH (Invidious / Piped): disabled.  As of 2026-06, every public
+    # instance we've tracked is either auth-walled (401/403), DNS-gone, or
+    # 5xx-down.  Cycling all of them takes ~26 s on the first request — long
+    # enough to blow past the C++-side stream timeout and KILL the yt-dlp
+    # fallback before it even gets to run.  Yt-dlp is now reliable enough to
+    # be the primary path.  Re-enable this by setting FAST_PATH_ENABLED=True
+    # if a working instance list is discovered.
+    FAST_PATH_ENABLED = False
+    if FAST_PATH_ENABLED:
+        try:
+            res = _fetch_invidious(video_id, max_height)
+            if not res:
+                res = _fetch_piped(video_id, max_height)
+            if res:
+                return res
+        except Exception as ex:
+            log(f"fast-path error for {video_id}: {ex}")
     # FALLBACK PATH: yt-dlp.
     url = f"https://www.youtube.com/watch?v={video_id}"
     # Quality strategy:

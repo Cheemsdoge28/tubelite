@@ -53,8 +53,10 @@ public:
             sections_[i].cur_ns    = 0;
             sections_[i].cur_calls = 0;
         }
+        frame_total_scope_calls_ = 0;
         frame_start_ = clock::now();
         ++frame_id_;
+        if (overhead_per_scope_ns_ < 0.0f) calibrateOverhead();
     }
 
     // Call at the end of every frame.
@@ -67,6 +69,14 @@ public:
         if (frame_count_ < HIST_FRAMES) ++frame_count_;
         last_frame_ms_ = (float)frame_ns / 1.0e6f;
 
+        // Self-overhead estimate: per-scope calibration × scope calls this frame.
+        // EMA-smoothed so jitter in the per-scope cost doesn't flicker the panel.
+        const float overhead_ms = overhead_per_scope_ns_ > 0.0f
+            ? (overhead_per_scope_ns_ * frame_total_scope_calls_) / 1.0e6f
+            : 0.0f;
+        avg_overhead_ms_ = avg_overhead_ms_ * 0.90f + overhead_ms * 0.10f;
+        last_total_scope_calls_ = frame_total_scope_calls_;
+
         // Per-section rolling stats
         for (int i = 0; i < num_sections_; ++i) {
             auto& s = sections_[i];
@@ -76,6 +86,32 @@ public:
             if (new_ns > s.max_ns) s.max_ns = new_ns;
             else                   s.max_ns *= 0.985f;   // slow decay
         }
+    }
+
+    // One-time calibration: measure how long an empty enter+leave pair costs
+    // on this CPU.  Called lazily at first beginFrame so the result reflects
+    // the actual runtime CPU governor / frequency state.
+    void calibrateOverhead() {
+        constexpr int N = 2000;
+        // Reserve a calibration slot so the test enter/leaves don't pollute a
+        // real section's stats.
+        int cal_idx = findOrRegister("_calibrate_");
+        const auto t0 = clock::now();
+        for (int i = 0; i < N; ++i) {
+            enter(cal_idx);
+            leave(cal_idx);
+        }
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            clock::now() - t0).count();
+        overhead_per_scope_ns_ = (float)ns / (float)N;
+        // Clear the calibration counters so the panel doesn't show "2000 calls
+        // of _calibrate_".  The section name remains registered.
+        sections_[cal_idx].cur_ns    = 0;
+        sections_[cal_idx].cur_calls = 0;
+        sections_[cal_idx].avg_ns    = 0.0f;
+        sections_[cal_idx].avg_calls = 0.0f;
+        sections_[cal_idx].max_ns    = 0.0f;
+        frame_total_scope_calls_ -= N;   // we just inflated the running counter
     }
 
     // Returns a per-process unique index for `name` (string literal pointer).
@@ -116,6 +152,7 @@ public:
         Section& s = sections_[idx];
         s.cur_ns    += (uint64_t)ns;
         s.cur_calls += 1;
+        ++frame_total_scope_calls_;
     }
 
     void count(int idx) {
@@ -128,6 +165,11 @@ public:
     const Section&  section(int i)       const { return sections_[i]; }
     float           lastFrameMs()        const { return last_frame_ms_; }
     uint64_t        frameId()            const { return frame_id_; }
+    // Profiler self-overhead per frame (EMA of overhead_per_scope_ns × call count).
+    // Subtract from frame total to estimate "useful" frame work.
+    float           avgOverheadMs()      const { return avg_overhead_ms_; }
+    float           perScopeOverheadNs() const { return overhead_per_scope_ns_; }
+    int             lastTotalScopeCalls() const { return last_total_scope_calls_; }
     void            getFrameHistory(float* out, int& count) const {
         count = frame_count_;
         // Oldest-first ordering for sparkline display
@@ -154,6 +196,12 @@ private:
     int        frame_count_  = 0;
     float      last_frame_ms_ = 0.0f;
     uint64_t   frame_id_      = 0;
+
+    // Self-overhead bookkeeping
+    float      overhead_per_scope_ns_ = -1.0f;   // -1 = uncalibrated
+    int        frame_total_scope_calls_ = 0;     // bumped in leave()
+    int        last_total_scope_calls_  = 0;
+    float      avg_overhead_ms_         = 0.0f;
 };
 
 // ── RAII scope helper ─────────────────────────────────────────────────────────
