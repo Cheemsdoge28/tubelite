@@ -529,13 +529,34 @@ def op_trending(req):
     return op_search(req)
 
 
-# Client fallback chain — if one player client is broken, try the next.
-# `android` first: YouTube no longer returns progressive avc1 formats to the
-# `ios` client (only HLS manifests), so our height+codec format selector
-# rejects everything ios sends and the call wastes ~10s before falling back.
-# `android` returns clean progressive mp4 with avc1 + view counts in one shot.
-# `web` is the slow last resort that does the signature dance.
-_CLIENT_CHAIN = [["android"], ["web"]]
+# Client fallback chain — if one player client yields a poor result, try next.
+#
+# Quality matters here: the `android` client, without a PO token, only returns
+# the muxed itag-18 (360p) progressive stream plus a couple of low formats — it
+# does NOT expose the separate high-res DASH video/audio tracks.  So if we ask
+# android first we get a "crushed" 360p muxed result and never try for better.
+#
+# `tv` (the living-room client) exposes the full adaptive DASH ladder up to
+# 1080p+ WITHOUT a PO token and skips the costly signature dance, so it's both
+# higher-quality AND fast — our preferred first client.  `web` is the heavy but
+# reliable fallback (does signature deciphering).  `android` is the last-resort
+# "always returns at least 360p muxed" safety net.
+_CLIENT_CHAIN = [["tv"], ["web"], ["android"]]
+
+
+def _info_height(info):
+    """Best-effort resolved video height from a yt-dlp --dump-json blob.
+    Handles both merged (requested_formats) and single-format results."""
+    h = info.get("height")
+    if h:
+        return int(h)
+    reqd = info.get("requested_formats") or info.get("requested_downloads")
+    if isinstance(reqd, list):
+        for f in reqd:
+            fh = f.get("height")
+            if fh:
+                return int(fh)
+    return 0
 
 def _parse_stream_info(info):
     """Returns (video_url, audio_url, subtitle_url, meta).
@@ -836,6 +857,23 @@ def _extract_stream(video_id, max_height, preview=False):
     # a short timeout, and don't walk the fallback chain.
     chain = [["android"]] if preview else _CLIENT_CHAIN
     run_timeout = 10 if preview else 18
+
+    # If a client yields only a low-res muxed stream (the "crushed quality"
+    # case) we keep trying later clients for a proper DASH result, but stash
+    # the muxed one so a video that genuinely has nothing better still plays.
+    fallback_muxed = None
+
+    def _pick(info):
+        """Return (parsed, height, is_dash, poor) or None if unusable."""
+        parsed = _parse_stream_info(info)
+        if not parsed:
+            return None
+        height = _info_height(info)
+        is_dash = bool(parsed[1])      # audio_url present ⇒ DASH pair
+        poor = (not preview and max_height > 480
+                and not is_dash and height and height < 480)
+        return (parsed, height, is_dash, poor)
+
     for attempt, clients in enumerate(chain):
         # If the requester already gave up (scrolled away), stop before spawning
         # ANOTHER yt-dlp for a result no one will read.  The first attempt always
@@ -855,6 +893,8 @@ def _extract_stream(video_id, max_height, preview=False):
             "--extractor-args", ea, "-f", fmt, "--dump-json", url,
         ]
         out = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
+
+        got = None
         for line in out.splitlines():
             line = line.strip()
             if not line:
@@ -864,10 +904,32 @@ def _extract_stream(video_id, max_height, preview=False):
             except Exception:
                 continue
             if isinstance(info, dict):
-                parsed = _parse_stream_info(info)
-                if parsed:
-                    return parsed
-        log(f"stream extract (client={clients}) found nothing for {video_id}")
+                picked = _pick(info)
+                if picked:
+                    got = picked
+                    break
+
+        if got is None:
+            log(f"stream extract (client={clients}) found nothing for {video_id}")
+            continue
+
+        parsed, height, is_dash, poor = got
+        if poor and attempt < len(chain) - 1:
+            log(f"client={clients}: only {height}p muxed for {video_id}; "
+                f"trying next client for DASH")
+            if fallback_muxed is None:
+                fallback_muxed = parsed
+            continue
+
+        log(f"resolved {video_id} via client={clients}: "
+            f"{height or '?'}p dash={'yes' if is_dash else 'no'}")
+        return parsed
+
+    # All clients exhausted.  Use a stashed low-res muxed result if we have one
+    # — 360p beats "won't play at all".
+    if fallback_muxed is not None:
+        log(f"all clients exhausted for {video_id}; using muxed fallback")
+        return fallback_muxed
     raise RuntimeError("no playable URL")
 
 
