@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.0-bare-ytdlp"   # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.1-drain-fix"    # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -607,10 +607,20 @@ def _run_ytdlp(args, timeout, is_preview=False):
         for line in txt.splitlines():
             log("yt-dlp:", line)
 
-    # Drain stderr in a background thread so each line is logged the moment
-    # it's emitted.  Without this, all stderr is buffered in the pipe and we
-    # only see it when the process exits — which is useless when it hangs.
-    _stderr_buf = []
+    # Drain stdout AND stderr in background threads.  We must NOT mix this
+    # with p.communicate(): communicate() spawns its OWN pipe-drain threads
+    # internally, which would race ours on the same fds and deadlock — the
+    # symptom was zero stderr output and 28 s "timed out" with no diagnostic.
+    # The main loop now uses p.poll() to check exit status.
+    _stdout_chunks = []
+    def _drain_stdout():
+        try:
+            for raw in iter(p.stdout.readline, b""):
+                if not raw:
+                    break
+                _stdout_chunks.append(raw)
+        except Exception:
+            pass
     def _drain_stderr():
         try:
             for raw in iter(p.stderr.readline, b""):
@@ -618,12 +628,19 @@ def _run_ytdlp(args, timeout, is_preview=False):
                     break
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if line:
-                    _stderr_buf.append(line)
                     _classify_and_log(line)
         except Exception:
             pass
+    _out_thread = threading.Thread(target=_drain_stdout, daemon=True)
     _err_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    _out_thread.start()
     _err_thread.start()
+
+    def _collect_stdout():
+        # Let drain threads finish flushing any buffered output before reading.
+        _out_thread.join(timeout=1.0)
+        _err_thread.join(timeout=1.0)
+        return b"".join(_stdout_chunks).decode("utf-8", "replace") if _stdout_chunks else ""
 
     def _reap(reason):
         log(reason)
@@ -632,40 +649,36 @@ def _run_ytdlp(args, timeout, is_preview=False):
             p.wait(timeout=2)
         except Exception:
             pass
-        _err_thread.join(timeout=1)
+        _collect_stdout()  # drain whatever the drain threads can still read
         return ""
 
     try:
-        # Poll instead of one blocking communicate() so we can cut the work short
-        # when the client disconnects. Granularity is 0.5s, so an abandoned
-        # request is dropped within half a second of the app closing its socket.
         deadline = time.time() + timeout
         while True:
-            try:
-                out, _ = p.communicate(timeout=0.5)
-                _err_thread.join(timeout=0.5)
-                if p.returncode not in (0, None):
-                    if p.returncode == -9 and not _was_killed_by_us(p):
-                        # SIGKILL we didn't issue — the kernel OOM-killer fired.
+            rc = p.poll()
+            if rc is not None:
+                # Process exited on its own.
+                if rc != 0:
+                    if rc == -9 and not _was_killed_by_us(p):
+                        # SIGKILL we didn't issue — kernel OOM-killer fired.
                         # Don't trip the breaker (that locks ALL videos out
-                        # for ~20 s and causes the "stream resolving → back to
-                        # browse" flicker).  Sleep briefly so kernel reclaim
-                        # catches up before the caller's retry.
+                        # for ~20 s and causes the "stream resolving → back
+                        # to browse" flicker).  Sleep briefly so kernel
+                        # reclaim catches up before the caller's retry.
                         log("yt-dlp OOM-killed (SIGKILL -9); pausing 1.5s for memory reclaim")
                         time.sleep(1.5)
-                    elif p.returncode != -9:
-                        log(f"yt-dlp exited {p.returncode} for args={args[:4]}...")
-                    # else: we killed it (preempt/timeout/shutdown) — already
-                    # logged by _reap; no need to repeat.
-                return out.decode("utf-8", "replace") if out else ""
-            except subprocess.TimeoutExpired:
-                pass
+                    elif rc != -9:
+                        log(f"yt-dlp exited {rc} for args={args[:4]}...")
+                    # else: we killed it (preempt/timeout/shutdown); _reap
+                    # already logged the reason.
+                return _collect_stdout()
             if not _client_is_alive():
                 return _reap("client disconnected; killing yt-dlp")
             if is_preview and _play_pending():
                 return _reap("preempting preview yt-dlp for a pending play")
             if time.time() >= deadline:
                 return _reap("yt-dlp timed out; killing process group")
+            time.sleep(0.25)   # poll granularity — same order as before
     except Exception as ex:
         log("yt-dlp run failed:", ex)
         _kill_proc_group(p)
