@@ -322,7 +322,17 @@ def _cleanup_mei_dirs():
         log(f"cleaned {cleaned} orphaned _MEI dir(s) from /dev/shm")
 
 
+# Procs we've explicitly killed (preempt, timeout, shutdown).  These exit
+# with returncode == -9 just like a kernel OOM kill, so we use this set
+# to disambiguate "kernel killed it" from "we killed it" — without that,
+# every preempt was being misreported as OOM, tripping the breaker, and
+# locking the next 20 s of plays out.
+_killed_by_us = set()
+_killed_lock  = threading.Lock()
+
 def _kill_proc_group(p):
+    with _killed_lock:
+        _killed_by_us.add(p.pid)
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
     except Exception:
@@ -330,6 +340,14 @@ def _kill_proc_group(p):
             p.kill()
         except Exception:
             pass
+
+def _was_killed_by_us(p):
+    with _killed_lock:
+        return p.pid in _killed_by_us
+
+def _forget_kill(p):
+    with _killed_lock:
+        _killed_by_us.discard(p.pid)
 
 def _kill_all_children():
     with _active_lock:
@@ -612,19 +630,18 @@ def _run_ytdlp(args, timeout, is_preview=False):
                 out, err = p.communicate(timeout=0.5)
                 _emit_stderr(err)
                 if p.returncode not in (0, None):
-                    if p.returncode == -9:
-                        # SIGKILL from the kernel OOM killer.  DON'T trip the
-                        # breaker: that would slam the door on every subsequent
-                        # request for ~20 s with "circuit breaker open",
-                        # giving the user the "stream resolving → back to
-                        # browse" flicker for every video.  Instead, sleep
-                        # briefly so kernel reclaim catches up before the
-                        # caller's next attempt, and let that next attempt
-                        # actually run — most second tries succeed.
+                    if p.returncode == -9 and not _was_killed_by_us(p):
+                        # SIGKILL we didn't issue — the kernel OOM-killer fired.
+                        # Don't trip the breaker (that locks ALL videos out
+                        # for ~20 s and causes the "stream resolving → back to
+                        # browse" flicker).  Sleep briefly so kernel reclaim
+                        # catches up before the caller's retry.
                         log("yt-dlp OOM-killed (SIGKILL -9); pausing 1.5s for memory reclaim")
                         time.sleep(1.5)
-                    else:
+                    elif p.returncode != -9:
                         log(f"yt-dlp exited {p.returncode} for args={args[:4]}...")
+                    # else: we killed it (preempt/timeout/shutdown) — already
+                    # logged by _reap; no need to repeat.
                 return out.decode("utf-8", "replace") if out else ""
             except subprocess.TimeoutExpired:
                 pass
@@ -644,6 +661,7 @@ def _run_ytdlp(args, timeout, is_preview=False):
         if is_preview:
             with _preview_lock:
                 _preview_procs.discard(p)
+        _forget_kill(p)
 
 
 def _uploaded_ago(info):
