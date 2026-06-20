@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.6-tmpdir-back"  # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.7-tmpdir-verified" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -281,17 +281,22 @@ def _client_is_alive():
         return True
 
 def _cleanup_mei_dirs():
-    """Remove orphaned PyInstaller extraction dirs from /dev/shm.
+    """Remove orphaned PyInstaller extraction dirs from our TMPDIR.
 
-    Every yt-dlp invocation unpacks its bundle to /dev/shm/_MEIxxxxxx (~70 MB).
+    Every yt-dlp invocation unpacks its bundle to $TMPDIR/_MEIxxxxxx (~70 MB).
     When we SIGKILL the process group, Python's atexit cleanup never runs and
-    the dir is left behind.  Four kills fills the 320 MB tmpfs and trips the
-    circuit breaker for all subsequent resolves.
+    the dir is left behind.  Enough kills fill the tmpfs and PyInstaller can
+    no longer mkdir its extraction dir, killing all subsequent resolves with
+    `Could not create temporary directory`.
 
-    We find orphans by scanning /proc/*/maps: any _MEI dir that no live process
-    has mapped is safe to delete.
-    """
+    We find orphans by scanning /proc/*/maps: any _MEI dir that no live
+    process has mapped is safe to delete.  Sweep both our dedicated tmpdir
+    AND /dev/shm at root (covers _MEIs left by prior tubed versions before
+    we moved the extraction location)."""
     import glob
+    scan_roots = [_PYI_TMPDIR, "/dev/shm"]
+    # dedupe while preserving order
+    scan_roots = list(dict.fromkeys(scan_roots))
     in_use: set = set()
     try:
         for pid_entry in os.listdir("/proc"):
@@ -300,29 +305,32 @@ def _cleanup_mei_dirs():
             try:
                 with open(f"/proc/{pid_entry}/maps") as fh:
                     for line in fh:
-                        if "/dev/shm/_MEI" in line:
-                            parts = line.split()
-                            if parts:
-                                path = parts[-1]
-                                idx = path.find("/dev/shm/_MEI")
-                                if idx >= 0:
-                                    after = path[idx + len("/dev/shm/"):]
-                                    in_use.add("/dev/shm/" + after.split("/")[0])
+                        for root in scan_roots:
+                            tag = f"{root}/_MEI"
+                            if tag in line:
+                                parts = line.split()
+                                if parts:
+                                    path = parts[-1]
+                                    idx = path.find(tag)
+                                    if idx >= 0:
+                                        after = path[idx + len(root) + 1:]
+                                        in_use.add(os.path.join(root, after.split("/")[0]))
             except OSError:
                 pass
     except OSError:
         pass
     cleaned = 0
-    for d in glob.glob("/dev/shm/_MEI*"):
-        if not os.path.isdir(d) or d in in_use:
-            continue
-        try:
-            shutil.rmtree(d, ignore_errors=True)
-            cleaned += 1
-        except OSError:
-            pass
+    for root in scan_roots:
+        for d in glob.glob(os.path.join(root, "_MEI*")):
+            if not os.path.isdir(d) or d in in_use:
+                continue
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+                cleaned += 1
+            except OSError:
+                pass
     if cleaned:
-        log(f"cleaned {cleaned} orphaned _MEI dir(s) from /dev/shm")
+        log(f"cleaned {cleaned} orphaned _MEI dir(s)")
 
 
 # Procs we've explicitly killed (preempt, timeout, shutdown).  These exit
@@ -490,24 +498,51 @@ def _ytdlp_base_args(use_cookies=True):
     return args
 
 
-def _ytdlp_env():
-    """Augment env for two things, both essential on this device:
+def _ensure_pyi_tmpdir():
+    """Find or create a tmpdir PyInstaller can actually write to.
 
-    * TMPDIR=/dev/shm — the device ships PyInstaller-bundled yt-dlp, which
-      extracts its bundle to $TMPDIR/_MEIxxxx on every invocation.  The root
-      partition is 100 % full (see `df -h`), so the default /tmp fails with
-      "[PYI:ERROR] Could not create temporary directory" — instantly when
-      /tmp is truly full, or after a long stall when PyInstaller's fallback
-      paths probe a slow disk.  /dev/shm is a 320 MB tmpfs in RAM that we
-      keep clean via _cleanup_mei_dirs(), so extraction is fast AND
-      reliable.  (We previously dropped this in v0.7.3 based on a stale
-      memory note claiming pip-installed yt-dlp; the on-device evidence
-      says otherwise.)
-    * PATH augmented with BASE_DIR/vendor so yt-dlp finds the vendored deno
-      JS runtime when it needs to solve n-sig challenges."""
+    PyInstaller-bundled yt-dlp extracts its ~70 MB bundle to $TMPDIR/_MEIxxxx
+    on every invocation.  If TMPDIR is unset → defaults to /tmp.  On this
+    device /tmp lives on the 100 %-full root partition, so PyInstaller dies
+    with `[PYI:ERROR] Could not create temporary directory` before any
+    Python code ever runs.
+
+    We try each candidate by actually creating a probe directory and
+    writing a tiny file — `os.path.isdir()` is not enough, because tmpfs
+    that's full passes isdir() and still fails mkdir().  Returns the path
+    of the first candidate that survives the probe."""
+    candidates = [
+        "/dev/shm/tubed-tmp",      # tmpfs in RAM — preferred (fast, isolated)
+        "/var/tmp/tubed-tmp",      # disk fallback, usually on a writable partition
+        "/tmp/tubed-tmp",          # last resort
+    ]
+    for path in candidates:
+        try:
+            os.makedirs(path, exist_ok=True)
+            probe = os.path.join(path, ".write_probe")
+            with open(probe, "wb") as f:
+                f.write(b"x")
+            os.unlink(probe)
+            return path
+        except OSError as ex:
+            log(f"tmpdir candidate {path} unusable: {ex}")
+            continue
+    log("ERROR: no writable tmpdir found — PyInstaller yt-dlp will fail")
+    return "/dev/shm"  # let it fail with a clear PYI error
+
+_PYI_TMPDIR = _ensure_pyi_tmpdir()
+
+
+def _ytdlp_env():
+    """Augment env for two essentials on this device:
+
+    * TMPDIR pointing to a tubed-owned, verified-writable directory so the
+      PyInstaller bootloader can extract its _MEI bundle reliably.  See
+      _ensure_pyi_tmpdir for the candidate list and why we probe.
+    * PATH includes BASE_DIR/vendor so yt-dlp can find the vendored deno
+      JS runtime."""
     env = os.environ.copy()
-    if os.path.isdir("/dev/shm"):
-        env["TMPDIR"] = "/dev/shm"
+    env["TMPDIR"] = _PYI_TMPDIR
     vendor_dir = os.path.join(BASE_DIR, "vendor")
     if os.path.isfile(os.path.join(vendor_dir, "deno")):
         cur = env.get("PATH", "")
@@ -1438,6 +1473,7 @@ def main():
 
     _cleanup_mei_dirs()   # clear any stale extracts from a previous run
     log(f"tubed v{TUBED_VERSION} starting")
+    log(f"PyInstaller TMPDIR: {_PYI_TMPDIR}")
 
     # Spawn-pathway sanity check: invoke `yt-dlp --version` through the same
     # Popen settings we use for real resolves.  If this hangs or takes >3 s,
