@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.8.1-ytdlp-verbose" # bump on every meaningful edit so the
+TUBED_VERSION = "0.8.2-run-not-popen" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -604,6 +604,66 @@ def _have_js_runtime():
     return _find_js_runtime() is not None
 
 
+def _run_ytdlp_simple(args, timeout):
+    """Simple subprocess.run path used for plays.  This mirrors EXACTLY what
+    the user's working manual shell test does and what our successful
+    startup `spawn sanity` check uses: one subprocess.run with capture,
+    no Popen + thread machinery.
+
+    The Popen + drain-threads path (_run_ytdlp below) silently dropped
+    yt-dlp's output in 0.7.x/0.8.0 — manual identical-args invocations
+    produced full verbose output instantly, but tubed-spawned ones showed
+    zero stderr for 28 s before being killed.  Using subprocess.run avoids
+    whatever pipe/thread interaction was breaking that.
+
+    Plays don't need mid-flight preempt (only previews do), so they don't
+    need the polling-loop machinery — they just need a yt-dlp call that
+    actually works."""
+    if _breaker_open():
+        return ""
+    _cleanup_mei_dirs()
+    try:
+        log("spawn argv:", " ".join(args))
+        env = _ytdlp_env()
+        log(f"spawn env: TMPDIR={env.get('TMPDIR','(unset)')} "
+            f"PATH={env.get('PATH','(unset)')[:80]} "
+            f"PYTHONUNBUFFERED={env.get('PYTHONUNBUFFERED','(unset)')}")
+        t0 = time.time()
+        result = subprocess.run(
+            args, capture_output=True, timeout=timeout,
+            stdin=subprocess.DEVNULL, env=env,
+        )
+        dt = time.time() - t0
+        rc = result.returncode
+        out = (result.stdout or b"").decode("utf-8", "replace")
+        err = (result.stderr or b"").decode("utf-8", "replace").strip()
+        log(f"yt-dlp finished in {dt:.2f}s rc={rc} stdout={len(out)}B stderr={len(err)}B")
+        if err:
+            # Disk-full / temp-dir failure → trip the breaker.
+            if ("create temporary directory" in err or "No space left" in err
+                    or "Failed to extract" in err
+                    or "decompression resulted in return code" in err):
+                log("yt-dlp:", err.splitlines()[0] if err else "")
+                _trip_breaker()
+                return ""
+            # Otherwise log every line so we can see what yt-dlp said.
+            for line in err.splitlines():
+                log("yt-dlp:", line)
+        if rc != 0:
+            return ""
+        return out
+    except subprocess.TimeoutExpired as ex:
+        log(f"yt-dlp timed out after {timeout}s (run path)")
+        # Capture whatever did make it out before the kill.
+        if ex.stderr:
+            for line in ex.stderr.decode("utf-8", "replace").splitlines():
+                log("yt-dlp:", line)
+        return ""
+    except Exception as ex:
+        log(f"yt-dlp run failed: {ex}")
+        return ""
+
+
 def _run_ytdlp(args, timeout, is_preview=False):
     """Run yt-dlp and return stdout text (empty on failure). The child runs in
     its own process group and is force-killed (group-wide) on timeout/error, so
@@ -611,6 +671,11 @@ def _run_ytdlp(args, timeout, is_preview=False):
 
     is_preview: when True, the run aborts the instant a real play is queued
     (see _pending_plays) so hover-prefetch never delays an actual play."""
+    # Plays route through _run_ytdlp_simple (no preempt needed; the Popen+
+    # thread path silently swallowed yt-dlp output).  Only previews still
+    # use this path because they need mid-flight preemption.
+    if not is_preview:
+        return _run_ytdlp_simple(args, timeout)
     # Circuit breaker: if yt-dlp recently couldn't make its temp dir (disk full),
     # don't even spawn it — that only burns CPU and writes more error spam to the
     # very disk that's full.  Fail fast until the cooldown clears.
