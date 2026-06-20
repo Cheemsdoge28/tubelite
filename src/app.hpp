@@ -24,6 +24,7 @@
 
 class App {
     friend class Compositor;
+    friend class SettingsModal;
 public:
     App() : state_manager_(state_) {}
     ~App();
