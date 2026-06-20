@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.4-no-nice"      # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.5-spawn-sanity" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -1428,6 +1428,29 @@ def main():
 
     _cleanup_mei_dirs()   # clear any stale extracts from a previous run
     log(f"tubed v{TUBED_VERSION} starting")
+
+    # Spawn-pathway sanity check: invoke `yt-dlp --version` through the same
+    # Popen settings we use for real resolves.  If this hangs or takes >3 s,
+    # the problem is NOT with yt-dlp arguments or network — it's something
+    # about how tubed spawns subprocesses (descriptor inheritance, session
+    # state, ulimits, etc).  Times under 1 s mean spawn is healthy and the
+    # real bottleneck is inside yt-dlp's extraction code path.
+    try:
+        t0 = time.time()
+        sanity = subprocess.run(
+            [YT_DLP, "--version"],
+            capture_output=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+            env=_ytdlp_env(),
+        )
+        dt = time.time() - t0
+        ver = (sanity.stdout or b"").decode("utf-8", "replace").strip()
+        log(f"spawn sanity: yt-dlp --version → '{ver}' in {dt:.2f}s rc={sanity.returncode}")
+    except subprocess.TimeoutExpired:
+        log("spawn sanity: yt-dlp --version TIMED OUT (>5s) — spawn pathway itself is broken")
+    except Exception as ex:
+        log(f"spawn sanity: yt-dlp --version FAILED — {ex}")
+
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
     _rt = _find_js_runtime()
     log(f"js runtime: {_rt[0]} @ {_rt[1]}" if _rt
