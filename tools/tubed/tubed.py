@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.7-tmpdir-verified" # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.8-proc-diag"    # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -1475,27 +1475,58 @@ def main():
     log(f"tubed v{TUBED_VERSION} starting")
     log(f"PyInstaller TMPDIR: {_PYI_TMPDIR}")
 
-    # Spawn-pathway sanity check: invoke `yt-dlp --version` through the same
-    # Popen settings we use for real resolves.  If this hangs or takes >3 s,
-    # the problem is NOT with yt-dlp arguments or network — it's something
-    # about how tubed spawns subprocesses (descriptor inheritance, session
-    # state, ulimits, etc).  Times under 1 s mean spawn is healthy and the
-    # real bottleneck is inside yt-dlp's extraction code path.
+    # Process-state diagnostics: nice value, ulimits, fd count.  If `yt-dlp
+    # --version` is slow (sanity check) the cause is usually one of these
+    # being inherited from a sandboxed launcher and propagated to children.
     try:
-        t0 = time.time()
-        sanity = subprocess.run(
-            [YT_DLP, "--version"],
-            capture_output=True, timeout=5,
-            stdin=subprocess.DEVNULL,
-            env=_ytdlp_env(),
-        )
-        dt = time.time() - t0
-        ver = (sanity.stdout or b"").decode("utf-8", "replace").strip()
-        log(f"spawn sanity: yt-dlp --version → '{ver}' in {dt:.2f}s rc={sanity.returncode}")
-    except subprocess.TimeoutExpired:
-        log("spawn sanity: yt-dlp --version TIMED OUT (>5s) — spawn pathway itself is broken")
+        import resource
+        nice_self = os.nice(0)   # returns current value without changing it
+        nofile = resource.getrlimit(resource.RLIMIT_NOFILE)
+        nproc  = resource.getrlimit(resource.RLIMIT_NPROC)
+        cpu_t  = resource.getrlimit(resource.RLIMIT_CPU)
+        as_lim = resource.getrlimit(resource.RLIMIT_AS)
+        try:
+            fd_count = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+        except OSError:
+            fd_count = -1
+        log(f"proc state: nice={nice_self} fds_open={fd_count} "
+            f"nofile={nofile} nproc={nproc} cpu={cpu_t} as={as_lim}")
+        # If we're niced down (>0) try to renice to 0.  Children inherit
+        # the niceness, and a high nice value can make `yt-dlp --version`
+        # take many seconds under app CPU load.
+        if nice_self > 0:
+            try:
+                os.nice(-nice_self)
+                log(f"reniced from {nice_self} to {os.nice(0)}")
+            except OSError as ex:
+                log(f"renice failed (needs root): {ex}")
     except Exception as ex:
-        log(f"spawn sanity: yt-dlp --version FAILED — {ex}")
+        log(f"proc state introspection failed: {ex}")
+
+    # Spawn-pathway sanity check: invoke `yt-dlp --version` twice through
+    # the same Popen settings we use for real resolves.  Two calls so we can
+    # distinguish cold-start PyInstaller extraction (slow) from steady-state
+    # spawn (should be sub-second).  If BOTH are slow the issue is
+    # scheduling / resource limits, not extraction.
+    for label, budget in (("cold", 15), ("warm", 5)):
+        try:
+            t0 = time.time()
+            sanity = subprocess.run(
+                [YT_DLP, "--version"],
+                capture_output=True, timeout=budget,
+                stdin=subprocess.DEVNULL,
+                env=_ytdlp_env(),
+            )
+            dt = time.time() - t0
+            ver = (sanity.stdout or b"").decode("utf-8", "replace").strip()
+            err = (sanity.stderr or b"").decode("utf-8", "replace").strip()
+            log(f"spawn sanity ({label}): yt-dlp --version → '{ver}' in {dt:.2f}s rc={sanity.returncode}")
+            if err:
+                log(f"spawn sanity ({label}) stderr: {err[:200]}")
+        except subprocess.TimeoutExpired:
+            log(f"spawn sanity ({label}): yt-dlp --version TIMED OUT (>{budget}s)")
+        except Exception as ex:
+            log(f"spawn sanity ({label}): yt-dlp --version FAILED — {ex}")
 
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
     _rt = _find_js_runtime()
