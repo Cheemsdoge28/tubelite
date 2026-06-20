@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.3-clean-env"    # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.4-no-nice"      # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -449,11 +449,13 @@ YT_DLP = _find_ytdlp()
 # nice -n 5 still keeps the UI responsive (foreground tasks get priority) without
 # the extended peak-memory duration that -n 15 caused.
 def _sched_prefix():
-    prefix = []
-    nice_bin = shutil.which("nice")
-    if nice_bin:
-        prefix += [nice_bin, "-n", "5"]
-    return prefix
+    # Previously prepended `nice -n 5` to keep the UI responsive, but on this
+    # RAM/CPU-constrained device the foreground TubeLite app saturates the
+    # CPU and nice'd yt-dlp gets scheduling-starved — manifesting as the
+    # 9-28 s timeouts with ZERO output (yt-dlp's Python interpreter hadn't
+    # even reached its first print() yet).  Match the user's shell exactly:
+    # no nice prefix.
+    return []
 
 _SCHED_PREFIX = _sched_prefix()
 
@@ -618,16 +620,20 @@ def _run_ytdlp(args, timeout, is_preview=False):
                 _stdout_chunks.append(raw)
         except Exception:
             pass
+    _first_byte_logged = [False]
     def _drain_stderr():
         try:
             for raw in iter(p.stderr.readline, b""):
                 if not raw:
                     break
+                if not _first_byte_logged[0]:
+                    _first_byte_logged[0] = True
+                    log(f"yt-dlp pid={p.pid} produced first stderr line")
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if line:
                     _classify_and_log(line)
-        except Exception:
-            pass
+        except Exception as ex:
+            log(f"stderr drain crashed: {ex}")
     _out_thread = threading.Thread(target=_drain_stdout, daemon=True)
     _err_thread = threading.Thread(target=_drain_stderr, daemon=True)
     _out_thread.start()
