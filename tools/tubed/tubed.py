@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.8.2-run-not-popen" # bump on every meaningful edit so the
+TUBED_VERSION = "0.8.4-dash-restored" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -1260,18 +1260,19 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else 38.0)
+    # Headroom math (verified from production tubed.log on 0.8.2):
+    # * PyInstaller bootloader extraction: ~8 s
+    # * webpage + player API JSON downloads: ~7-10 s
+    # * deno JS-challenge solve for n-sig (DASH unlock): ~5-10 s
+    # Worst-case play: ~28 s of real work.  Plus a play can queue behind
+    # an in-flight search (~15 s), so overall_deadline must cover the
+    # full queue + work + reap-margin.  Previews stay muxed and don't
+    # need deno, so their budget is much tighter.
+    overall_deadline = deadline if deadline is not None else time.time() + (18.0 if preview else 55.0)
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    # PyInstaller-bundled yt-dlp burns ~8 s on bootloader extraction before
-    # any code runs (confirmed by spawn sanity log), so the run_timeout has
-    # to comfortably cover EXTRACT + actual work.  Previews: 8 s extract +
-    # ~4 s muxed resolve = ~12 s typical; ceiling 14 s.  Plays: 8 s extract
-    # + ~15 s network/JS = ~23 s typical; ceiling 35 s.  The C++ side caps
-    # plays at 40 s socket timeout, so 35 s + ~2 s reap margin keeps us
-    # under that.
-    run_timeout = min(remaining - 2.0, 14.0 if preview else 35.0)
+    run_timeout = min(remaining - 2.0, 16.0 if preview else 45.0)
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
