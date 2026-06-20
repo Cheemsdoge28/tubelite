@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.5-spawn-sanity" # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.6-tmpdir-back"  # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -491,16 +491,23 @@ def _ytdlp_base_args(use_cookies=True):
 
 
 def _ytdlp_env():
-    """Inherit the parent's env almost verbatim.  Previous versions tried to
-    be clever (pinning LD_LIBRARY_PATH for a side-loaded libssl3, redirecting
-    TMPDIR to /dev/shm for fast PyInstaller extraction) but the device is
-    now running pip-installed yt-dlp — no PyInstaller extraction, no missing
-    libssl3 — so those tweaks just diverged tubed's spawn env from the user's
-    shell env in ways that caused silent hangs.
+    """Augment env for two things, both essential on this device:
 
-    Only one augmentation kept: prepend BASE_DIR/vendor to PATH so yt-dlp
-    can auto-discover the vendored deno JS runtime if it ever needs it."""
+    * TMPDIR=/dev/shm — the device ships PyInstaller-bundled yt-dlp, which
+      extracts its bundle to $TMPDIR/_MEIxxxx on every invocation.  The root
+      partition is 100 % full (see `df -h`), so the default /tmp fails with
+      "[PYI:ERROR] Could not create temporary directory" — instantly when
+      /tmp is truly full, or after a long stall when PyInstaller's fallback
+      paths probe a slow disk.  /dev/shm is a 320 MB tmpfs in RAM that we
+      keep clean via _cleanup_mei_dirs(), so extraction is fast AND
+      reliable.  (We previously dropped this in v0.7.3 based on a stale
+      memory note claiming pip-installed yt-dlp; the on-device evidence
+      says otherwise.)
+    * PATH augmented with BASE_DIR/vendor so yt-dlp finds the vendored deno
+      JS runtime when it needs to solve n-sig challenges."""
     env = os.environ.copy()
+    if os.path.isdir("/dev/shm"):
+        env["TMPDIR"] = "/dev/shm"
     vendor_dir = os.path.join(BASE_DIR, "vendor")
     if os.path.isfile(os.path.join(vendor_dir, "deno")):
         cur = env.get("PATH", "")
@@ -589,11 +596,14 @@ def _run_ytdlp(args, timeout, is_preview=False):
     def _classify_and_log(txt):
         if not txt:
             return
-        # Disk-full / temp-dir failure → trip the breaker and DON'T spam the log
-        # (the breaker logs once); logging every line here is what filled the
-        # tmpfs in the first place.
+        # Disk-full / temp-dir failure → trip the breaker.  ALSO log the line
+        # so we can see what actually broke (previous behavior swallowed the
+        # message, which hid the v0.7.3 "TMPDIR unset → /tmp full" failure
+        # behind a generic 'breaker tripped' line and made the bug nearly
+        # impossible to diagnose).
         if ("create temporary directory" in txt or "No space left" in txt
                 or "Failed to extract" in txt or "decompression resulted in return code" in txt):
+            log("yt-dlp:", txt)
             _trip_breaker()
             return
         # SABR-gated video: android client gets formats blocked by YouTube's SABR
