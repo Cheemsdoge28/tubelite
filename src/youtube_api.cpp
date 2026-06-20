@@ -282,6 +282,17 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
+        // Diagnostic log — surfaces tubed's "not signed in" / other errors
+        // in stderr so the user can see why subscriptions appear empty.
+        if (!ok) {
+            std::cerr << "[YouTubeAPI] feed kind=" << kind
+                      << " page=" << page << " tubed request FAILED\n";
+        } else if (!resp.value("ok", false)) {
+            std::cerr << "[YouTubeAPI] feed kind=" << kind
+                      << " tubed returned error: "
+                      << resp.value("error", std::string("unknown")) << "\n";
+        }
+
         if (ok && resp.value("ok", false) && resp.contains("results")) {
             for (const auto& item : resp["results"]) {
                 if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }

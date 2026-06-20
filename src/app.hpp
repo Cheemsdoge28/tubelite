@@ -130,6 +130,10 @@ private:
 
     std::vector<YouTubeVideo> cached_trending_videos_;
     std::chrono::steady_clock::time_point trending_cache_time_;
+    // Which feed kind populated cached_trending_videos_.  "" before first
+    // load; "trending" or "subscriptions" thereafter.  Used so a toggle in
+    // the settings modal doesn't keep showing the old feed's cache.
+    std::string cached_home_kind_;
 
     std::shared_ptr<ui::VideoCard> preview_card_{nullptr};
     bool is_playing_preview_{false};

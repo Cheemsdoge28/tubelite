@@ -1767,17 +1767,45 @@ void App::loadHomeFeeds() {
     home_page_ = 1;
     homeLoadFailed_ = false;
     state_.isLoadingVideo = false;
-    
+
     using namespace std::chrono;
     auto now = steady_clock::now();
-    
-    // Load from disk cache if memory cache is empty
+
+    // Decide which feed to load up-front so cache lookups can be kind-aware.
+    // Subscriptions requires sign-in; without cookies we silently fall back
+    // to trending (and the title makes that visible).
+    const bool wantsSubs = (state_.homeFeedKind == "subscriptions");
+    const bool useSubs   = wantsSubs && state_.authed;
+    const std::string kind = useSubs ? "subscriptions" : "trending";
+    std::cout << "[App] loadHomeFeeds: homeFeedKind='" << state_.homeFeedKind
+              << "' authed=" << state_.authed
+              << " → kind='" << kind << "'"
+              << (wantsSubs && !useSubs ? " (subs requested but guest — fallback)" : "")
+              << std::endl;
+
+    // If the on-disk cache was for a different kind, discard it.  Otherwise
+    // toggling Trending↔Subscriptions in the modal would keep showing the
+    // old feed's cards even after we tried to switch.
+    if (!cached_home_kind_.empty() && cached_home_kind_ != kind) {
+        cached_trending_videos_.clear();
+        home_grid_->cards.clear();
+        focus_manager_.resetGridFocus(home_grid_);
+        focus_manager_.setGrid(home_grid_);
+    }
+
+    // Load from disk cache if memory cache is empty AND for this kind.
     if (cached_trending_videos_.empty()) {
         loadHomeCache();
+        // loadHomeCache restores trending only (the disk cache is shared);
+        // if we're loading subscriptions, treat it as empty so we fetch.
+        if (kind == "subscriptions") {
+            cached_trending_videos_.clear();
+        }
     }
-    
-    // If cache is fresh (< 30 minutes), use it and return
-    if (!cached_trending_videos_.empty() && duration_cast<minutes>(now - trending_cache_time_).count() < 30) {
+
+    // If cache is fresh AND matches the requested kind, render from cache.
+    if (!cached_trending_videos_.empty() && cached_home_kind_ == kind &&
+            duration_cast<minutes>(now - trending_cache_time_).count() < 30) {
         state_.isSearching = false;
         if (home_grid_->cards.empty()) {
             for (const auto& v : cached_trending_videos_) {
@@ -1787,35 +1815,38 @@ void App::loadHomeFeeds() {
             }
             focus_manager_.setGrid(home_grid_);
         }
+        home_grid_->title = (kind == "subscriptions") ? "Subscriptions" : "Trending";
         uiDirty_ = true;
         return;
     }
-    
+
     // Stale-While-Revalidate: If we have no cache, we must clear and show loading
     if (cached_trending_videos_.empty()) {
         home_grid_->cards.clear();
         focus_manager_.resetGridFocus(home_grid_);
         focus_manager_.setGrid(home_grid_);
     }
-    
+
     state_.isSearching = true;
     uiDirty_ = true;
-    // Decide which feed to load: subscriptions when the user opted in AND is
-    // signed in, otherwise the anonymous trending feed.  The home_feed_query_
-    // string is mostly cosmetic ("trending" vs "subs") — the actual fetch
-    // dispatch happens below based on useSubs.
-    const bool useSubs = (state_.homeFeedKind == "subscriptions") && state_.authed;
-    home_grid_->title = useSubs ? "Subscriptions" : "Trending";
+    if (wantsSubs && !state_.authed) {
+        home_grid_->title = "Trending (Sign in for Subscriptions)";
+    } else {
+        home_grid_->title = useSubs ? "Subscriptions" : "Trending";
+    }
     home_feed_query_ = useSubs ? "subs" : "trending";
     pendingMoreHome_ = false;
 
     int reqPage = home_page_;
     auto accumulated_results = std::make_shared<std::vector<YouTubeVideo>>();
-    auto cb = [this, reqPage, accumulated_results](const std::vector<YouTubeVideo>& results, bool finished) {
-        queueOnMainThread([this, reqPage, results, finished, accumulated_results]() {
+    auto cb = [this, reqPage, accumulated_results, kind](const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqPage, results, finished, accumulated_results, kind]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
 
             if (finished) {
+                std::cout << "[App] loadHomeFeeds: kind='" << kind
+                          << "' finished; got " << accumulated_results->size()
+                          << " items" << std::endl;
                 if (!accumulated_results->empty()) {
                     homeLoadFailed_ = false;
                     home_grid_->cards.clear();
@@ -1828,6 +1859,7 @@ void App::loadHomeFeeds() {
                     }
                     focus_manager_.setGrid(home_grid_);
                     trending_cache_time_ = std::chrono::steady_clock::now();
+                    cached_home_kind_ = kind;       // record what's in the cache
                     saveHomeCache();
                 } else if (home_grid_->cards.empty()) {
                     homeLoadFailed_ = true;
@@ -1842,6 +1874,8 @@ void App::loadHomeFeeds() {
             }
         });
     };
+    std::cout << "[App] loadHomeFeeds: dispatching " << (useSubs ? "fetchFeed(subscriptions)" : "search(trending)")
+              << " page=" << reqPage << std::endl;
     if (useSubs) {
         youtube_api_.fetchFeed("subscriptions", reqPage, cb);
     } else {
