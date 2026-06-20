@@ -48,6 +48,9 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
+TUBED_VERSION = "0.7.0-bare-ytdlp"   # bump on every meaningful edit so the
+                                      # startup log proves which build is live
+
 BASE_DIR    = _base_dir()
 SOCK_PATH   = "/dev/shm/tubed.sock"
 PID_PATH    = "/dev/shm/tubed.pid"
@@ -464,24 +467,22 @@ _SCHED_PREFIX = _sched_prefix()
 # JS runtime is the unlock, not cookies — so streams go cookie-less.  Cookies are
 # still wired up for the future authenticated-feeds path (search/home).
 def _ytdlp_base_args(use_cookies=True):
-    args = [
-        YT_DLP, "--no-config", "--no-update",
-        "--encoding", "utf-8", "--no-check-certificate",
-        "--no-check-formats", "--cache-dir", CACHE_DIR,
-        # Default --extractor-retries=3 + --socket-timeout=10 means a single
-        # Innertube/player-JS endpoint hiccup burns ~30 s in silent retries
-        # before yt-dlp gives up — exactly the 35 s timeouts observed in
-        # tubed.log while a plain `yt-dlp -g` finishes in ~2 s.  One try is
-        # enough: tubed already has its own retry layer (per-attempt budget
-        # + the C++ side re-requests on failure).
-        "--extractor-retries", "1",
-        "--retries", "1",
-        "--socket-timeout", "8",
-    ]
-    # No --force-ipv4: on a carrier NAT (CGNAT) the v4 pool is shared with
-    # heavy scrapers and YouTube serves the "Sign in to confirm you're not a
-    # bot" challenge even to anonymous android_vr.  The working on-device
-    # manual test routed over IPv6.  Let happy-eyeballs pick.
+    """Minimum-footprint base args, matching the working manual invocation:
+        yt-dlp -f 137+140 -g https://www.youtube.com/watch?v=<id>
+
+    Every flag we used to add (--no-check-certificate, --no-check-formats,
+    --socket-timeout, --extractor-retries, --retries, --encoding utf-8,
+    --cache-dir) is gone — the manual test sets none of them and finishes
+    in ~2 s, while our augmented invocation hung past 20 s.  We keep only:
+
+    * --no-config — prevents loading a /etc/yt-dlp.conf or user config that
+      could re-inject the slow flags we just removed.
+    * --no-update — never check the GitHub release endpoint at runtime.
+
+    Cookies are opt-in via use_cookies; resolve paths pass False because the
+    manual (cookieless) test was the one that worked, and authenticated
+    requests can take a different, slower extractor path."""
+    args = [YT_DLP, "--no-config", "--no-update"]
     if use_cookies and _have_cookies():
         args += ["--cookies", COOKIES]
     return args
@@ -830,61 +831,6 @@ def op_trending(req):
     return op_search(req)
 
 
-def _pick_from_formats(formats, max_height, preview):
-    """
-    Select the best (video_url, audio_url) from a yt-dlp formats list.
-
-    When yt-dlp is run with a JS runtime, it solves n-sig for all adaptive
-    format URLs during extraction, so the URLs in the formats list are ready
-    to use directly.  Picking here (rather than relying on a hard-coded -f
-    selector) means we work with whatever YouTube actually serves and handle
-    codec/format landscape changes gracefully.
-
-    For previews / <=360p: best muxed progressive (fast, one URL, no deno).
-    For plays: best DASH video-only + audio-only pair; muxed as fallback.
-    Codec preference: avc1 video (RK3326 HW decode), mp4a audio.
-    """
-    http = [f for f in (formats or [])
-            if isinstance(f.get("url"), str) and f["url"].startswith("http")]
-
-    def vc(f):  return (f.get("vcodec") or "none").lower()
-    def ac(f):  return (f.get("acodec") or "none").lower()
-    def h(f):   return f.get("height") or 0
-
-    if preview or max_height <= 360:
-        muxed = [f for f in http
-                 if vc(f) not in ("none", "") and ac(f) not in ("none", "")
-                 and h(f) <= max_height]
-        if muxed:
-            muxed.sort(key=lambda f: (h(f), 1 if vc(f).startswith("avc1") else 0), reverse=True)
-            f = muxed[0]
-            log(f"  formats: muxed {h(f)}p {vc(f)}")
-            return f["url"], ""
-        return None
-
-    # DASH pair preferred for plays
-    vid = [f for f in http
-           if vc(f) not in ("none", "") and ac(f) in ("none", "") and h(f) <= max_height]
-    aud = [f for f in http
-           if ac(f) not in ("none", "") and vc(f) in ("none", "")]
-    if vid and aud:
-        vid.sort(key=lambda f: (1 if vc(f).startswith("avc1") else 0, h(f), f.get("tbr") or 0), reverse=True)
-        aud.sort(key=lambda f: (1 if ac(f).startswith("mp4a") else 0, f.get("abr") or 0), reverse=True)
-        v, a = vid[0], aud[0]
-        log(f"  formats: DASH {h(v)}p {vc(v)} + {ac(a)} {a.get('abr','?')}k")
-        return v["url"], a["url"]
-
-    # No DASH pair — fall back to best muxed at any height
-    muxed = [f for f in http if vc(f) not in ("none", "") and ac(f) not in ("none", "")]
-    if muxed:
-        muxed.sort(key=lambda f: (h(f), 1 if vc(f).startswith("avc1") else 0), reverse=True)
-        f = muxed[0]
-        log(f"  formats: muxed fallback {h(f)}p {vc(f)}")
-        return f["url"], ""
-
-    return None
-
-
 def _info_height(info):
     """Best-effort resolved video height from a yt-dlp --dump-json blob.
     Handles both merged (requested_formats) and single-format results."""
@@ -1153,136 +1099,61 @@ def _fetch_piped(video_id, max_height):
 
 
 def _extract_stream(video_id, max_height, preview=False, deadline=None):
-    # Fast path (Invidious/Piped): disabled as of 2026-06 — every tracked
-    # public instance is either auth-walled, DNS-gone, or 5xx-down.
-    FAST_PATH_ENABLED = False
-    if FAST_PATH_ENABLED:
-        try:
-            res = _fetch_invidious(video_id, max_height)
-            if not res:
-                res = _fetch_piped(video_id, max_height)
-            if res:
-                return res
-        except Exception as ex:
-            log(f"fast-path error for {video_id}: {ex}")
+    """Resolve playback URLs by invoking yt-dlp the same way the working
+    manual shell test does:
 
+        yt-dlp -f <selector> --dump-single-json <url>
+
+    No client spec, no extractor args, no cookies, no socket-timeout/retry
+    knobs, no cache dir.  Everything we added on top of bare yt-dlp turned
+    out to either be cosmetic or actively harmful — strip it all back.
+    Cookies are intentionally omitted from resolves: the cookieless manual
+    test was the one that worked; authed extraction takes a different (and
+    on this device, slow) path.  Sign-in still benefits search and other
+    operations that go through op_search."""
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    yt_url  = f"https://www.youtube.com/watch?v={video_id}"
     overall_deadline = deadline if deadline is not None else time.time() + (11.0 if preview else 37.0)
-    authed  = _have_cookies()
+    remaining = overall_deadline - time.time()
+    if remaining < 4.0:
+        raise RuntimeError("deadline exceeded")
+    run_timeout = min(remaining - 2.0, 11.0 if preview else 28.0)
+    if run_timeout < 4.0:
+        raise RuntimeError("deadline exceeded")
 
-    def _call(extra_args, timeout, is_preview):
-        """Run yt-dlp --dump-single-json and return parsed info dict or None."""
-        args = _ytdlp_base_args(use_cookies=authed) + [
-            "--no-playlist", "--dump-single-json", yt_url,
-        ] + extra_args
-        raw = _run_ytdlp(args, timeout=timeout, is_preview=is_preview)
-        if not raw:
-            return None
-        try:
-            return json.loads(raw.strip())
-        except Exception as ex:
-            log(f"yt-dlp JSON parse for {video_id}: {ex}")
-            return None
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    def _result(info):
-        """Extract (url, audio_url, sub, meta) from info dict, or None."""
-        if not isinstance(info, dict):
-            return None
-        sub  = _best_subtitle_url(info)
-        meta = {
-            "description":      info.get("description") or "",
-            "view_count":       int(info.get("view_count") or 0),
-            "like_count":       int(info.get("like_count") or 0),
-            "comment_count":    int(info.get("comment_count") or 0),
-            "subscriber_count": int(info.get("channel_follower_count") or 0),
-        }
-        # Primary: pick directly from the formats list.  With a JS runtime,
-        # yt-dlp solves n-sig for all adaptive format URLs during extraction,
-        # so the URLs are ready to use.  This is more robust than a fixed -f
-        # selector: if YouTube changes its format landscape (new codecs,
-        # retired itags) the pick logic just selects the next best thing.
-        picked = _pick_from_formats(info.get("formats"), max_height, preview)
-        if picked:
-            return picked[0], picked[1], sub, meta
-        # Secondary: fall back to yt-dlp's own selection in requested_formats.
-        legacy = _parse_stream_info(info)
-        return legacy  # may be None
+    # Format selector mirrors the manual `-f 137+140` style — best video+audio
+    # under the height cap with a flat fallback.  Previews get muxed-only so
+    # the player gets a single URL with audio baked in.
+    if preview or max_height <= 360:
+        fmt = f"best[height<={max_height}]/best"
+    else:
+        fmt = (f"bestvideo[height<={max_height}]+bestaudio"
+               f"/best[height<={max_height}]/best")
 
-    # ── PRIMARY: no client spec — let yt-dlp choose ────────────────────────
-    # This mirrors what the user's working manual yt-dlp test does: no
-    # --extractor-args, no forced client.  yt-dlp handles client selection,
-    # SABR gating, and format negotiation internally.
-    #
-    # We retry once on a fully-empty result (plays only).  Rationale: when a
-    # play preempts an in-flight preview, the first yt-dlp spawn often gets
-    # OOM-killed during PyInstaller decompression — the preview's pages
-    # haven't been fully reclaimed yet.  The 1.5s sleep in the OOM path
-    # plus this retry usually clears that window and the second try
-    # succeeds.  Previews don't retry: they're best-effort and we'd rather
-    # free the worker for the next preview/play than burn budget here.
-    tries = 1 if preview else 2
-    result = None
-    info   = None
-    for i in range(tries):
-        remaining = overall_deadline - time.time()
-        if remaining < 4.0:
-            break
-        # No JS runtime overhead: yt-dlp picks android_vr by default; those
-        # URLs aren't n-sig-throttled.  ~5-10s typical, 20s ceiling.
-        run_timeout = min(remaining - 2.0, 9.0 if preview else 20.0)
-        if run_timeout < 4.0:
-            break
-        info = _call([], run_timeout, is_preview=preview)
-        result = _result(info) if info else None
-        if result:
-            break
-        if i < tries - 1:
-            log(f"primary empty for {video_id}; retrying once")
-    if result:
-        height = _info_height(info)
-        log(f"resolved {video_id}: {height or '?'}p dash={'yes' if result[1] else 'no'}")
-        return result
+    args = _ytdlp_base_args(use_cookies=False) + [
+        "--no-playlist", "-f", fmt, "--dump-single-json", yt_url,
+    ]
 
-    # ── FALLBACK: android muxed 360p — signed-out users only ───────────────
-    # Authenticated users already had cookies on the primary call; retrying
-    # with the android client is unlikely to recover if that failed.
-    # For anonymous users, android reliably returns itag-18 (360p AVC muxed)
-    # without SABR gating, giving a watchable stream even when yt-dlp's
-    # default client selection fails.
-    if not authed:
-        remaining2 = overall_deadline - time.time()
-        if remaining2 >= 6.0:
-            fb_info = _call(
-                ["--extractor-args", "youtube:player_client=android"],
-                timeout=min(remaining2 - 2.0, 13.0),
-                is_preview=preview,
-            )
-            if fb_info:
-                fmts  = fb_info.get("formats") or []
-                http  = [f for f in fmts
-                         if isinstance(f.get("url"), str) and f["url"].startswith("http")]
-                muxed = [f for f in http
-                         if (f.get("vcodec") or "none").lower() not in ("none", "")
-                         and (f.get("acodec") or "none").lower() not in ("none", "")
-                         and (f.get("height") or 999) <= 360]
-                if muxed:
-                    muxed.sort(key=lambda f: f.get("height") or 0, reverse=True)
-                    f   = muxed[0]
-                    sub = _best_subtitle_url(fb_info)
-                    meta = {
-                        "description":      fb_info.get("description") or "",
-                        "view_count":       int(fb_info.get("view_count") or 0),
-                        "like_count":       int(fb_info.get("like_count") or 0),
-                        "comment_count":    int(fb_info.get("comment_count") or 0),
-                        "subscriber_count": int(fb_info.get("channel_follower_count") or 0),
-                    }
-                    log(f"resolved {video_id}: android 360p muxed (signed out)")
-                    return f["url"], "", sub, meta
+    raw = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
+    if not raw:
+        raise RuntimeError("no playable URL")
+    try:
+        info = json.loads(raw.strip())
+    except Exception as ex:
+        log(f"yt-dlp JSON parse for {video_id}: {ex}")
+        raise RuntimeError("JSON parse failed")
 
-    raise RuntimeError("no playable URL")
+    parsed = _parse_stream_info(info)
+    if not parsed:
+        raise RuntimeError("no playable URL")
+
+    height = _info_height(info)
+    has_audio = bool(parsed[1])
+    log(f"resolved {video_id}: {height or '?'}p dash={'yes' if has_audio else 'no'}")
+    return parsed
 
 
 def op_stream(req):
@@ -1540,6 +1411,7 @@ def main():
     atexit.register(_kill_all_children)
 
     _cleanup_mei_dirs()   # clear any stale extracts from a previous run
+    log(f"tubed v{TUBED_VERSION} starting")
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
     _rt = _find_js_runtime()
     log(f"js runtime: {_rt[0]} @ {_rt[1]}" if _rt
