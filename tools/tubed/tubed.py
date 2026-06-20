@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.1-drain-fix"    # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.2-spawn-diag"   # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -575,9 +575,20 @@ def _run_ytdlp(args, timeout, is_preview=False):
         # can log yt-dlp's actual diagnostic — "Sign in to confirm you're not a
         # bot", "Video unavailable", PO-token errors, etc.  Without this the
         # silent-fail path was undebuggable from the user's side.
-        p = subprocess.Popen(_SCHED_PREFIX + args, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, start_new_session=True,
-                             env=_ytdlp_env())
+        env = _ytdlp_env()
+        full_argv = _SCHED_PREFIX + args
+        # Log the EXACT command and TMPDIR so the user can copy-paste it into
+        # an SSH shell and verify whether the failure is something tubed-
+        # specific (env/cwd/stdin) or an actual yt-dlp problem.
+        log("spawn argv:", " ".join(full_argv))
+        log(f"spawn env: TMPDIR={env.get('TMPDIR','(unset)')} "
+            f"PATH={env.get('PATH','(unset)')[:80]} "
+            f"LD_LIBRARY_PATH={env.get('LD_LIBRARY_PATH','(unset)')[:80]}")
+        p = subprocess.Popen(full_argv, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,
+                             stdin=subprocess.DEVNULL,
+                             start_new_session=True, env=env)
+        log(f"spawn ok: pid={p.pid}")
     except Exception as ex:
         log("yt-dlp launch failed:", ex)
         return ""
