@@ -1054,63 +1054,6 @@ def _info_height(info):
                 return int(fh)
     return 0
 
-def _parse_stream_info(info):
-    """Returns (video_url, audio_url, subtitle_url, meta).
-    audio_url is non-empty only when yt-dlp picked a DASH adaptive format
-    (separate video+audio); for muxed progressive it's "" and the audio is
-    baked into video_url.
-    """
-    stream_url = ""
-    audio_url  = ""
-
-    # Preferred path: yt-dlp filled in requested_formats (a list).  For a DASH
-    # selector like `bestvideo+bestaudio` this is [video_format, audio_format].
-    # For muxed it's typically a single entry.
-    reqd = info.get("requested_formats") or info.get("requested_downloads")
-    if isinstance(reqd, list) and reqd:
-        # Disambiguate: a format with vcodec != "none" is the video track.
-        vid_f = None
-        aud_f = None
-        for f in reqd:
-            vc = (f.get("vcodec") or "").lower()
-            ac = (f.get("acodec") or "").lower()
-            has_v = vc and vc != "none"
-            has_a = ac and ac != "none"
-            if has_v and has_a:
-                # Muxed entry — use it as the sole stream.
-                vid_f = f
-                aud_f = None
-                break
-            if has_v and not vid_f:
-                vid_f = f
-            elif has_a and not aud_f:
-                aud_f = f
-        if vid_f:
-            stream_url = vid_f.get("url") or ""
-        if aud_f:
-            audio_url = aud_f.get("url") or ""
-
-    # Fallback: top-level url (older yt-dlp / single-format selection).
-    if not stream_url:
-        stream_url = info.get("url") or ""
-
-    # Last resort: walk formats[] for any URL.
-    if not stream_url:
-        fmts = info.get("formats") or []
-        if fmts:
-            stream_url = fmts[-1].get("url") or ""
-
-    if not stream_url:
-        return None
-
-    meta = {
-        "description": info.get("description") or "",
-        "view_count": int(info.get("view_count") or 0),
-        "like_count": int(info.get("like_count") or 0),
-        "comment_count": int(info.get("comment_count") or 0),
-        "subscriber_count": int(info.get("channel_follower_count") or 0),
-    }
-    return stream_url, audio_url, _best_subtitle_url(info), meta
 
 
 # ── Fast public-API resolvers (Invidious / Piped) ─────────────────────────────
