@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.2-spawn-diag"   # bump on every meaningful edit so the
+TUBED_VERSION = "0.7.3-clean-env"    # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -489,35 +489,21 @@ def _ytdlp_base_args(use_cookies=True):
 
 
 def _ytdlp_env():
-    """Augment the subprocess env so a side-loaded libssl3 / libcrypto3 is
-    visible to yt-dlp's PyInstaller bundled Python.
+    """Inherit the parent's env almost verbatim.  Previous versions tried to
+    be clever (pinning LD_LIBRARY_PATH for a side-loaded libssl3, redirecting
+    TMPDIR to /dev/shm for fast PyInstaller extraction) but the device is
+    now running pip-installed yt-dlp — no PyInstaller extraction, no missing
+    libssl3 — so those tweaks just diverged tubed's spawn env from the user's
+    shell env in ways that caused silent hangs.
 
-    ArkOS / RG351MP ships only libssl.so.1.1.  The user side-loads libssl3
-    + libcrypto3 into a non-system path (commonly /usr/local/lib) — but if
-    ldconfig hasn't been run, or /usr/local/lib isn't in /etc/ld.so.conf,
-    the loader can't find them when yt-dlp is forked from tubed.  Pinning
-    LD_LIBRARY_PATH per-spawn is a belt-and-suspenders guard so the user
-    doesn't have to remember the system-wide config step."""
+    Only one augmentation kept: prepend BASE_DIR/vendor to PATH so yt-dlp
+    can auto-discover the vendored deno JS runtime if it ever needs it."""
     env = os.environ.copy()
-    extra_dirs = []
-    for d in ("/usr/local/lib", "/usr/local/lib64", "/roms/tools/tubelite/lib"):
-        if os.path.isfile(os.path.join(d, "libssl.so.3")):
-            extra_dirs.append(d)
-    if extra_dirs:
-        cur = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([cur] if cur else []))
     vendor_dir = os.path.join(BASE_DIR, "vendor")
     if os.path.isfile(os.path.join(vendor_dir, "deno")):
         cur = env.get("PATH", "")
-        env["PATH"] = vendor_dir + (":" + cur if cur else "")
-    # SPEED: the PyInstaller one-file yt-dlp unpacks its entire bundle to
-    # $TMPDIR/_MEIxxxx on EVERY invocation.  On ArkOS /tmp is often on the SD
-    # card, so that extraction is the single biggest chunk of cold-start
-    # latency (several seconds on the A35).  Point it at /dev/shm (RAM tmpfs)
-    # so the unpack is memory-speed.  Falls back to default if /dev/shm is
-    # somehow absent.
-    if os.path.isdir("/dev/shm"):
-        env["TMPDIR"] = "/dev/shm"
+        if vendor_dir not in cur.split(":"):
+            env["PATH"] = vendor_dir + (":" + cur if cur else "")
     return env
 
 
