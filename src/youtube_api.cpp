@@ -175,6 +175,7 @@ YouTubeVideo videoFromJson(const json& j) {
     v.duration_string     = jget<std::string>(j, "duration_string", "");
     v.view_count_string   = jget<std::string>(j, "view_count_string", "");
     v.uploaded_ago_string = jget<std::string>(j, "uploaded_ago_string", "");
+    v.is_live             = jget<bool>(j, "is_live", false);
     return v;
 }
 
@@ -321,6 +322,7 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& meta)> callback,
     bool isPreview,
+    bool isLive,
     const std::string& parent_focus_id) {
 
     int req_id = 0;
@@ -336,7 +338,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     }
     auto t0 = std::chrono::steady_clock::now();
 
-    std::thread([this, video_id, max_height, callback, req_id, isPreview, parent_focus_id, t0]() {
+    std::thread([this, video_id, max_height, callback, req_id, isPreview, isLive, parent_focus_id, t0]() {
         auto stillWanted = [this, req_id, isPreview, parent_focus_id]() -> bool {
             if (isPreview) {
                 if (parent_focus_id.empty()) return true;
@@ -369,15 +371,17 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
 
         json req = {{"op", "stream"}, {"id", video_id}, {"max_height", max_height}};
         if (isPreview) req["preview"] = true;
+        if (isLive)    req["is_live"] = true;
         json resp;
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
         // instead of resolving a stream the user already scrolled past.
-        // Play budget must exceed tubed's overall_deadline (35 s) plus
-        // socket I/O margin.  Tubed is muxed-only via ios/android client
-        // (no DASH, no deno JS-solve), so real work is ~16 s; queue wait
-        // behind a search adds another ~15 s.  40 s covers it comfortably.
-        bool ok = tubedRequest(req, resp, isPreview ? 17000 : 40000);
+        // Play budget must exceed tubed's overall_deadline (50 s VOD / 55 s
+        // live) plus socket I/O margin.  PO-Token-aware ios client +
+        // SABR-skipping android fallback can take ~30 s of real work, so a
+        // tight C++ timeout was killing resolves at the finish line.
+        int playMs = isLive ? 60000 : 55000;
+        bool ok = tubedRequest(req, resp, isPreview ? 17000 : playMs);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 

@@ -956,7 +956,8 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                     wrapped_description_lines_ = wrapText(meta.description, 280, 1);
                     uiDirty_ = true;
                 });
-            });
+            },
+            /*isPreview=*/false, /*isLive=*/video.is_live);
         return;
     }
 
@@ -983,8 +984,11 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                 mpv_player_.showText("Loading " + std::to_string(state_.maxQualityHeight) + "p");
                 triggerVideoFade();
 
-                // Start storyboard extraction
-                storyboard_.start(url, video.duration_seconds);
+                // Start storyboard extraction.  Live streams don't have a
+                // storyboard image, so skip it — saves a yt-dlp run.
+                if (!video.is_live) {
+                    storyboard_.start(url, video.duration_seconds);
+                }
             } else {
                 setCachedStreamUrl(cacheKey, ""); // Cache failure
                 loading_status_text_ = "Stream Resolve Failed — Press A to retry";
@@ -992,7 +996,8 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
             }
             uiDirty_ = true;
         });
-    });
+    },
+    /*isPreview=*/false, /*isLive=*/video.is_live);
 }
 
 void App::updateSticks(float dt) {
@@ -2049,11 +2054,15 @@ void App::updateHoverPreviews() {
     // scrolling past cards resolves nothing; you must linger to warm a preview.
     if (grid && focusedCard->focusedTime_ >= 0.45f) {
         // Skip if this key failed recently (hard backstop against a runaway
-        // re-request loop), is already in flight, or is already resolved.
+        // re-request loop), is already in flight, already resolved, OR is
+        // a live stream (live URLs rotate; pre-resolving them just wastes
+        // a yt-dlp run and almost always produces a stale URL by the time
+        // the user actually clicks).
         auto failIt = stream_prefetch_fail_until_.find(cacheKey);
         bool cooling = (failIt != stream_prefetch_fail_until_.end() &&
                         std::chrono::steady_clock::now() < failIt->second);
         if (!cooling &&
+            !focusedCard->video.is_live &&
             !getCachedStreamUrl(cacheKey).has_value() &&
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
@@ -2073,7 +2082,7 @@ void App::updateHoverPreviews() {
                     }
                     uiDirty_ = true;
                 });
-            }, true /* isPreview */, focusedCard->video.id);
+            }, /*isPreview=*/true, /*isLive=*/false, focusedCard->video.id);
         }
     }
 
@@ -2427,16 +2436,19 @@ void App::prefetchNextVideo() {
     }
     
     if (!foundCurrent) return;
-    
+
     // Mark as prefetched so we don't spam requests
     prefetched_next_video_id_ = current_video_.id;
-    
+
     const std::string nextCacheKey = streamCacheKey(nextVideo.id, state_.maxQualityHeight);
     if (getCachedStreamUrl(nextCacheKey).has_value()) {
         // Already cached!
         return;
     }
-    
+    // Skip prefetch for live streams — their URLs are time-limited and
+    // tend to be stale by the time the current video ends.
+    if (nextVideo.is_live) return;
+
     // Start background prefetch request (using isPreview=true so it doesn't cancel main playback requests)
     std::cerr << "[prefetch] Prefetching next video stream URL: " << nextVideo.title << "\n";
     youtube_api_.getStreamUrl(nextVideo.id, state_.maxQualityHeight, [this, nextCacheKey](bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& /*meta*/) {
@@ -2446,6 +2458,6 @@ void App::prefetchNextVideo() {
                 std::cerr << "[prefetch] Next video stream URL cached successfully.\n";
             }
         });
-    }, true /* isPreview */, "autoplay_" + current_video_.id);
+    }, /*isPreview=*/true, /*isLive=*/false, "autoplay_" + current_video_.id);
 }
 

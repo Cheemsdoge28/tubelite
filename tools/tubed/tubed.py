@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.5-feed-retry"   # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.7-loose-timeouts" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -209,7 +209,11 @@ _preview_lock  = threading.Lock()
 #   2. CIRCUIT BREAKER — if yt-dlp reports it cannot create its temp dir (disk
 #      full), we stop spawning it entirely for _BREAKER_COOLDOWN so we don't
 #      pour fuel on a full-disk fire; requests fail fast until it clears.
-_FAIL_TTL_PLAY     = 30.0     # play fail → back off briefly (user may retry)
+_FAIL_TTL_PLAY     = 8.0      # play fail → short backoff so user-initiated
+                              # retry within ~10s actually re-runs yt-dlp.
+                              # Previously 30 s, which trapped users behind a
+                              # timeout-boundary race for half a minute even
+                              # when the next attempt would succeed.
 _FAIL_TTL_PREVIEW  = 120.0    # preview fail → long backoff; the C++ side prefetches
                               # the same preview every ~30s on focus, and without
                               # a longer fail TTL each retry spawns a fresh yt-dlp
@@ -840,15 +844,25 @@ def _video_from_entry(e):
         return None
     dur = int(e.get("duration") or 0)
     author = e.get("uploader") or e.get("channel") or ""
+    # `live_status` is the modern field ("is_live", "is_upcoming", "was_live",
+    # "post_live", "not_live").  Some older yt-dlp paths still set the
+    # boolean `is_live` instead — accept either.  We treat only currently-
+    # streaming entries as live for playback purposes; upcoming/was-live
+    # render as normal VOD cards.
+    live_status = (e.get("live_status") or "").lower()
+    is_live = bool(e.get("is_live")) or live_status == "is_live"
     return {
         "id": vid,
         "title": e.get("title") or "",
         "author": author,
         "author_id": e.get("channel_id") or e.get("uploader_id") or "",
         "duration_seconds": dur,
-        "duration_string": f"{dur // 60}:{dur % 60:02d}",
+        # Live streams have no meaningful duration — leave the string empty
+        # so the client renders a LIVE badge instead of "0:00".
+        "duration_string": "" if is_live else f"{dur // 60}:{dur % 60:02d}",
         "view_count_string": _views_str(e.get("view_count")),
         "uploaded_ago_string": _uploaded_ago(e),
+        "is_live": is_live,
     }
 
 
@@ -1069,42 +1083,71 @@ _PRINT_FIELDS = [
 _PRINT_TEMPLATE = _PRINT_SEP.join(_PRINT_FIELDS)
 
 
-def _extract_stream(video_id, max_height, preview=False, deadline=None):
+def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=False):
     """Resolve playback URLs via yt-dlp `--print` (NOT `--dump-single-json`).
 
     The --print path is materially faster: yt-dlp emits ONLY the fields we
     ask for, in order, separated by 0x1d.  Output is ~500 bytes instead of
     the 30 KB+ full-info JSON, and there's no json.loads() of a giant
     formats array.  Description goes LAST so any embedded newlines are
-    naturally captured by re-joining the trailing fields."""
+    naturally captured by re-joining the trailing fields.
+
+    is_live: caller's hint (from feed/search metadata) that this video is
+    a live broadcast.  Live streams have no muxed progressive itag, so the
+    default ios/android+skip=dash,hls path returns nothing.  When true we
+    instead allow HLS (the standard live transport on YouTube) and pick
+    the best HLS variant via mpv-friendly args."""
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    # Headroom math (muxed-only ios+android, no deno, --print output):
-    # PyInstaller bootloader ~8 s + ios/android API JSON ~5-8 s = ~16 s of
-    # real work.  Plus possible queue wait ~15 s behind a search.
-    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else 35.0)
+    # Headroom math (muxed-only ios+android, no deno, --print output).
+    # The PO-Token-aware ios client + SABR-skipping android fallback can
+    # genuinely take ~20-22 s of real extraction work — production tubed.log
+    # shows yt-dlp printing `[info] Downloading 1 format(s): 18` exactly at
+    # the 22 s mark right as the previous tight timeout killed it.  Loosen
+    # the ceilings so we don't murder a working resolve at the finish line:
+    #   PyInstaller bootloader   ~8 s
+    #   webpage + ios JSON       ~5 s
+    #   android JSON + format    ~7 s
+    #   --print flush            ~1 s
+    #   total                    ~21 s typical, 30 s worst case
+    # Plus possible queue wait ~15 s behind a search → overall_deadline 50 s.
+    # Live adds another ~5 s for the HLS manifest fetch.
+    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else (55.0 if is_live else 50.0))
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    run_timeout = min(remaining - 2.0, 13.0 if preview else 22.0)
+    run_timeout = min(remaining - 2.0, 13.0 if preview else (38.0 if is_live else 35.0))
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
-    fmt = f"best[height<={max_height}]/best"
+    if is_live:
+        # HLS path: prefer the best variant that fits the height cap, fall
+        # back to whatever yt-dlp picks otherwise.  mpv consumes m3u8
+        # directly so audio_url stays empty.  We DON'T pass skip=hls here
+        # (the whole point), but still skip dash to keep us off the deno
+        # n-sig path that we know doesn't survive on this device.
+        fmt = f"best[height<={max_height}]/best"
+        extractor_args = "youtube:player_client=ios,android;skip=dash"
+        log(f"resolving LIVE stream for {video_id}")
+    else:
+        fmt = f"best[height<={max_height}]/best"
+        extractor_args = "youtube:player_client=ios,android;skip=dash,hls"
+
     # Pass cookies on stream resolves too when they exist.  Previous comment
     # claimed cookies caused bot challenges with DASH+android_vr — but the
-    # current path is ios+android+skip=dash,hls which doesn't have that
-    # interaction, and forcing cookies-off prevented signed-in users from
-    # accessing age-restricted / region-locked / private playlist videos.
-    # The c707db7-era cookieless test that "always worked" was on a
-    # completely different extractor; that finding doesn't apply here.
+    # current path is ios/android (with or without HLS) which doesn't have
+    # that interaction, and forcing cookies-off prevented signed-in users
+    # from accessing age-restricted / region-locked / private content.
     args = _ytdlp_base_args(use_cookies=True) + [
         "--no-playlist",
         "--skip-download",
-        "--no-call-home",
-        "--extractor-args", "youtube:player_client=ios,android;skip=dash,hls",
+        # `--no-call-home` was removed: yt-dlp 2026.x deprecates it (only
+        # update checks remain, already disabled via --no-update).  Keeping
+        # it printed a deprecation warning + future-removal threat to stderr
+        # on every spawn — noise we don't need.
+        "--extractor-args", extractor_args,
         "-f", fmt,
         "--print", _PRINT_TEMPLATE,
         yt_url,
@@ -1143,10 +1186,11 @@ def op_stream(req):
     vid = (req.get("id") or "").strip()
     h = int(req.get("max_height") or 360)
     preview = bool(req.get("preview", False))
+    is_live = bool(req.get("is_live", False))
     if not vid:
         return {"ok": False, "error": "missing id"}
 
-    log(f"op_stream: vid={vid} h={h} preview={preview}")
+    log(f"op_stream: vid={vid} h={h} preview={preview} live={is_live}")
     # Anchor the resolve deadline to NOW — before any semaphore wait — so that
     # semaphore wait + yt-dlp time together stay inside the C++ socket budget
     # (preview 14s, play 40s).  _extract_stream receives this deadline so it
@@ -1157,7 +1201,11 @@ def op_stream(req):
     # must NOT be served once the user signs in (they should get the DASH
     # ladder), and vice-versa.  'a' = authed (cookies), 'g' = guest.
     authed = _have_cookies()
-    ck = f"stream:{vid}:{h}:{'a' if authed else 'g'}"
+    # Cache key includes the live flag so a stale VOD URL doesn't get
+    # served when the same id is later resolved as a live broadcast (and
+    # vice versa).  Live URLs in particular have a much shorter TTL — the
+    # HLS manifest sometimes rotates within minutes.
+    ck = f"stream:{vid}:{h}:{'a' if authed else 'g'}{':live' if is_live else ''}"
     cached = CACHE.get(ck)
     if cached is not None:
         log(f"op_stream: cache hit for {vid}")
@@ -1216,7 +1264,8 @@ def op_stream(req):
             # the "resolve instantly fails" regression.
             try:
                 url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview,
-                                                              deadline=req_deadline)
+                                                              deadline=req_deadline,
+                                                              is_live=is_live)
             except Exception as ex:
                 log(f"op_stream: extract failed for {vid}: {ex}")
                 # Mark fail in the per-kind bucket: preview fails poison only

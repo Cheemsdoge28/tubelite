@@ -19,6 +19,12 @@ struct YouTubeVideo {
     std::string view_count_string;
     std::string uploaded_ago_string;
     int duration_seconds = 0;
+    // True when yt-dlp reports the entry as a live broadcast.  Live videos
+    // resolve through a different yt-dlp path (HLS allowed; muxed-only
+    // ios/android returns nothing) and render with a LIVE badge instead of
+    // a duration pill.  Cards also skip the autoplay-next behaviour on end
+    // because live streams don't really "end" in a meaningful sense.
+    bool is_live = false;
 };
 
 struct VideoPlaybackMetadata {
@@ -58,9 +64,13 @@ public:
     // muxed progressive above 360p.
     // isPreview=true uses a separate request token so preview prefetches don't
     // cancel main playback resolutions and vice versa.
+    // is_live tells tubed to take the HLS path (live streams have no muxed
+    // progressive itag, so the default ios/android+skip=hls path returns
+    // nothing).  Caller passes the flag from the YouTubeVideo metadata.
     void getStreamUrl(const std::string& video_id, int max_height,
         std::function<void(bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& meta)> callback,
         bool isPreview = false,
+        bool isLive = false,
         const std::string& parent_focus_id = "");
 
     // ── Auth (cookie-based sign-in) ──────────────────────────────────────────

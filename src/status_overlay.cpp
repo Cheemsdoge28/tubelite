@@ -11,6 +11,7 @@ void StatusOverlay::destroyTexture() {
 }
 
 void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int width, int height, bool& uiDirty) {
+    (void)uiDirty;   // reserved for future invalidation signalling
     int statusBarHeight = 48;
     bool needsRecreate = (texture_ == nullptr || width_ != width || height_ != statusBarHeight);
     bool stateChanged = (

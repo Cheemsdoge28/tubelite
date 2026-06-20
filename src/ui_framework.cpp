@@ -225,13 +225,42 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     // Draw Views & Date line
     drawText(renderer, textX, textY + titleH_ + lineGap + metaH_ + lineGap, truncated_views_date_, 1, theme::TEXT_3);
     
-    if (!video.duration_string.empty() && !is_previewing) {
+    if (video.is_live && !is_previewing) {
+        // LIVE badge in the bottom-right of the thumbnail — replaces the
+        // duration pill since live broadcasts have no meaningful runtime.
+        // Solid red with white text matches the YouTube convention so the
+        // affordance reads at a glance.
+        const char* lbl = "LIVE";
+        int lw = 0, lh = 0;
+        getTextSize(lbl, 1, &lw, &lh);
+        const int padX = 6, padY = 4;
+        const int dotR = 3;
+        const int pillW = lw + padX * 2 + dotR * 2 + 4;
+        const int pillH = lh + padY;
+        const int pillX = cardRect.x + thumbW - pillW - 5;
+        const int pillY = cardRect.y + thumbH - pillH - 5;
+        SDL_Rect pillRect{pillX, pillY, pillW, pillH};
+        fillRoundedRect(renderer, pillRect, theme::RADIUS_PILL, theme::ACCENT);
+        // Filled white dot at the leading edge for the "● LIVE" look.
+        SDL_SetRenderDrawColor(renderer, theme::WHITE.r, theme::WHITE.g, theme::WHITE.b, 255);
+        for (int dy = -dotR; dy <= dotR; ++dy) {
+            for (int dx = -dotR; dx <= dotR; ++dx) {
+                if (dx*dx + dy*dy <= dotR*dotR) {
+                    SDL_RenderDrawPoint(renderer,
+                        pillX + padX + dotR + dx,
+                        pillY + pillH / 2 + dy);
+                }
+            }
+        }
+        drawText(renderer, pillX + padX + dotR * 2 + 4,
+                 pillY + (pillH - lh) / 2, lbl, 1, theme::WHITE);
+    } else if (!video.duration_string.empty() && !is_previewing) {
         int pillW = durW_ + 10;
         int pillH = durH_ + 6;
         int pillX = cardRect.x + thumbW - pillW - 5;
         int pillY = cardRect.y + thumbH - pillH - 5;
         int textPillY = pillY + (pillH - durH_) / 2;
-        
+
         SDL_Rect pillRect{pillX, pillY, pillW, pillH};
         fillRoundedRect(renderer, pillRect, theme::RADIUS_PILL, theme::BLACK.a8(210));
         drawText(renderer, pillX + 5, textPillY, video.duration_string, 1, theme::WHITE);
