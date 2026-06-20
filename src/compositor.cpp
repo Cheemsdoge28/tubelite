@@ -2,6 +2,7 @@
 #include "app.hpp"
 #include "profiler.hpp"
 #include "renderer_utils.hpp"
+#include "settings_modal.hpp"
 #include "ui_framework.hpp"
 #include <algorithm>
 #include <chrono>
@@ -94,6 +95,9 @@ void Compositor::render(App* app, int width, int height) {
         // Sign-in modal can be opened from anywhere (SEL+X), including playback.
         if (app->state_.showSignInHelp) {
             drawSignInHelp(app, width, height);
+        }
+        if (app->state_.showSettingsModal) {
+            SettingsModal::render(app, renderer_, width, height);
         }
 
         { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
@@ -374,6 +378,10 @@ void Compositor::render(App* app, int width, int height) {
     // Sign-in help modal (drawn last so it sits above everything)
     if (app->state_.showSignInHelp) {
         drawSignInHelp(app, width, height);
+    }
+    // Settings modal — drawn after sign-in so it stacks on top if both opened.
+    if (app->state_.showSettingsModal) {
+        SettingsModal::render(app, renderer_, width, height);
     }
 
     { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }

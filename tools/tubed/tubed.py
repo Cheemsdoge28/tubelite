@@ -30,9 +30,6 @@ import socket
 import subprocess
 import threading
 import socketserver
-import urllib.request
-import urllib.error
-import re
 from collections import OrderedDict
 
 # ── Paths / config ──────────────────────────────────────────────────────────
@@ -48,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.0-muxed-and-feed" # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.1-print-fast"   # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -572,37 +569,6 @@ def _ytdlp_env():
     return env
 
 
-def _js_runtime_args():
-    """No-op.  The launcher prepends BASE_DIR/vendor to PATH, so yt-dlp
-    auto-discovers deno when it actually needs to run JS.  Passing
-    `--js-runtimes <path>` explicitly is redundant when PATH is already
-    set.  Note: android_vr URLs have no `n=` parameter and don't need
-    n-sig solving at all — verified by a manual `yt-dlp -f 137+140 -g`
-    that returns working URLs in ~2 s with no flags."""
-    return []
-
-
-def _find_js_runtime():
-    """Return (name, path) of a usable JS runtime, or None.  Prefers a vendored
-    runtime under BASE_DIR/vendor, then anything on PATH.  deno is preferred
-    (yt-dlp's default + sandboxed); node works too."""
-    vendor = os.path.join(BASE_DIR, "vendor")
-    candidates = [
-        ("deno", os.path.join(vendor, "deno")),
-        ("node", os.path.join(vendor, "node", "bin", "node")),
-    ]
-    for name, path in candidates:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return (name, path)
-    for name in ("deno", "node"):
-        p = shutil.which(name)
-        if p:
-            return (name, p)
-    return None
-
-
-def _have_js_runtime():
-    return _find_js_runtime() is not None
 
 
 def _run_ytdlp_simple(args, timeout):
@@ -886,46 +852,6 @@ def _video_from_entry(e):
     }
 
 
-def _best_subtitle_url(info):
-    def pick(track_list):
-        if not isinstance(track_list, list) or not track_list:
-            return ""
-        for want in ("vtt", "srt"):
-            for it in track_list:
-                if it.get("ext") == want and it.get("url"):
-                    return it["url"]
-        for it in track_list:
-            if it.get("ext") != "json3" and it.get("url"):
-                return it["url"]
-        for it in track_list:
-            if it.get("url"):
-                return it["url"]
-        return ""
-
-    url = ""
-    subs = info.get("subtitles") or {}
-    caps = info.get("automatic_captions") or {}
-    if isinstance(subs, dict):
-        if "en" in subs:
-            url = pick(subs["en"])
-        if not url:
-            for v in subs.values():
-                url = pick(v)
-                if url:
-                    break
-    if not url and isinstance(caps, dict):
-        if "en" in caps:
-            url = pick(caps["en"])
-        if not url:
-            for v in caps.values():
-                url = pick(v)
-                if url:
-                    break
-    if url and "fmt=json3" in url:
-        url = url.replace("fmt=json3", "fmt=vtt")
-    return url
-
-
 def op_search(req):
     query = (req.get("query") or "").strip()
     page = int(req.get("page") or 1)
@@ -1040,237 +966,40 @@ def op_feed(req):
     return {"ok": True, "results": results, "finished": True}
 
 
-def _info_height(info):
-    """Best-effort resolved video height from a yt-dlp --dump-json blob.
-    Handles both merged (requested_formats) and single-format results."""
-    h = info.get("height")
-    if h:
-        return int(h)
-    reqd = info.get("requested_formats") or info.get("requested_downloads")
-    if isinstance(reqd, list):
-        for f in reqd:
-            fh = f.get("height")
-            if fh:
-                return int(fh)
-    return 0
 
 
 
-# ── Fast public-API resolvers (Invidious / Piped) ─────────────────────────────
-#
-# These mirror the c707db7 design: try a curl-equivalent HTTP GET against
-# public Invidious / Piped instances FIRST.  Each instance returns a direct
-# googlevideo.com stream URL plus metadata in ~200 ms.  We only fall back to
-# yt-dlp when every instance has failed.  This is what the user remembers
-# working 100% — yt-dlp was the rare last resort, not the common path.
-#
-# Instance lists rot fast.  These are seeded from publicly-tracked uptime
-# lists; if every one starts failing simultaneously, update them or add a
-# refresh mechanism (api.invidious.io / piped-instances.kavin.rocks).
-_INVIDIOUS_INSTANCES = [
-    "https://inv.tux.pizza",
-    "https://invidious.privacyredirect.com",
-    "https://iv.ggtyler.dev",
-    "https://invidious.protokolla.fi",
-    "https://invidious.incogniweb.net",
-    "https://yewtu.be",
-    "https://inv.nadeko.net",
+# Field separator for yt-dlp --print output.  Group separator (0x1d) doesn't
+# appear in normal YouTube text content; safer than a printable delimiter
+# that could collide with title/description content.
+_PRINT_SEP = "\x1d"
+_PRINT_FIELDS = [
+    "%(url)s",                                               # 0 video URL
+    "%(subtitles.en.0.url,automatic_captions.en.0.url|)s",   # 1 subtitle URL
+    "%(view_count|0)d",                                      # 2
+    "%(like_count|0)d",                                      # 3
+    "%(comment_count|0)d",                                   # 4
+    "%(channel_follower_count|0)d",                          # 5
+    "%(height|0)d",                                          # 6
+    "%(description|)s",                                      # 7 (last — can be multiline)
 ]
-_PIPED_INSTANCES = [
-    "https://pipedapi.tokhmi.xyz",
-    "https://piped-api.privacy.com.de",
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.adminforge.de",
-]
-
-# Per-session instance health cache.  Any instance that returns a clear
-# failure (auth error, HTTP 4xx/5xx, DNS gone, empty body) is blacklisted
-# for the lifetime of this tubed process.  This means dead instances cost
-# us at most once per session — subsequent stream resolves skip straight to
-# yt-dlp instead of retrying every corpse.
-_instance_failures: dict = {}
-_instance_lock = threading.Lock()
-
-def _instance_ok(instance: str) -> bool:
-    with _instance_lock:
-        return _instance_failures.get(instance, 0) == 0
-
-def _instance_fail(instance: str) -> None:
-    with _instance_lock:
-        if _instance_failures.get(instance, 0) == 0:
-            log(f"blacklisting {instance} for this session")
-        _instance_failures[instance] = _instance_failures.get(instance, 0) + 1
-
-
-def _http_get_json(url, timeout=3, label=""):
-    """Minimal urllib GET that returns a parsed JSON dict or None.
-
-    label: optional prefix for error log lines (e.g. "invidious yewtu.be").
-    """
-    def _err(msg):
-        if label:
-            log(f"{label}: {msg}")
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (tubelite)"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if r.status != 200:
-                _err(f"HTTP {r.status}")
-                return None
-            body = r.read(2 * 1024 * 1024)  # 2 MB cap
-            return json.loads(body.decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        _err(f"HTTP {e.code}")
-        return None
-    except socket.timeout:
-        _err("timeout")
-        return None
-    except urllib.error.URLError as e:
-        _err(f"URLError: {e.reason}")
-        return None
-    except (ConnectionError, OSError) as e:
-        _err(f"connection error: {e}")
-        return None
-    except (ValueError, Exception) as e:
-        _err(f"parse error: {e}")
-        return None
-
-
-def _fetch_invidious(video_id, max_height):
-    """Returns (video_url, audio_url, subtitle_url, meta_dict) or None."""
-    for instance in _INVIDIOUS_INSTANCES:
-        if not _client_is_alive():
-            return None
-        if not _instance_ok(instance):
-            continue
-        api = f"{instance}/api/v1/videos/{video_id}"
-        j = _http_get_json(api, timeout=2, label=f"invidious {instance}")
-        if not j or not isinstance(j, dict):
-            _instance_fail(instance)
-            continue
-        streams = j.get("formatStreams") or []
-        best_url = ""
-        best_height = 0
-        for s in streams:
-            res = s.get("resolution", "")
-            m = re.match(r"^(\d+)x(\d+)$", res)
-            if not m:
-                continue
-            h = int(m.group(2))
-            if h <= 0 or h > max_height:
-                continue
-            container = s.get("container", "")
-            prefer = (container == "mp4")
-            if prefer or not best_url or h > best_height:
-                u = s.get("url", "")
-                if u:
-                    best_url = u
-                    best_height = h
-        if not best_url:
-            log(f"invidious {instance}: no usable stream for {video_id} @ <={max_height}p (streams={len(streams)})")
-            # Don't blacklist — video-not-indexed is instance-independent
-            continue
-        meta = {
-            "description":      j.get("description", ""),
-            "view_count":       int(j.get("viewCount") or 0),
-            "like_count":       int(j.get("likeCount") or 0),
-            "subscriber_count": int(j.get("subCount") or 0),
-            "comment_count":    0,  # invidious doesn't expose this
-        }
-        # Invidious "captions" → first English/auto track if present.
-        sub = ""
-        for c in (j.get("captions") or []):
-            lc = (c.get("language_code") or "").lower()
-            if lc.startswith("en"):
-                u = c.get("url", "")
-                if u:
-                    # captions URLs from Invidious are relative — prefix host
-                    sub = u if u.startswith("http") else (instance + u)
-                    break
-        log(f"resolved via invidious={instance} for {video_id} @ {best_height}p")
-        # Fast path is progressive (muxed) only — audio is baked in, so audio_url="".
-        return (best_url, "", sub, meta)
-    return None
-
-
-def _fetch_piped(video_id, max_height):
-    """Returns (video_url, audio_url, subtitle_url, meta_dict) or None."""
-    for instance in _PIPED_INSTANCES:
-        if not _client_is_alive():
-            return None
-        if not _instance_ok(instance):
-            continue
-        api = f"{instance}/streams/{video_id}"
-        j = _http_get_json(api, timeout=2, label=f"piped {instance}")
-        if not j or not isinstance(j, dict):
-            _instance_fail(instance)
-            continue
-        streams = j.get("videoStreams") or []
-        best_url = ""
-        best_height = 0
-        for s in streams:
-            if s.get("videoOnly", False):
-                continue
-            q = s.get("quality", "")
-            m = re.match(r"^(\d+)p", q)
-            if not m:
-                continue
-            h = int(m.group(1))
-            if h <= 0 or h > max_height:
-                continue
-            codec = s.get("codec", "")
-            prefer = ("avc1" in codec)
-            if prefer or not best_url or h > best_height:
-                u = s.get("url", "")
-                if u:
-                    best_url = u
-                    best_height = h
-        if not best_url:
-            log(f"piped {instance}: no usable stream for {video_id} @ <={max_height}p (streams={len(streams)})")
-            continue
-        meta = {
-            "description":      j.get("description", ""),
-            "view_count":       int(j.get("views") or 0),
-            "like_count":       int(j.get("likes") or 0),
-            "subscriber_count": 0,
-            "comment_count":    0,
-        }
-        sub = ""
-        for c in (j.get("subtitles") or []):
-            code = (c.get("code") or "").lower()
-            if code.startswith("en"):
-                sub = c.get("url", "") or ""
-                if sub:
-                    break
-        log(f"resolved via piped={instance} for {video_id} @ {best_height}p")
-        # Fast path is progressive (muxed) only — audio is baked in, so audio_url="".
-        return (best_url, "", sub, meta)
-    return None
+_PRINT_TEMPLATE = _PRINT_SEP.join(_PRINT_FIELDS)
 
 
 def _extract_stream(video_id, max_height, preview=False, deadline=None):
-    """Resolve playback URLs by invoking yt-dlp the same way the working
-    manual shell test does:
+    """Resolve playback URLs via yt-dlp `--print` (NOT `--dump-single-json`).
 
-        yt-dlp -f <selector> --dump-single-json <url>
-
-    No client spec, no extractor args, no cookies, no socket-timeout/retry
-    knobs, no cache dir.  Everything we added on top of bare yt-dlp turned
-    out to either be cosmetic or actively harmful — strip it all back.
-    Cookies are intentionally omitted from resolves: the cookieless manual
-    test was the one that worked; authed extraction takes a different (and
-    on this device, slow) path.  Sign-in still benefits search and other
-    operations that go through op_search."""
+    The --print path is materially faster: yt-dlp emits ONLY the fields we
+    ask for, in order, separated by 0x1d.  Output is ~500 bytes instead of
+    the 30 KB+ full-info JSON, and there's no json.loads() of a giant
+    formats array.  Description goes LAST so any embedded newlines are
+    naturally captured by re-joining the trailing fields."""
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    # Headroom math (muxed-only path, no deno):
-    # * PyInstaller bootloader extraction: ~8 s
-    # * webpage + ios/android player API JSON: ~5-8 s
-    # Worst-case play: ~16 s of real work.  Plus a play can queue ~15 s
-    # behind an in-flight search.  Settled: 35 s overall, 22 s per-call.
+    # Headroom math (muxed-only ios+android, no deno, --print output):
+    # PyInstaller bootloader ~8 s + ios/android API JSON ~5-8 s = ~16 s of
+    # real work.  Plus possible queue wait ~15 s behind a search.
     overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else 35.0)
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
@@ -1280,49 +1009,44 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
         raise RuntimeError("deadline exceeded")
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
-
-    # MUXED-ONLY (no DASH).  The pre-tubed c707db7 design used this exact
-    # pattern and was the most reliable resolve path the project ever had.
-    # DASH unlock requires deno's JS-challenge solve for n-sig, which on
-    # this RAM/CPU-constrained device takes 5-10 s and frequently times
-    # out — see v0.8.2 production log where deno started at the exact
-    # moment the timeout fired.
-    #
-    # `player_client=ios,android` returns the muxed progressive itag (18
-    # for 360p H.264+AAC) directly from the InnerTube response.
-    # `skip=dash,hls` tells yt-dlp not to even try to fetch the DASH or
-    # HLS manifests — no JS challenge, no deno spawn, no n-sig dance.
-    # Audio is baked into the single URL so the player needs no
-    # video+audio overlay setup.
-    #
-    # max_height is honored when YouTube exposes a higher-than-360p
-    # muxed format (rare), otherwise we get 360p which is the right
-    # quality for the RG351MP's 480x320 screen anyway.
     fmt = f"best[height<={max_height}]/best"
     args = _ytdlp_base_args(use_cookies=False) + [
         "--no-playlist",
+        "--skip-download",
+        "--no-call-home",
         "--extractor-args", "youtube:player_client=ios,android;skip=dash,hls",
         "-f", fmt,
-        "--dump-single-json", yt_url,
+        "--print", _PRINT_TEMPLATE,
+        yt_url,
     ]
-
     raw = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
     if not raw:
         raise RuntimeError("no playable URL")
-    try:
-        info = json.loads(raw.strip())
-    except Exception as ex:
-        log(f"yt-dlp JSON parse for {video_id}: {ex}")
-        raise RuntimeError("JSON parse failed")
 
-    parsed = _parse_stream_info(info)
-    if not parsed:
+    parts = raw.split(_PRINT_SEP)
+    if len(parts) < len(_PRINT_FIELDS) or not parts[0].strip():
         raise RuntimeError("no playable URL")
+    # Re-join any trailing parts in case description (last field) wrapped.
+    if len(parts) > len(_PRINT_FIELDS):
+        parts = parts[:len(_PRINT_FIELDS) - 1] + [_PRINT_SEP.join(parts[len(_PRINT_FIELDS) - 1:])]
 
-    height = _info_height(info)
-    has_audio = bool(parsed[1])
-    log(f"resolved {video_id}: {height or '?'}p dash={'yes' if has_audio else 'no'}")
-    return parsed
+    def _int(s):
+        try:
+            return int((s or "0").strip())
+        except (ValueError, TypeError):
+            return 0
+
+    url, sub_url = parts[0].strip(), parts[1].strip()
+    meta = {
+        "view_count":       _int(parts[2]),
+        "like_count":       _int(parts[3]),
+        "comment_count":    _int(parts[4]),
+        "subscriber_count": _int(parts[5]),
+        "description":      parts[7].rstrip("\n"),
+    }
+    height = _int(parts[6])
+    log(f"resolved {video_id}: {height or '?'}p muxed")
+    return (url, "", sub_url, meta)
 
 
 def op_stream(req):
@@ -1638,9 +1362,6 @@ def main():
             log(f"spawn sanity ({label}): yt-dlp --version FAILED — {ex}")
 
     log(f"listening on {SOCK_PATH} (cookies={'yes' if _have_cookies() else 'no'})")
-    _rt = _find_js_runtime()
-    log(f"js runtime: {_rt[0]} @ {_rt[1]}" if _rt
-        else "js runtime: NONE — DASH disabled, muxed 360p only")
     log("yt-dlp launch prefix:", " ".join(_SCHED_PREFIX) if _SCHED_PREFIX else "(none)")
     wd = threading.Thread(target=_idle_watchdog, args=(server,), daemon=True)
     wd.start()

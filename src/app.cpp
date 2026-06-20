@@ -3,6 +3,8 @@
 #include "json.hpp"
 #include "profiler.hpp"
 #include "renderer_utils.hpp"
+#include "settings.hpp"
+#include "settings_modal.hpp"
 #include "stb_image.h"
 #include <iostream>
 #include <algorithm>
@@ -1218,6 +1220,29 @@ void App::handleKey(SDL_Keycode key) {
         return;
     }
 
+    // Settings modal — captures all keys while open.  F2 toggles it.
+    // Returning false from handleKey() means "close" — caller persists.
+    if (state_.showSettingsModal) {
+        std::string oldHomeFeed = state_.homeFeedKind;
+        if (!SettingsModal::handleKey(this, key)) {
+            state_.showSettingsModal = false;
+            saveSettings();   // persist whatever the user just changed
+            // If they switched the Home tab kind, reload it so the change is
+            // visible immediately instead of next launch.
+            if (state_.homeFeedKind != oldHomeFeed &&
+                state_.currentScreen == TubeState::Screen::Home) {
+                loadHomeFeeds();
+            }
+        }
+        uiDirty_ = true;
+        return;
+    }
+    if (key == SDLK_F2) {
+        state_.showSettingsModal = true;
+        uiDirty_ = true;
+        return;
+    }
+
     if (key == SDLK_TAB || key == SDLK_F3 || key == SDLK_LSHIFT) {
         select_held_ = true;
         select_action_triggered_ = false;
@@ -1504,7 +1529,39 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             select_action_triggered_ = true;
             uiDirty_ = true;
             return;
+        } else if (button == SDL_CONTROLLER_BUTTON_Y) {
+            // SELECT+Y → open the settings modal.
+            state_.showSettingsModal = true;
+            select_action_triggered_ = true;
+            uiDirty_ = true;
+            return;
         }
+    }
+
+    // Settings modal: forward controller buttons to the modal's key handler
+    // so D-pad / A / B map to the same actions as the keyboard path.
+    if (state_.showSettingsModal && down) {
+        std::string oldHomeFeed = state_.homeFeedKind;
+        bool stillOpen = true;
+        switch (button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:    stillOpen = SettingsModal::handleKey(this, SDLK_UP); break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  stillOpen = SettingsModal::handleKey(this, SDLK_DOWN); break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  stillOpen = SettingsModal::handleKey(this, SDLK_LEFT); break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: stillOpen = SettingsModal::handleKey(this, SDLK_RIGHT); break;
+            case SDL_CONTROLLER_BUTTON_A:          stillOpen = SettingsModal::handleKey(this, SDLK_a); break;
+            case SDL_CONTROLLER_BUTTON_B:          stillOpen = SettingsModal::handleKey(this, SDLK_b); break;
+            default: return;   // ignore other buttons while modal is open
+        }
+        if (!stillOpen) {
+            state_.showSettingsModal = false;
+            saveSettings();
+            if (state_.homeFeedKind != oldHomeFeed &&
+                state_.currentScreen == TubeState::Screen::Home) {
+                loadHomeFeeds();
+            }
+        }
+        uiDirty_ = true;
+        return;
     }
 
     if (button == SDL_CONTROLLER_BUTTON_START && controller_ != nullptr && SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
@@ -1750,16 +1807,21 @@ void App::loadHomeFeeds() {
     
     state_.isSearching = true;
     uiDirty_ = true;
-    home_grid_->title = "Trending";
-    home_feed_query_ = "trending";
+    // Decide which feed to load: subscriptions when the user opted in AND is
+    // signed in, otherwise the anonymous trending feed.  The home_feed_query_
+    // string is mostly cosmetic ("trending" vs "subs") — the actual fetch
+    // dispatch happens below based on useSubs.
+    const bool useSubs = (state_.homeFeedKind == "subscriptions") && state_.authed;
+    home_grid_->title = useSubs ? "Subscriptions" : "Trending";
+    home_feed_query_ = useSubs ? "subs" : "trending";
     pendingMoreHome_ = false;
-    
+
     int reqPage = home_page_;
     auto accumulated_results = std::make_shared<std::vector<YouTubeVideo>>();
-    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage, accumulated_results](const std::vector<YouTubeVideo>& results, bool finished) {
+    auto cb = [this, reqPage, accumulated_results](const std::vector<YouTubeVideo>& results, bool finished) {
         queueOnMainThread([this, reqPage, results, finished, accumulated_results]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
-            
+
             if (finished) {
                 if (!accumulated_results->empty()) {
                     homeLoadFailed_ = false;
@@ -1781,12 +1843,17 @@ void App::loadHomeFeeds() {
                 uiDirty_ = true;
                 return;
             }
-            
+
             if (!results.empty()) {
                 accumulated_results->insert(accumulated_results->end(), results.begin(), results.end());
             }
         });
-    });
+    };
+    if (useSubs) {
+        youtube_api_.fetchFeed("subscriptions", reqPage, cb);
+    } else {
+        youtube_api_.search("trending", reqPage, cb);
+    }
 }
 
 void App::loadMoreHomeFeeds() {
@@ -1794,9 +1861,10 @@ void App::loadMoreHomeFeeds() {
     state_.isSearching = true;
     uiDirty_ = true;
     home_page_++;
-    
+
     int reqPage = home_page_;
-    youtube_api_.search(home_feed_query_, reqPage, [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
+    const bool useSubs = (state_.homeFeedKind == "subscriptions") && state_.authed;
+    auto cb = [this, reqPage](const std::vector<YouTubeVideo>& results, bool finished) {
         queueOnMainThread([this, reqPage, results, finished]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
             
@@ -1837,7 +1905,12 @@ void App::loadMoreHomeFeeds() {
                 uiDirty_ = true;
             }
         });
-    });
+    };
+    if (useSubs) {
+        youtube_api_.fetchFeed("subscriptions", reqPage, cb);
+    } else {
+        youtube_api_.search("trending", reqPage, cb);
+    }
 }
 
 void App::loadMoreSearchResults() {
@@ -1994,17 +2067,33 @@ void App::updateHoverPreviews() {
 }
 
 void App::saveSettings() {
+    // Mirror current TubeState into the persisted Settings struct.
+    // Anything the settings_modal can edit lives here so the JSON file is
+    // a single source of truth across launches.
+    Settings s;
+    s.maxQualityHeight = state_.maxQualityHeight;
+    s.homeFeedKind     = state_.homeFeedKind;
+    s.volume           = state_.volume;
+    s.showDebugOverlay = state_.showDebugOverlay;
+    settings::save(s);
+
+    // Legacy: backgroundDaemonEnabled still goes through getAppDataPath for
+    // back-compat with any external readers.  Once nothing else looks at
+    // that file we can fold it into settings.json too.
     try {
         nlohmann::json j;
         j["background_daemon_enabled"] = state_.backgroundDaemonEnabled;
         std::ofstream ofs(getAppDataPath("settings.json"));
-        if (ofs) {
-            ofs << j.dump(4);
-        }
+        if (ofs) ofs << j.dump(4);
     } catch (...) {}
 }
 
 void App::loadSettings() {
+    Settings s;
+    settings::load(s);                     // populates only what's on disk
+    SettingsModal::apply(this, s);         // mirror into state_
+
+    // Legacy daemon flag still lives in the cwd-relative file.
     try {
         std::ifstream ifs(getAppDataPath("settings.json"));
         if (ifs) {

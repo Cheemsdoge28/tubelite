@@ -246,6 +246,54 @@ void YouTubeAPI::search(const std::string& query, int page,
     }).detach();
 }
 
+// ── Personalized feed ─────────────────────────────────────────────────────────
+//
+// Same streaming-callback contract as search().  Tubed's `feed` op accepts
+// kind = "subscriptions" | "home" | "history" | "liked" | "watch_later"
+// and reuses the same flat-playlist extractor path that powers search, so
+// the returned items decode straight through videoFromJson.
+
+void YouTubeAPI::fetchFeed(const std::string& kind, int page,
+    std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback) {
+
+    // We use the search request token for cancellation too — feed and
+    // search are mutually-exclusive home-tab loaders, so a newer feed
+    // request supersedes an in-flight search and vice versa.
+    int req_id = ++current_search_request_id_;
+    tele_.searches_inflight.fetch_add(1, std::memory_order_relaxed);
+    auto t0 = std::chrono::steady_clock::now();
+
+    std::thread([this, kind, page, callback, req_id, t0]() {
+        auto finish = [this, t0]() {
+            uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            tele_.last_search_ms.store(ms, std::memory_order_relaxed);
+            ema_update(tele_.ema_search_ms_x10, ms);
+            tele_.searches_total.fetch_add(1, std::memory_order_relaxed);
+            tele_.tubed_wait_ms_total.fetch_add(ms, std::memory_order_relaxed);
+            tele_.searches_inflight.fetch_sub(1, std::memory_order_relaxed);
+        };
+
+        if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
+
+        json req = {{"op", "feed"}, {"kind", kind}, {"page", page}};
+        json resp;
+        bool ok = tubedRequest(req, resp, 20000);
+
+        if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
+
+        if (ok && resp.value("ok", false) && resp.contains("results")) {
+            for (const auto& item : resp["results"]) {
+                if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
+                YouTubeVideo v = videoFromJson(item);
+                if (!v.id.empty()) callback({v}, false);
+            }
+        }
+        callback({}, true);
+        finish();
+    }).detach();
+}
+
 // ── Stream resolution ──────────────────────────────────────────────────────────
 
 void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,

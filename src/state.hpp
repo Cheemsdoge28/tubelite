@@ -28,9 +28,12 @@ struct TubeState {
     bool miniplayerActive{false};
     bool showDescriptionDrawer{false};
     bool showSignInHelp{false};      // modal: how to sign in via cookies.txt
+    bool showSettingsModal{false};   // modal: Settings (quality, home feed, etc.)
+    int  settingsModalIndex{0};      // selected row inside the settings modal
     bool authed{false};              // mirror of YouTubeAPI::isAuthed() (cookies present)
     bool authChecked{false};         // has tubed been queried at least once
     bool backgroundDaemonEnabled{true};
+    std::string homeFeedKind{"trending"};  // "trending" | "subscriptions" (modal-controlled)
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};

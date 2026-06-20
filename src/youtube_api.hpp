@@ -43,6 +43,14 @@ public:
     void search(const std::string& query, int page,
         std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback);
 
+    // Fetch a personalized feed (e.g. "subscriptions", "home", "history",
+    // "liked", "watch_later") via tubed `feed` op.  Requires a valid
+    // cookies.txt on the device; without one tubed returns "not signed in"
+    // and the callback fires with (empty, true).  Streaming contract is
+    // identical to search().
+    void fetchFeed(const std::string& kind, int page,
+        std::function<void(const std::vector<YouTubeVideo>& results, bool finished)> callback);
+
     // Resolve a direct playback URL for libmpv via tubed.
     // `audio_url` is non-empty when tubed picks a DASH adaptive stream
     // (separate video + audio tracks). The caller passes it to mpv via
