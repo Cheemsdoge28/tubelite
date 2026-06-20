@@ -303,10 +303,13 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
         // instead of resolving a stream the user already scrolled past.
-        // Budget must exceed tubed's play run_timeout (32s) so the C++ side
-        // never disconnects a DASH resolve mid-flight: android_vr + the deno/node
-        // n-sig solve runs ~15-25s on the A35.  Previews are fast muxed.
-        bool ok = tubedRequest(req, resp, isPreview ? 14000 : 40000);
+        // The play budget must exceed tubed's play run_timeout (35 s) plus
+        // socket I/O margin.  On this device the PyInstaller-bundled yt-dlp
+        // burns ~8 s on bootloader extraction before any code runs, so plays
+        // need real headroom — bumped to 45 s so a borderline-slow resolve
+        // doesn't get cut off by the socket timeout right as it's about to
+        // succeed.  Previews stay at 18 s (tubed caps preview at 14 s).
+        bool ok = tubedRequest(req, resp, isPreview ? 18000 : 45000);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 

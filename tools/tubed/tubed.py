@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.7.8-proc-diag"    # bump on every meaningful edit so the
+TUBED_VERSION = "0.8.0-elf-budgets"  # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -477,22 +477,29 @@ _SCHED_PREFIX = _sched_prefix()
 # JS runtime is the unlock, not cookies — so streams go cookie-less.  Cookies are
 # still wired up for the future authenticated-feeds path (search/home).
 def _ytdlp_base_args(use_cookies=True):
-    """Minimum-footprint base args, matching the working manual invocation:
-        yt-dlp -f 137+140 -g https://www.youtube.com/watch?v=<id>
+    """Minimum-footprint base args, plus tight network bounds.
 
-    Every flag we used to add (--no-check-certificate, --no-check-formats,
-    --socket-timeout, --extractor-retries, --retries, --encoding utf-8,
-    --cache-dir) is gone — the manual test sets none of them and finishes
-    in ~2 s, while our augmented invocation hung past 20 s.  We keep only:
+    The first two flags mirror the working manual invocation:
+    * --no-config — prevent loading /etc/yt-dlp.conf or a user config.
+    * --no-update — never hit the GitHub release endpoint at runtime.
 
-    * --no-config — prevents loading a /etc/yt-dlp.conf or user config that
-      could re-inject the slow flags we just removed.
-    * --no-update — never check the GitHub release endpoint at runtime.
+    The next three are essential because yt-dlp's defaults will silently
+    hang for minutes on a stalled connection — well past our 28 s timeout.
+    On the manual command they're not needed because the user can ^C, but
+    tubed has hard budgets that must be met:
+    * --socket-timeout 8 — cap any single HTTP/TCP wait.
+    * --extractor-retries 0 / --retries 0 — single try per call; tubed
+      and the C++ side already retry at higher levels.
 
-    Cookies are opt-in via use_cookies; resolve paths pass False because the
-    manual (cookieless) test was the one that worked, and authenticated
-    requests can take a different, slower extractor path."""
-    args = [YT_DLP, "--no-config", "--no-update"]
+    Cookies are opt-in via use_cookies; resolve paths pass False because
+    the cookieless manual test was the one that worked, and authenticated
+    extraction takes a different (and slower) path on this device."""
+    args = [
+        YT_DLP, "--no-config", "--no-update",
+        "--socket-timeout", "8",
+        "--extractor-retries", "0",
+        "--retries", "0",
+    ]
     if use_cookies and _have_cookies():
         args += ["--cookies", COOKIES]
     return args
@@ -534,15 +541,21 @@ _PYI_TMPDIR = _ensure_pyi_tmpdir()
 
 
 def _ytdlp_env():
-    """Augment env for two essentials on this device:
+    """Augment env for three essentials on this device:
 
     * TMPDIR pointing to a tubed-owned, verified-writable directory so the
       PyInstaller bootloader can extract its _MEI bundle reliably.  See
       _ensure_pyi_tmpdir for the candidate list and why we probe.
     * PATH includes BASE_DIR/vendor so yt-dlp can find the vendored deno
-      JS runtime."""
+      JS runtime.
+    * PYTHONUNBUFFERED=1 forces Python (including yt-dlp's bundled
+      interpreter) to flush stdout/stderr after every write.  Without
+      this, output to a pipe is fully buffered — so yt-dlp's extractor
+      messages ('Downloading webpage' etc.) never reach our drain thread
+      until the process exits, making mid-run debugging impossible."""
     env = os.environ.copy()
     env["TMPDIR"] = _PYI_TMPDIR
+    env["PYTHONUNBUFFERED"] = "1"
     vendor_dir = os.path.join(BASE_DIR, "vendor")
     if os.path.isfile(os.path.join(vendor_dir, "deno")):
         cur = env.get("PATH", "")
@@ -1175,11 +1188,18 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    overall_deadline = deadline if deadline is not None else time.time() + (11.0 if preview else 37.0)
+    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else 38.0)
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    run_timeout = min(remaining - 2.0, 11.0 if preview else 28.0)
+    # PyInstaller-bundled yt-dlp burns ~8 s on bootloader extraction before
+    # any code runs (confirmed by spawn sanity log), so the run_timeout has
+    # to comfortably cover EXTRACT + actual work.  Previews: 8 s extract +
+    # ~4 s muxed resolve = ~12 s typical; ceiling 14 s.  Plays: 8 s extract
+    # + ~15 s network/JS = ~23 s typical; ceiling 35 s.  The C++ side caps
+    # plays at 40 s socket timeout, so 35 s + ~2 s reap margin keeps us
+    # under that.
+    run_timeout = min(remaining - 2.0, 14.0 if preview else 35.0)
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
