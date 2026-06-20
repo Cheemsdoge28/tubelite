@@ -303,13 +303,11 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
         // instead of resolving a stream the user already scrolled past.
-        // Play budget must exceed tubed's play overall_deadline (55 s) plus
-        // socket I/O margin.  On this device a play can: queue 16 s behind
-        // an in-flight search, pay 8 s PyInstaller bootloader extraction,
-        // download webpage+player JSON (~10 s), and run a deno JS-challenge
-        // solve (~5-10 s) — the deno call is the DASH unlock for unthrottled
-        // 720p+ URLs.  Easily 35-40 s of real work; 60 s gives margin.
-        bool ok = tubedRequest(req, resp, isPreview ? 20000 : 60000);
+        // Play budget must exceed tubed's overall_deadline (35 s) plus
+        // socket I/O margin.  Tubed is muxed-only via ios/android client
+        // (no DASH, no deno JS-solve), so real work is ~16 s; queue wait
+        // behind a search adds another ~15 s.  40 s covers it comfortably.
+        bool ok = tubedRequest(req, resp, isPreview ? 17000 : 40000);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 

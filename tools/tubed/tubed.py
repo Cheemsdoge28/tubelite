@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.8.4-dash-restored" # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.0-muxed-and-feed" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -63,6 +63,7 @@ COOKIES     = os.path.join(BASE_DIR, "cookies.txt")   # Phase 2 auth (optional)
 TTL_STREAM   = 5 * 3600      # resolved URLs expire ~6h on YouTube's side
 TTL_SEARCH   = 10 * 60
 TTL_TRENDING = 10 * 60
+TTL_FEED     = 5 * 60        # personalized feeds change often; short TTL
 TTL_META     = 6 * 3600
 
 # Serialize heavy (yt-dlp) work. On the quad-A35 a single yt-dlp already pegs a
@@ -977,6 +978,68 @@ def op_trending(req):
     return op_search(req)
 
 
+# URLs for personalized feeds, exposed by `op_feed` with kind=<key>.
+# These require valid cookies; without them yt-dlp returns the guest
+# trending/home feed instead (which is fine — we degrade gracefully).
+_FEED_URLS = {
+    "subscriptions":  "https://www.youtube.com/feed/subscriptions",
+    "home":           "https://www.youtube.com/",
+    "history":        "https://www.youtube.com/feed/history",
+    "liked":          "https://www.youtube.com/playlist?list=LL",
+    "watch_later":    "https://www.youtube.com/playlist?list=WL",
+}
+
+def op_feed(req):
+    """Fetch a personalized YouTube feed for the signed-in user.
+
+    Returns the same {results: [...]} shape as op_search so the C++ side
+    can render it through the existing video-card path.  If cookies are
+    missing or expired, yt-dlp returns an unauthenticated equivalent —
+    we don't try to detect that here; the C++ side already shows guest
+    vs signed-in state via op_auth_status."""
+    kind = (req.get("kind") or "subscriptions").strip()
+    page = max(1, int(req.get("page") or 1))
+    if kind not in _FEED_URLS:
+        return {"ok": False, "error": f"unknown feed kind: {kind}"}
+    if not _have_cookies():
+        return {"ok": False, "error": "not signed in"}
+
+    ck = f"feed:{kind}:{page}"
+    cached = CACHE.get(ck)
+    if cached is not None:
+        return {"ok": True, "results": cached, "finished": True}
+
+    start = (page - 1) * 15 + 1
+    end   = page * 15
+    url   = _FEED_URLS[kind]
+
+    args = _ytdlp_base_args(use_cookies=True) + [
+        "--flat-playlist", "--dump-json",
+        "--extractor-args", "youtubetab:approximate_date",
+        "--playlist-start", str(start), "--playlist-end", str(end),
+        url,
+    ]
+    with _work_sem:
+        out = _run_ytdlp(args, timeout=30)
+
+    results = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            v = _video_from_entry(json.loads(line))
+            if v:
+                results.append(v)
+        except Exception:
+            continue
+
+    if not results:
+        return {"ok": False, "error": "no results"}
+    CACHE.set(ck, results, TTL_FEED)
+    return {"ok": True, "results": results, "finished": True}
+
+
 def _info_height(info):
     """Best-effort resolved video height from a yt-dlp --dump-json blob.
     Handles both merged (requested_formats) and single-format results."""
@@ -1260,35 +1323,44 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    # Headroom math (verified from production tubed.log on 0.8.2):
+    # Headroom math (muxed-only path, no deno):
     # * PyInstaller bootloader extraction: ~8 s
-    # * webpage + player API JSON downloads: ~7-10 s
-    # * deno JS-challenge solve for n-sig (DASH unlock): ~5-10 s
-    # Worst-case play: ~28 s of real work.  Plus a play can queue behind
-    # an in-flight search (~15 s), so overall_deadline must cover the
-    # full queue + work + reap-margin.  Previews stay muxed and don't
-    # need deno, so their budget is much tighter.
-    overall_deadline = deadline if deadline is not None else time.time() + (18.0 if preview else 55.0)
+    # * webpage + ios/android player API JSON: ~5-8 s
+    # Worst-case play: ~16 s of real work.  Plus a play can queue ~15 s
+    # behind an in-flight search.  Settled: 35 s overall, 22 s per-call.
+    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else 35.0)
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    run_timeout = min(remaining - 2.0, 16.0 if preview else 45.0)
+    run_timeout = min(remaining - 2.0, 13.0 if preview else 22.0)
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # Format selector mirrors the manual `-f 137+140` style — best video+audio
-    # under the height cap with a flat fallback.  Previews get muxed-only so
-    # the player gets a single URL with audio baked in.
-    if preview or max_height <= 360:
-        fmt = f"best[height<={max_height}]/best"
-    else:
-        fmt = (f"bestvideo[height<={max_height}]+bestaudio"
-               f"/best[height<={max_height}]/best")
-
+    # MUXED-ONLY (no DASH).  The pre-tubed c707db7 design used this exact
+    # pattern and was the most reliable resolve path the project ever had.
+    # DASH unlock requires deno's JS-challenge solve for n-sig, which on
+    # this RAM/CPU-constrained device takes 5-10 s and frequently times
+    # out — see v0.8.2 production log where deno started at the exact
+    # moment the timeout fired.
+    #
+    # `player_client=ios,android` returns the muxed progressive itag (18
+    # for 360p H.264+AAC) directly from the InnerTube response.
+    # `skip=dash,hls` tells yt-dlp not to even try to fetch the DASH or
+    # HLS manifests — no JS challenge, no deno spawn, no n-sig dance.
+    # Audio is baked into the single URL so the player needs no
+    # video+audio overlay setup.
+    #
+    # max_height is honored when YouTube exposes a higher-than-360p
+    # muxed format (rare), otherwise we get 360p which is the right
+    # quality for the RG351MP's 480x320 screen anyway.
+    fmt = f"best[height<={max_height}]/best"
     args = _ytdlp_base_args(use_cookies=False) + [
-        "--no-playlist", "-f", fmt, "--dump-single-json", yt_url,
+        "--no-playlist",
+        "--extractor-args", "youtube:player_client=ios,android;skip=dash,hls",
+        "-f", fmt,
+        "--dump-single-json", yt_url,
     ]
 
     raw = _run_ytdlp(args, timeout=run_timeout, is_preview=preview)
@@ -1430,6 +1502,7 @@ OPS = {
     "auth_status": op_auth_status,
     "search": op_search,
     "trending": op_trending,
+    "feed": op_feed,
     "stream": op_stream,
 }
 
