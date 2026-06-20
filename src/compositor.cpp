@@ -114,7 +114,7 @@ void Compositor::render(App* app, int width, int height) {
     float scrollY = currentGrid ? currentGrid->scrollY : 0.0f;
 
     if (app->state_.currentScreen == TubeState::Screen::Home) {
-        if (app->home_grid_->cards.empty()) {
+        if (app->home_grid_->videos.empty()) {
             if (app->homeLoadFailed_) {
                 drawTextCentered(renderer_, width / 2, height / 2 - 10, "Failed to load feed.", 2, theme::ACCENT_BRIGHT);
                 drawTextCentered(renderer_, width / 2, height / 2 + 20, "Press Y to search videos", 2, theme::TEXT_3);
@@ -146,10 +146,10 @@ void Compositor::render(App* app, int width, int height) {
         }
         { PROFILE_SCOPE("browse_header"); renderBrowseHeader(app, width, height, "TubeLite", scrollY, false); }
     } else if (app->state_.currentScreen == TubeState::Screen::Search) {
-        if (app->state_.isSearching && app->search_grid_->cards.empty()) {
+        if (app->state_.isSearching && app->search_grid_->videos.empty()) {
             drawLoadingOverlay(renderer_, width, height, "Searching...", SDL_GetTicks() / 1000.0f, theme::TEXT_3, false);
             app->uiDirty_ = true;
-        } else if (app->search_grid_->cards.empty()) {
+        } else if (app->search_grid_->videos.empty()) {
             if (app->current_search_query_.empty()) {
                 drawTextCentered(renderer_, width / 2, height / 2, "Press Y to search videos", 2, theme::TEXT_3);
             } else {
@@ -677,7 +677,7 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
     const int collapsedHeight = 58;
     const int headerHeight = std::max(collapsedHeight, expandedHeight - static_cast<int>(scrollY * 0.12f));
 
-    bool isSearching = app->state_.isSearching && app->activeGrid() && !app->activeGrid()->cards.empty();
+    bool isSearching = app->state_.isSearching && app->activeGrid() && !app->activeGrid()->videos.empty();
 
     // Check cache validity.
     bool needsRedraw = (

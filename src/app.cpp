@@ -111,10 +111,17 @@ bool App::initialize() {
     thumb_atlas_ = std::make_unique<ThumbnailAtlas>(renderer_, 3);
     image_manager_->setAtlas(thumb_atlas_.get());
     
+    // Both grids share the same activation behaviour (clicking a card plays
+    // the video).  Wire it ONCE here so addVideo() can build cards on the
+    // fly without per-call boilerplate at every feed-loader call site.
+    auto activate = [this](const YouTubeVideo& v) { playVideo(v); };
+
     home_grid_ = std::make_shared<ui::GridContainer>();
     home_grid_->title = "Trending Now";
     home_grid_->columns = 2;
     home_grid_->bounds = {0, 100, 640, 332};
+    home_grid_->setImageManager(image_manager_.get());
+    home_grid_->setActivateCallback(activate);
     home_grid_->onScrolledToBottom = [this]() {
         if (state_.isLoadingVideo || state_.isSearching) {
             pendingMoreHome_ = true; // retry once current load finishes
@@ -127,6 +134,8 @@ bool App::initialize() {
     search_grid_->title = "";
     search_grid_->columns = 2;
     search_grid_->bounds = {0, 100, 640, 332};
+    search_grid_->setImageManager(image_manager_.get());
+    search_grid_->setActivateCallback(activate);
     search_grid_->onScrolledToBottom = [this]() {
         if (state_.isLoadingVideo || state_.isSearching) {
             pendingMoreSearch_ = true; // retry once current load finishes
@@ -529,7 +538,7 @@ bool App::isInputLocked() const {
     if (state_.isLoadingVideo) return true;
     if (state_.isSearching) {
         auto grid = activeGrid();
-        if (!grid || grid->cards.empty()) {
+        if (!grid || grid->videos.empty()) {
             return true;
         }
     }
@@ -837,7 +846,7 @@ void App::doSearch(const std::string& query) {
     search_page_ = 1;
     pendingMoreSearch_ = false;
     
-    search_grid_->cards.clear();
+    search_grid_->clear();
     focus_manager_.resetGridFocus(search_grid_);
     focus_manager_.setGrid(search_grid_);
     
@@ -856,13 +865,11 @@ void App::doSearch(const std::string& query) {
             }
             
             if (!results.empty()) {
-                bool isFirstCard = search_grid_->cards.empty();
+                bool isFirst = search_grid_->videos.empty();
                 for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    search_grid_->addCard(card);
+                    search_grid_->addVideo(v);
                 }
-                if (isFirstCard && !search_grid_->cards.empty()) {
+                if (isFirst) {
                     focus_manager_.setGrid(search_grid_);
                 }
                 uiDirty_ = true;
@@ -1800,7 +1807,7 @@ void App::loadHomeFeeds() {
     // old feed's cards even after we tried to switch.
     if (!cached_home_kind_.empty() && cached_home_kind_ != kind) {
         cached_trending_videos_.clear();
-        home_grid_->cards.clear();
+        home_grid_->clear();
         focus_manager_.resetGridFocus(home_grid_);
         focus_manager_.setGrid(home_grid_);
     }
@@ -1819,11 +1826,9 @@ void App::loadHomeFeeds() {
     if (!cached_trending_videos_.empty() && cached_home_kind_ == kind &&
             duration_cast<minutes>(now - trending_cache_time_).count() < 30) {
         state_.isSearching = false;
-        if (home_grid_->cards.empty()) {
+        if (home_grid_->videos.empty()) {
             for (const auto& v : cached_trending_videos_) {
-                auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                card->onClick = [this, v]() { playVideo(v); };
-                home_grid_->addCard(card);
+                home_grid_->addVideo(v);
             }
             focus_manager_.setGrid(home_grid_);
         }
@@ -1834,7 +1839,7 @@ void App::loadHomeFeeds() {
 
     // Stale-While-Revalidate: If we have no cache, we must clear and show loading
     if (cached_trending_videos_.empty()) {
-        home_grid_->cards.clear();
+        home_grid_->clear();
         focus_manager_.resetGridFocus(home_grid_);
         focus_manager_.setGrid(home_grid_);
     }
@@ -1861,19 +1866,17 @@ void App::loadHomeFeeds() {
                           << " items" << std::endl;
                 if (!accumulated_results->empty()) {
                     homeLoadFailed_ = false;
-                    home_grid_->cards.clear();
+                    home_grid_->clear();
                     cached_trending_videos_.clear();
                     for (const auto& v : *accumulated_results) {
-                        auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                        card->onClick = [this, v]() { playVideo(v); };
-                        home_grid_->addCard(card);
+                        home_grid_->addVideo(v);
                         cached_trending_videos_.push_back(v);
                     }
                     focus_manager_.setGrid(home_grid_);
                     trending_cache_time_ = std::chrono::steady_clock::now();
                     cached_home_kind_ = kind;       // record what's in the cache
                     saveHomeCache();
-                } else if (home_grid_->cards.empty()) {
+                } else if (home_grid_->videos.empty()) {
                     homeLoadFailed_ = true;
                 }
                 state_.isSearching = false;
@@ -1909,7 +1912,7 @@ void App::loadMoreHomeFeeds() {
             
             if (finished) {
                 state_.isSearching = false;
-                focus_manager_.pruneGridIfNeeded(100);
+                focus_manager_.pruneGridIfNeeded(500);
                 uiDirty_ = true;
                 if (pendingMoreHome_) {
                     pendingMoreHome_ = false;
@@ -1925,16 +1928,14 @@ void App::loadMoreHomeFeeds() {
                 for (const auto& hv : playback_history_) historyIds.insert(hv.id);
                 for (const auto& v : results) {
                     if (historyIds.count(v.id)) continue;
-
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    home_grid_->addCard(card);
+                    home_grid_->addVideo(v);
                     cached_trending_videos_.push_back(v);
                 }
-                // Keep the in-memory trending list bounded so infinite home-scroll
-                // doesn't grow RAM without limit (the visible grid is already
-                // pruned to 100). Trim the oldest entries to match.
-                constexpr size_t kMaxTrendingCache = 150;
+                // Cache cap bumped from 150 → 500 now that the grid is
+                // virtualized — only visible-window cards are materialized,
+                // so 500 metadata rows are cheap (~50 KB vs the old ~500 KB
+                // of fully-built VideoCards).
+                constexpr size_t kMaxTrendingCache = 500;
                 if (cached_trending_videos_.size() > kMaxTrendingCache) {
                     cached_trending_videos_.erase(
                         cached_trending_videos_.begin(),
@@ -1966,7 +1967,7 @@ void App::loadMoreSearchResults() {
             
             if (finished) {
                 state_.isSearching = false;
-                focus_manager_.pruneGridIfNeeded(100);
+                focus_manager_.pruneGridIfNeeded(500);
                 uiDirty_ = true;
                 if (pendingMoreSearch_) {
                     pendingMoreSearch_ = false;
@@ -1977,9 +1978,7 @@ void App::loadMoreSearchResults() {
             
             if (!results.empty()) {
                 for (const auto& v : results) {
-                    auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-                    card->onClick = [this, v]() { playVideo(v); };
-                    search_grid_->addCard(card);
+                    search_grid_->addVideo(v);
                 }
                 uiDirty_ = true;
             }
@@ -2151,7 +2150,7 @@ void App::saveDaemonQueue() {
         };
 
         std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-        if (!grid || grid->cards.empty()) {
+        if (!grid || grid->videos.empty()) {
             nlohmann::json v;
             v["id"] = current_video_.id;
             v["title"] = current_video_.title;
@@ -2164,9 +2163,9 @@ void App::saveDaemonQueue() {
             j["current_index"] = 0;
         } else {
             int current_idx = 0;
-            for (size_t i = 0; i < grid->cards.size(); ++i) {
+            for (size_t i = 0; i < grid->videos.size(); ++i) {
                 nlohmann::json v;
-                const auto& vid = grid->cards[i]->video;
+                const auto& vid = grid->videos[i];
                 v["id"] = vid.id;
                 v["title"] = vid.title;
                 v["author"] = vid.author;
@@ -2194,11 +2193,11 @@ void App::saveDaemonQueue() {
 
 void App::playNextTrack() {
     std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-    if (grid && !grid->cards.empty()) {
-        for (size_t i = 0; i < grid->cards.size(); ++i) {
-            if (grid->cards[i]->video.id == current_video_.id) {
-                if (i + 1 < grid->cards.size()) {
-                    auto nextVideo = grid->cards[i + 1]->video;
+    if (grid && !grid->videos.empty()) {
+        for (size_t i = 0; i < grid->videos.size(); ++i) {
+            if (grid->videos[i].id == current_video_.id) {
+                if (i + 1 < grid->videos.size()) {
+                    auto nextVideo = grid->videos[i + 1];
                     focus_manager_.setFocusedIndex(i + 1);
                     playVideo(nextVideo, !state_.miniplayerActive);
                     showPlaybackToast("Next Track");
@@ -2213,11 +2212,11 @@ void App::playNextTrack() {
 
 void App::playPreviousTrack() {
     std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-    if (grid && !grid->cards.empty()) {
-        for (size_t i = 0; i < grid->cards.size(); ++i) {
-            if (grid->cards[i]->video.id == current_video_.id) {
+    if (grid && !grid->videos.empty()) {
+        for (size_t i = 0; i < grid->videos.size(); ++i) {
+            if (grid->videos[i].id == current_video_.id) {
                 if (i > 0) {
-                    auto prevVideo = grid->cards[i - 1]->video;
+                    auto prevVideo = grid->videos[i - 1];
                     focus_manager_.setFocusedIndex(i - 1);
                     playVideo(prevVideo, !state_.miniplayerActive);
                     showPlaybackToast("Previous Track");
@@ -2344,11 +2343,9 @@ bool App::loadHomeCache() {
         if (temp.empty()) return false;
         
         cached_trending_videos_ = temp;
-        home_grid_->cards.clear();
+        home_grid_->clear();
         for (const auto& v : cached_trending_videos_) {
-            auto card = std::make_shared<ui::VideoCard>(image_manager_.get(), v);
-            card->onClick = [this, v]() { playVideo(v); };
-            home_grid_->addCard(card);
+            home_grid_->addVideo(v);
         }
         
         focus_manager_.setGrid(home_grid_);
@@ -2369,11 +2366,11 @@ void App::handleVideoEnded() {
     std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
     bool playedNext = false;
     
-    if (grid && !grid->cards.empty()) {
-        for (size_t i = 0; i < grid->cards.size(); ++i) {
-            if (grid->cards[i]->video.id == current_video_.id) {
-                if (i + 1 < grid->cards.size()) {
-                    auto nextVideo = grid->cards[i + 1]->video;
+    if (grid && !grid->videos.empty()) {
+        for (size_t i = 0; i < grid->videos.size(); ++i) {
+            if (grid->videos[i].id == current_video_.id) {
+                if (i + 1 < grid->videos.size()) {
+                    auto nextVideo = grid->videos[i + 1];
                     focus_manager_.setFocusedIndex(i + 1);
                     playVideo(nextVideo, !state_.miniplayerActive);
                     playedNext = true;
@@ -2395,14 +2392,14 @@ void App::prefetchNextVideo() {
     
     // Find the next video in the active grid
     std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-    if (!grid || grid->cards.empty()) return;
+    if (!grid || grid->videos.empty()) return;
     
     YouTubeVideo nextVideo;
     bool foundCurrent = false;
-    for (size_t i = 0; i < grid->cards.size(); ++i) {
-        if (grid->cards[i]->video.id == current_video_.id) {
-            if (i + 1 < grid->cards.size()) {
-                nextVideo = grid->cards[i + 1]->video;
+    for (size_t i = 0; i < grid->videos.size(); ++i) {
+        if (grid->videos[i].id == current_video_.id) {
+            if (i + 1 < grid->videos.size()) {
+                nextVideo = grid->videos[i + 1];
                 foundCurrent = true;
             }
             break;

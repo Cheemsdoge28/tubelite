@@ -276,7 +276,10 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
-        json req = {{"op", "feed"}, {"kind", kind}, {"page", page}};
+        // page_size=50 matches tubed's _FEED_PAGE_DEFAULT; explicit here so a
+        // future tubed version that changes its default still gets the size
+        // the UI's virtualization is tuned for.
+        json req = {{"op", "feed"}, {"kind", kind}, {"page", page}, {"page_size", 50}};
         json resp;
         bool ok = tubedRequest(req, resp, 20000);
 

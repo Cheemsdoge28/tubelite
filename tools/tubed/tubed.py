@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.2-feed-fallback" # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.3-ytsubs"       # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -905,22 +905,28 @@ def op_trending(req):
 
 
 # URLs for personalized feeds, exposed by `op_feed` with kind=<key>.
-# These require valid cookies; without them yt-dlp returns the guest
-# trending/home feed instead.  For subscriptions we keep an ordered list
-# of URL variants — yt-dlp's `?flow=2` "videos" layout sometimes returns
-# entries when the default `/feed/subscriptions` URL is redirected back
-# to the home page in the InnerTube response (a quirk seen with partial
-# cookie sets that authenticate identity but not the watch surface).
+# For subscriptions we prefer yt-dlp's `:ytsubs` shortcut which the on-device
+# manual test confirmed working — it goes through yt-dlp's dedicated
+# subscriptions extractor that paginates correctly (the plain
+# /feed/subscriptions URL returns 0 items in some auth states because the
+# guest version of the page has nothing to enumerate).  The full URL is
+# kept as a second variant in case `:ytsubs` ever breaks.
 _FEED_URLS = {
     "subscriptions": [
+        ":ytsubs",
         "https://www.youtube.com/feed/subscriptions",
-        "https://www.youtube.com/feed/subscriptions?flow=2",
     ],
     "home":        ["https://www.youtube.com/"],
     "history":     ["https://www.youtube.com/feed/history"],
     "liked":       ["https://www.youtube.com/playlist?list=LL"],
     "watch_later": ["https://www.youtube.com/playlist?list=WL"],
 }
+
+# Default per-page size for op_feed.  Larger than search (15) because the
+# subscriptions feed is metadata-only — yt-dlp returns lightweight
+# flat-playlist entries cheaply once cookies authenticate.  Caller can
+# override via `page_size` in the request.
+_FEED_PAGE_DEFAULT = 50
 
 
 def _cookie_summary():
@@ -952,18 +958,19 @@ def op_feed(req):
     whether yt-dlp just couldn't authenticate."""
     kind = (req.get("kind") or "subscriptions").strip()
     page = max(1, int(req.get("page") or 1))
+    page_size = max(1, min(int(req.get("page_size") or _FEED_PAGE_DEFAULT), 100))
     if kind not in _FEED_URLS:
         return {"ok": False, "error": f"unknown feed kind: {kind}"}
     if not _have_cookies():
         return {"ok": False, "error": "not signed in"}
 
-    ck = f"feed:{kind}:{page}"
+    ck = f"feed:{kind}:{page}:{page_size}"
     cached = CACHE.get(ck)
     if cached is not None:
         return {"ok": True, "results": cached, "finished": True}
 
-    start = (page - 1) * 15 + 1
-    end   = page * 15
+    start = (page - 1) * page_size + 1
+    end   = page * page_size
 
     results = []
     last_url = ""

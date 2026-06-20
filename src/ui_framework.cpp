@@ -249,57 +249,98 @@ void VideoCard::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     }
 }
 
-void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
-    cards.push_back(card);
-    int idx = cards.size() - 1;
+void GridContainer::layoutCardAt(VideoCard& card, int idx) const {
     int row = idx / columns;
     int col = idx % columns;
-    
-    card->bounds.w = (bounds.w - padding * (columns + 1)) / static_cast<float>(columns);
+    card.bounds.w = (bounds.w - padding * (columns + 1)) / static_cast<float>(columns);
     if (columns == 1) {
-        card->bounds.h = 90.0f;
+        card.bounds.h = 90.0f;
     } else {
         // thumbnail + (8 top pad) + title (28) + 5 gap + channel (14) + 5 gap
         // + views/date (14) + (8 bottom pad) = thumb + 82.  Bottom padding now
         // matches the top so the views/date line isn't visually clipped.
-        card->bounds.h = card->bounds.w * (9.0f / 16.0f) + 82.0f;
+        card.bounds.h = card.bounds.w * (9.0f / 16.0f) + 82.0f;
     }
+    card.bounds.x = bounds.x + padding + col * (card.bounds.w + padding);
+    card.bounds.y = bounds.y + padding + row * (card.bounds.h + padding);
+}
 
-    card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
-    card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding);
+void GridContainer::addVideo(const YouTubeVideo& v) {
+    videos.push_back(v);
+    cards.push_back(nullptr);   // lazy — materialized when scrolled into view
+}
+
+void GridContainer::addCard(std::shared_ptr<VideoCard> card) {
+    // Legacy: caller already built the VideoCard.  Push both slots in lockstep
+    // so the parallel-array invariant (videos.size() == cards.size()) holds.
+    if (card) {
+        videos.push_back(card->video);
+    } else {
+        videos.emplace_back();
+    }
+    cards.push_back(card);
+    if (card) layoutCardAt(*card, static_cast<int>(cards.size()) - 1);
+}
+
+void GridContainer::clear() {
+    videos.clear();
+    cards.clear();
+}
+
+std::shared_ptr<VideoCard> GridContainer::ensureCard(int idx) {
+    if (idx < 0 || idx >= static_cast<int>(videos.size())) return nullptr;
+    if (cards[idx]) return cards[idx];
+    auto c = std::make_shared<VideoCard>(im_, videos[idx]);
+    layoutCardAt(*c, idx);
+    if (on_activate_) {
+        auto cb = on_activate_;
+        YouTubeVideo v = videos[idx];
+        c->onClick = [cb, v]() { cb(v); };
+    }
+    cards[idx] = c;
+    return c;
+}
+
+void GridContainer::releaseOffscreenCards(int firstVisible, int lastVisible, int margin) {
+    const int lo = std::max(0, firstVisible - margin);
+    const int hi = std::min(static_cast<int>(cards.size()), lastVisible + margin + 1);
+    for (int i = 0; i < lo; ++i) {
+        if (cards[i]) cards[i].reset();
+    }
+    for (int i = hi; i < static_cast<int>(cards.size()); ++i) {
+        if (cards[i]) cards[i].reset();
+    }
 }
 
 void GridContainer::pruneOldCards(int maxCards, int& focusedCardIdx) {
-    if (static_cast<int>(cards.size()) <= maxCards) return;
-    
-    int pruneRows = (static_cast<int>(cards.size()) - maxCards + columns - 1) / columns;
+    if (static_cast<int>(videos.size()) <= maxCards) return;
+
+    int pruneRows = (static_cast<int>(videos.size()) - maxCards + columns - 1) / columns;
     int pruneCount = pruneRows * columns;
-    if (pruneCount >= static_cast<int>(cards.size())) return;
-    
-    float cardH = (columns == 1) ? 90.0f : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 82.0f);
+    if (pruneCount >= static_cast<int>(videos.size())) return;
+
+    float cardH = (columns == 1) ? 90.0f
+                                 : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 82.0f);
     float rowHeight = cardH + padding;
     float removedHeight = pruneRows * rowHeight;
-    
+
     if (scrollY < removedHeight) {
         return;
     }
-    
+
+    // Erase both arrays in lockstep — they stay parallel.
+    videos.erase(videos.begin(), videos.begin() + pruneCount);
     cards.erase(cards.begin(), cards.begin() + pruneCount);
-    
+
     scrollY = std::max(0.0f, scrollY - removedHeight);
     targetScrollY = std::max(0.0f, targetScrollY - removedHeight);
-    
+
     focusedCardIdx = std::max(0, focusedCardIdx - pruneCount);
-    
+
+    // Re-layout the survivors.  Only materialized cards (non-null) need
+    // bounds rewriting — placeholders will be laid out when materialized.
     for (size_t idx = 0; idx < cards.size(); ++idx) {
-        auto& card = cards[idx];
-        int row = idx / columns;
-        int col = idx % columns;
-        
-        card->bounds.w = (bounds.w - padding * (columns + 1)) / static_cast<float>(columns);
-        card->bounds.h = cardH;
-        card->bounds.x = bounds.x + padding + col * (card->bounds.w + padding);
-        card->bounds.y = bounds.y + padding + row * (card->bounds.h + padding);
+        if (cards[idx]) layoutCardAt(*cards[idx], static_cast<int>(idx));
     }
 }
 
@@ -310,7 +351,12 @@ void GridContainer::update(float dt) {
     scrollY = scrollY + (targetScrollY - scrollY) * alpha;
     // Snap to rest when very close to avoid sub-pixel jitter
     if (std::abs(scrollY - targetScrollY) < 0.5f) scrollY = targetScrollY;
-    for (auto& c : cards) c->update(dt);
+    // Only materialized cards have per-frame animation state (focus pulse,
+    // title-scroll timer).  Null entries are placeholders for off-screen
+    // videos that don't need updates.
+    for (auto& c : cards) {
+        if (c) c->update(dt);
+    }
 }
 
 SDL_Rect GridContainer::viewportRect(float offsetX, float offsetY) const {
@@ -325,12 +371,41 @@ SDL_Rect GridContainer::viewportRect(float offsetX, float offsetY) const {
 void GridContainer::render(SDL_Renderer* renderer, float offsetX, float offsetY) {
     const SDL_Rect clip = viewportRect(offsetX, offsetY);
     SDL_RenderSetClipRect(renderer, &clip);
-    for (auto& c : cards) {
-        float cy = c->bounds.y + offsetY - scrollY;
-        if (cy + c->bounds.h > bounds.y && cy < bounds.y + bounds.h) {
-            c->render(renderer, offsetX, offsetY - scrollY);
-        }
+
+    // Virtualized rendering: compute which rows are visible from scrollY +
+    // grid bounds, then materialize ONLY those cards.  Off-screen videos
+    // never allocate a VideoCard, never request a thumbnail, never run
+    // text layout.  Keeps RAM flat as the feed grows past a few hundred.
+    const int total = static_cast<int>(videos.size());
+    if (total == 0) {
+        SDL_RenderSetClipRect(renderer, nullptr);
+        return;
     }
+    const float cardH = (columns == 1) ? 90.0f
+                                       : ((bounds.w - padding * (columns + 1)) / static_cast<float>(columns) * (9.0f / 16.0f) + 82.0f);
+    const float rowH = cardH + padding;
+    const int rowCount = (total + columns - 1) / columns;
+
+    int firstRow = static_cast<int>((scrollY) / rowH) - 1;
+    int lastRow  = static_cast<int>((scrollY + bounds.h) / rowH) + 1;
+    firstRow = std::max(0, firstRow);
+    lastRow  = std::min(rowCount - 1, lastRow);
+
+    const int firstIdx = firstRow * columns;
+    const int lastIdx  = std::min(total - 1, (lastRow + 1) * columns - 1);
+
+    for (int i = firstIdx; i <= lastIdx; ++i) {
+        auto c = ensureCard(i);
+        if (!c) continue;
+        c->render(renderer, offsetX, offsetY - scrollY);
+    }
+
+    // Drop cards that are far outside the viewport so RAM stays bounded
+    // even after scrolling through hundreds of items.  Margin of 2 viewport
+    // heights worth of rows keeps focus-jumps responsive without thrashing.
+    int marginRows = std::max(3, static_cast<int>(bounds.h / std::max(1.0f, rowH)) * 2);
+    releaseOffscreenCards(firstIdx, lastIdx, marginRows * columns);
+
     SDL_RenderSetClipRect(renderer, nullptr);
 }
 
@@ -338,12 +413,12 @@ void FocusManager::setGrid(std::shared_ptr<GridContainer> grid) {
     if (grid_) {
         gridFocusIndices_[grid_.get()] = focusedCardIdx_;
         for (auto& c : grid_->cards) {
-            c->focused = false;
+            if (c) c->focused = false;
         }
     }
-    
+
     grid_ = grid;
-    
+
     if (grid_) {
         auto it = gridFocusIndices_.find(grid_.get());
         if (it != gridFocusIndices_.end()) {
@@ -361,14 +436,19 @@ void FocusManager::setGrid(std::shared_ptr<GridContainer> grid) {
 }
 
 void FocusManager::updateTargetFocus() {
-    if (!grid_ || grid_->cards.empty()) return;
-    focusedCardIdx_ = std::clamp(focusedCardIdx_, 0, static_cast<int>(grid_->cards.size()) - 1);
-    
-    for (auto& c : grid_->cards) c->focused = false;
-    
-    auto card = grid_->cards[focusedCardIdx_];
+    if (!grid_ || grid_->videos.empty()) return;
+    focusedCardIdx_ = std::clamp(focusedCardIdx_, 0, static_cast<int>(grid_->videos.size()) - 1);
+
+    for (auto& c : grid_->cards) {
+        if (c) c->focused = false;
+    }
+
+    // Materialize the focused card on demand so the focus ring + per-card
+    // animation always have a real object to point at.
+    auto card = grid_->ensureCard(focusedCardIdx_);
+    if (!card) return;
     card->focused = true;
-    
+
     targetFocusRing_ = card->bounds;
     float headerOffset = grid_->bounds.y;
     float screenH = grid_->bounds.y + grid_->bounds.h;
@@ -385,29 +465,29 @@ void FocusManager::updateTargetFocus() {
 }
 
 void FocusManager::handleInput(int dx, int dy) {
-    if (!grid_ || grid_->cards.empty()) return;
+    if (!grid_ || grid_->videos.empty()) return;
     int maxCols = grid_->columns;
     int row = focusedCardIdx_ / maxCols;
     int col = focusedCardIdx_ % maxCols;
-    
+
     col += dx;
     if (col < 0) col = 0;
     if (col >= maxCols) col = maxCols - 1;
-    
+
     row += dy;
     if (row < 0) row = 0;
-    
+
     int newIdx = row * maxCols + col;
-    if (newIdx >= static_cast<int>(grid_->cards.size())) {
-        newIdx = grid_->cards.size() - 1;
+    if (newIdx >= static_cast<int>(grid_->videos.size())) {
+        newIdx = static_cast<int>(grid_->videos.size()) - 1;
     }
-    
+
     if (newIdx != focusedCardIdx_) {
         focusedCardIdx_ = newIdx;
         updateTargetFocus();
-        
+
         // Speculative prefetching: load more cards when user gets 70% of the way through current grid
-        if (newIdx >= static_cast<int>(grid_->cards.size()) * 7 / 10) {
+        if (newIdx >= static_cast<int>(grid_->videos.size()) * 7 / 10) {
             if (grid_->onScrolledToBottom) grid_->onScrolledToBottom();
         }
     }
@@ -416,9 +496,9 @@ void FocusManager::handleInput(int dx, int dy) {
 void FocusManager::update(float dt) {
     if (grid_) {
         grid_->update(dt);
-        if (!grid_->cards.empty()) {
-            focusedCardIdx_ = std::max(0, std::min(focusedCardIdx_, static_cast<int>(grid_->cards.size()) - 1));
-            auto card = grid_->cards[focusedCardIdx_];
+        if (!grid_->videos.empty()) {
+            focusedCardIdx_ = std::max(0, std::min(focusedCardIdx_, static_cast<int>(grid_->videos.size()) - 1));
+            auto card = grid_->ensureCard(focusedCardIdx_);
             if (card) {
                 card->focused = true;
                 targetFocusRing_ = card->bounds;
@@ -433,7 +513,7 @@ void FocusManager::update(float dt) {
 }
 
 void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float offsetY) {
-    if (!grid_ || grid_->cards.empty()) return;
+    if (!grid_ || grid_->videos.empty()) return;
     const SDL_Rect clip = grid_->viewportRect(offsetX, offsetY);
     SDL_RenderSetClipRect(renderer, &clip);
     
@@ -465,9 +545,9 @@ void FocusManager::renderFocusRing(SDL_Renderer* renderer, float offsetX, float 
 }
 
 std::shared_ptr<VideoCard> FocusManager::getFocusedCard() const {
-    if (!grid_ || grid_->cards.empty()) return nullptr;
-    int idx = std::max(0, std::min(focusedCardIdx_, static_cast<int>(grid_->cards.size()) - 1));
-    return grid_->cards[idx];
+    if (!grid_ || grid_->videos.empty()) return nullptr;
+    int idx = std::max(0, std::min(focusedCardIdx_, static_cast<int>(grid_->videos.size()) - 1));
+    return grid_->ensureCard(idx);
 }
 
 void FocusManager::clickFocused() {
@@ -482,8 +562,8 @@ void FocusManager::pruneGridIfNeeded(int maxCards) {
 }
 
 void FocusManager::setFocusedIndex(int index) {
-    if (!grid_ || grid_->cards.empty()) return;
-    focusedCardIdx_ = std::clamp(index, 0, static_cast<int>(grid_->cards.size()) - 1);
+    if (!grid_ || grid_->videos.empty()) return;
+    focusedCardIdx_ = std::clamp(index, 0, static_cast<int>(grid_->videos.size()) - 1);
     updateTargetFocus();
     currentFocusRing_ = targetFocusRing_;
 }
