@@ -1512,16 +1512,6 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 uiDirty_ = true;
                 return;
             }
-        } else if (button == SDL_CONTROLLER_BUTTON_Y) {
-            // SELECT+Y → profile dump.  Works anywhere; intended for the
-            // handheld where there's no F11.
-            std::string p = dumpProfileSnapshot();
-            if (!p.empty() && state_.currentScreen == TubeState::Screen::Playback) {
-                showPlaybackToast("Dumped: " + p);
-            }
-            select_action_triggered_ = true;
-            uiDirty_ = true;
-            return;
         } else if (button == SDL_CONTROLLER_BUTTON_X) {
             // SELECT+X → open the sign-in help modal (cookies.txt steps).
             state_.showSignInHelp = true;
@@ -1531,6 +1521,9 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             return;
         } else if (button == SDL_CONTROLLER_BUTTON_Y) {
             // SELECT+Y → open the settings modal.
+            // (Previously bound to a debug profile-dump; F11 still does that
+            // on a keyboard, and the user-facing settings modal is the more
+            // valuable chord here.)
             state_.showSettingsModal = true;
             select_action_triggered_ = true;
             uiDirty_ = true;

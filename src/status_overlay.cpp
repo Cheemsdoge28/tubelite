@@ -79,13 +79,13 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     {"A", red, "PLAY"},
                     {"B", yellow, "BACK"},
                     {"Y", green, "SEARCH"},
-                    {"X", blue, std::to_string(state.maxQualityHeight) + "P"},
                     {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
-                    // Sign-in state + entry point.  Green ●=signed in (full
-                    // quality), yellow ○=guest (360p).  SEL+X opens the help.
+                    // Sign-in state + entry point.  Green ●=signed in,
+                    // yellow ○=guest.  SEL+X opens the help.
                     {"SEL+X", state.authed ? green : yellow,
                               state.authed ? "SIGNED IN" : "GUEST"},
-                    // SEL+Y opens the settings modal.
+                    // SEL+Y opens the settings modal (max quality, home
+                    // feed, volume, debug overlay).
                     {"SEL+Y", textColor, "SETTINGS"},
                 };
             }
