@@ -416,19 +416,20 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
 
     // Instructions — concise, wrapped manually to fit the card.
     const char* lines[] = {
-        "YouTube limits guests to 360p and may block",
-        "playback. To unlock full quality, sign in with",
-        "a browser cookie file:",
+        "Sign in to unlock subscriptions, history, and",
+        "private videos. TubeLite reads cookies.txt:",
         "",
-        "1. On a PC, install a 'Get cookies.txt' browser",
-        "   extension and log in to youtube.com.",
-        "2. Export cookies for youtube.com as cookies.txt.",
-        "3. Copy it to:",
+        "1. On a PC, install a 'Get cookies.txt' extension",
+        "   and log in to youtube.com.",
+        "2. EXPORT ALL COOKIES (not just essential ones)",
+        "   — you NEED SAPISID, __Secure-3PAPISID, HSID,",
+        "   SID. Missing SAPISID = YouTube ignores you.",
+        "3. Copy the file to:",
         "     /roms/tools/tubelite/cookies.txt",
-        "4. Return here and press A to re-check.",
+        "4. Press A here to re-check.",
         "",
-        "Cookies expire periodically; re-export if guest",
-        "mode returns.",
+        "If feeds show 'cookies missing SAPISID' check",
+        "yt-dlp wiki: Extractors#exporting-youtube-cookies",
     };
     for (const char* ln : lines) {
         // Highlight the path line in blue; everything else muted.

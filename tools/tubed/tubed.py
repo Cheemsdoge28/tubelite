@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.3-ytsubs"       # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.4-cookies-always" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -932,18 +932,35 @@ _FEED_PAGE_DEFAULT = 50
 def _cookie_summary():
     """Cheap diagnostic: report how many lines the cookies file has and
     whether the key YouTube auth cookies appear in it.  Logged on every
-    empty feed result so users see why subscriptions look empty."""
+    empty feed result so users see why subscriptions look empty.
+
+    YouTube's signed-in API requests require SAPISID (or one of its
+    `__Secure-` variants) — that's what generates the SAPISIDHASH
+    Authorization header.  Browser extensions that only export "essential"
+    cookies often skip SAPISID, which leaves the user with a file that
+    looks valid (has SID) but doesn't authenticate.  We specifically flag
+    that case so the diagnostic is actionable instead of a wall of names."""
     try:
         with open(COOKIES, "r", errors="replace") as fh:
             text = fh.read()
         rows = [ln for ln in text.splitlines()
                 if ln.strip() and not ln.startswith("#")]
-        # Names worth checking — at least SAPISID + SID are needed for
-        # signed-in tab requests.  LOGIN_INFO / __Secure-3PSID are the
-        # modern equivalents on some sessions.
-        needles = ("SAPISID", "SID", "HSID", "SSID", "LOGIN_INFO", "__Secure-3PSID")
+        needles = ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID",
+                   "SID", "HSID", "SSID", "LOGIN_INFO", "__Secure-3PSID")
         present = [n for n in needles if n in text]
-        return f"cookies.txt: {len(rows)} rows, auth cookies present: {','.join(present) or 'NONE'}"
+        # The SAPISIDHASH header is what actually proves identity to
+        # YouTube's InnerTube API.  Without one of these we silently get
+        # the guest experience.
+        sapisid_family = ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID")
+        has_sapisid = any(n in text for n in sapisid_family)
+        hint = ""
+        if not has_sapisid:
+            hint = (" — MISSING SAPISID family! YouTube auth will fail. "
+                    "Re-export INCLUDING SAPISID, __Secure-3PAPISID and "
+                    "HSID — see https://github.com/yt-dlp/yt-dlp/wiki/"
+                    "Extractors#exporting-youtube-cookies")
+        return (f"cookies.txt: {len(rows)} rows, auth cookies present: "
+                f"{','.join(present) or 'NONE'}{hint}")
     except OSError as ex:
         return f"cookies.txt: unreadable ({ex})"
 
@@ -1002,7 +1019,14 @@ def op_feed(req):
         log(f"feed {kind}: 0 items via {url}; trying next variant")
 
     if not results:
-        log(f"feed {kind}: ALL variants returned 0 items — {_cookie_summary()}")
+        summary = _cookie_summary()
+        log(f"feed {kind}: ALL variants returned 0 items — {summary}")
+        # Surface the SAPISID-missing case as a specific UI-friendly error
+        # the C++ side can render verbatim in the empty-grid hint area.
+        if "MISSING SAPISID" in summary:
+            return {"ok": False, "error":
+                    "cookies.txt is missing SAPISID — re-export with full "
+                    "cookie set (see tubed.log for the wiki link)"}
         return {"ok": False, "error":
                 f"feed empty (last url: {last_url}; cookies may not be "
                 f"authenticated — see tubed.log)"}
@@ -1054,7 +1078,14 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None):
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
     fmt = f"best[height<={max_height}]/best"
-    args = _ytdlp_base_args(use_cookies=False) + [
+    # Pass cookies on stream resolves too when they exist.  Previous comment
+    # claimed cookies caused bot challenges with DASH+android_vr — but the
+    # current path is ios+android+skip=dash,hls which doesn't have that
+    # interaction, and forcing cookies-off prevented signed-in users from
+    # accessing age-restricted / region-locked / private playlist videos.
+    # The c707db7-era cookieless test that "always worked" was on a
+    # completely different extractor; that finding doesn't apply here.
+    args = _ytdlp_base_args(use_cookies=True) + [
         "--no-playlist",
         "--skip-download",
         "--no-call-home",
