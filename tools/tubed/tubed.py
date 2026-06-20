@@ -48,7 +48,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.8.0-elf-budgets"  # bump on every meaningful edit so the
+TUBED_VERSION = "0.8.1-ytdlp-verbose" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -499,6 +499,13 @@ def _ytdlp_base_args(use_cookies=True):
         "--socket-timeout", "8",
         "--extractor-retries", "0",
         "--retries", "0",
+        # DIAGNOSTIC: -v makes yt-dlp dump its full bootstrap (Python ver,
+        # flags parsed, args resolved) to stderr the instant Python starts.
+        # If we still see NO `produced first stderr line` from the drain
+        # thread, yt-dlp's Python code isn't running at all — the hang is
+        # in the PyInstaller bootloader, not in yt-dlp itself.  Remove this
+        # once playback is reliable; the verbose output is noisy.
+        "-v",
     ]
     if use_cookies and _have_cookies():
         args += ["--cookies", COOKIES]
