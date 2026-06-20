@@ -389,16 +389,13 @@ void Compositor::render(App* app, int width, int height) {
 
 void Compositor::drawSignInHelp(App* app, int width, int height) {
     PROFILE_SCOPE("signin_help");
-    // Dim the whole screen behind the modal.
+    // Daemon-style modal: same shadow + accent bar + glow + hairline rules
+    // as the now-playing card, so all overlays in the app speak one visual
+    // language.  See settings_modal.cpp for the matching implementation.
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
     SDL_Rect scrim{0, 0, width, height};
-    fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(190));
+    fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(210));
 
-    // Card height is derived from the text block so changes to the line
-    // list below don't silently push content under the hint bar.  Layout:
-    //   title (34) + status (24) + N lines × line_h (13) + footer pad (40)
-    // The footer hint sits 26 px above the card bottom, so we keep ≥14 px
-    // gap between the last text line and the hint by reserving 40 px.
     const char* lines[] = {
         "Sign in to unlock subscriptions, history, and",
         "private videos. TubeLite reads cookies.txt:",
@@ -414,40 +411,63 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
     constexpr int kLineH = 13;
     const int textBlockH = static_cast<int>(sizeof(lines) / sizeof(lines[0])) * kLineH;
 
-    const int cw = std::min(width - 40, 460);
-    const int ch = std::min(height - 20, 16 + 34 + 24 + textBlockH + 40);
+    constexpr int kAccentW = 3;
+    constexpr int kPadL = 14;
+    constexpr int kPadR = 14;
+    constexpr int kTopH = 30;
+    constexpr int kStatusH = 22;
+    constexpr int kBotH = 28;
+
+    const int cw = std::min(width - 24, 420);
+    const int ch = std::min(height - 16, kTopH + kStatusH + textBlockH + kBotH + 8);
     const int cx = (width - cw) / 2;
     const int cy = (height - ch) / 2;
+
+    // Shared daemon-card chrome (shadow + body + lift gradient + accent
+    // bar + glow + border).  Same helper the settings modal uses.
     SDL_Rect card{cx, cy, cw, ch};
-    fillRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::SURFACE);
-    drawRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::ACCENT.a8(220));
+    drawDaemonCard(renderer_, card, theme::RADIUS_CARD);
 
-    int x = cx + 20;
-    int y = cy + 16;
+    int x = cx + kAccentW + kPadL;
+    int y = cy + 8;
 
-    drawTextShadow(renderer_, x, y, "SIGN IN", 3, theme::ACCENT); y += 34;
+    // Title strip: title left, B-close hint right (matches settings modal)
+    drawText(renderer_, x, y, "Sign in", 2, theme::TEXT);
+    {
+        const char* sub = "B close";
+        int sw = 0;
+        getTextSize(sub, 1, &sw, nullptr);
+        drawText(renderer_, cx + cw - kPadR - sw, y + 4, sub, 1, theme::TEXT_MUTED);
+    }
+    drawHairline(renderer_, cx + 8, cy + kTopH - 1, cw - 16, theme::HAIRLINE.a8(110));
 
+    y = cy + kTopH + 4;
+
+    // Status pill via shared helper (same shape used in the status bar
+    // and the settings modal toggles).
     const bool authed = app->state_.authed;
-    drawText(renderer_, x, y, authed ? "Status: SIGNED IN (full quality)"
-                                     : "Status: GUEST (360p, may be rate-limited)",
-             1, authed ? theme::GREEN : theme::YELLOW);
-    y += 24;
+    drawStatusPill(renderer_, x, y,
+                   authed ? "SIGNED IN" : "GUEST",
+                   authed ? SDL_Color(theme::GREEN) : SDL_Color(theme::YELLOW));
+
+    y += kStatusH;
+
+    // Instructions
     for (const char* ln : lines) {
-        // Highlight the path line in blue; everything else muted.
         SDL_Color col = (std::strstr(ln, "/roms") != nullptr) ? SDL_Color(theme::BLUE)
                                                               : SDL_Color(theme::TEXT_2);
         drawText(renderer_, x, y, ln, 1, col);
         y += kLineH;
     }
 
-    // Footer hint bar.  drawHintButtons centers within [0,width]; pass
-    // 2*cx+cw so the row centers inside the card [cx, cx+cw].
+    // Footer hairline + hint bar
+    drawHairline(renderer_, cx + 8, cy + ch - kBotH + 2, cw - 16, theme::HAIRLINE.a8(90));
     std::vector<HintItem> hints = {
-        {"A", theme::GREEN,  "RE-CHECK"},
+        {"A", theme::ACCENT, "RE-CHECK"},
         {"B", theme::YELLOW, "CLOSE"},
     };
-    drawHintButtons(renderer_, hints, cy + ch - 26, 20, 1, 2 * cx + cw,
-                    theme::PANEL.a8(200), theme::CHIP.a8(180), theme::TEXT_ON);
+    drawHintButtons(renderer_, hints, cy + ch - 22, 18, 1, 2 * cx + cw,
+                    theme::PANEL.a8(210), theme::CHIP.a8(180), theme::TEXT_ON);
 
     app->uiDirty_ = true;
 }

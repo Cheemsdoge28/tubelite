@@ -1235,6 +1235,71 @@ void maskRoundedCornersTop(SDL_Renderer* renderer, const SDL_Rect& rect, int rad
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTR, &dstTR);
 }
 
+void drawHairline(SDL_Renderer* renderer, int x, int y, int w, SDL_Color color) {
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_Rect line{x, y, w, 1};
+    SDL_RenderFillRect(renderer, &line);
+}
+
+SDL_Rect drawStatusPill(SDL_Renderer* renderer, int x, int y,
+                        const std::string& label, SDL_Color tint) {
+    int tw = 0, th = 0;
+    getTextSize(label, 1, &tw, &th);
+    constexpr int padX = 7, padY = 2;
+    SDL_Rect pill{x, y, tw + padX * 2, th + padY * 2};
+    fillRoundedRect(renderer, pill, theme::RADIUS_PILL,
+                    SDL_Color{tint.r, tint.g, tint.b, 38});
+    drawRoundedRect(renderer, pill, theme::RADIUS_PILL,
+                    SDL_Color{tint.r, tint.g, tint.b, 180});
+    drawText(renderer, pill.x + padX, pill.y + padY, label, 1, tint);
+    return pill;
+}
+
+void drawDaemonCard(SDL_Renderer* renderer, const SDL_Rect& rect,
+                    int radius, bool drawShadow, bool drawAccentBar) {
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    const int cx = rect.x, cy = rect.y, cw = rect.w, ch = rect.h;
+
+    // ── Diffuse two-pass shadow ───────────────────────────────────────────
+    if (drawShadow) {
+        SDL_Rect s1{cx + 2, cy + 4, cw, ch};
+        SDL_Rect s2{cx + 1, cy + 2, cw, ch + 1};
+        fillRoundedRect(renderer, s1, radius, theme::BLACK.a8(70));
+        fillRoundedRect(renderer, s2, radius, theme::BLACK.a8(40));
+    }
+
+    // ── Card body ─────────────────────────────────────────────────────────
+    SDL_Rect body{cx, cy, cw, ch};
+    fillRoundedRect(renderer, body, radius, theme::SURFACE);
+
+    // ── Subtle top-half lift gradient ─────────────────────────────────────
+    // 12 stacked low-alpha bands of RAISED — fakes a gradient on hardware
+    // that has no native gradient support.  Almost free perf-wise.
+    for (int i = 0; i < 12; ++i) {
+        int alpha = 14 - i;
+        if (alpha <= 0) break;
+        SDL_Rect band{cx + 1, cy + 1 + i * 2, cw - 2, 2};
+        fillRoundedRect(renderer, band, 0, theme::RAISED.a8(alpha));
+    }
+
+    // ── Left accent bar + horizontal glow ─────────────────────────────────
+    if (drawAccentBar) {
+        constexpr int kAccentW = 3;
+        SDL_Rect accent{cx, cy, kAccentW, ch};
+        fillRoundedRect(renderer, accent, 2, theme::ACCENT);
+        for (int i = 0; i < 16; ++i) {
+            int alpha = 30 - i * 2;
+            if (alpha <= 0) break;
+            SDL_Rect g{cx + kAccentW + i, cy + 1, 1, ch - 2};
+            fillRoundedRect(renderer, g, 0, theme::ACCENT.a8(alpha));
+        }
+    }
+
+    // ── Border line ───────────────────────────────────────────────────────
+    drawRoundedRect(renderer, body, radius, theme::BORDER);
+}
+
 void drawHintButtons(SDL_Renderer* renderer, const std::vector<HintItem>& hints, int y, int height, int scale, int width, SDL_Color panelColor, SDL_Color borderColor, SDL_Color textColor) {
     if (hints.empty()) return;
     int fontHeight = 14;
@@ -1326,12 +1391,30 @@ void drawSpeedOverlay(SDL_Renderer* renderer, int centerX, int y, double speed, 
 void drawLoadingOverlay(SDL_Renderer* renderer, int width, int height, const std::string& text, float time, SDL_Color textColor, bool drawBg) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     if (drawBg) {
-        SDL_SetRenderDrawColor(renderer, theme::BLACK.r, theme::BLACK.g, theme::BLACK.b, 180);
+        SDL_SetRenderDrawColor(renderer, theme::BLACK.r, theme::BLACK.g, theme::BLACK.b, 210);
         SDL_Rect bg{0, 0, width, height};
         SDL_RenderFillRect(renderer, &bg);
     }
-    
-    drawSpinner(renderer, width / 2, height / 2 - 20, 30, time);
-    drawTextCentered(renderer, width / 2, height / 2 + 25, text, 2, textColor, true);
+
+    // Pull spinner + text together onto a small daemon-styled card so the
+    // loading state has the same visual signature as every other overlay
+    // in the app (shadow + accent bar + lift).  Card sized from the text
+    // so short or long status messages both center cleanly.
+    int tw = 0, th = 0;
+    getTextSize(text, 2, &tw, &th);
+    const int spinnerR = 22;
+    const int padX = 18;
+    const int padY = 12;
+    const int gap  = 14;
+    const int cw   = std::max(spinnerR * 2 + padX * 2, tw + padX * 2);
+    const int ch   = spinnerR * 2 + gap + th + padY * 2;
+    const int cx   = (width  - cw) / 2;
+    const int cy   = (height - ch) / 2;
+    SDL_Rect card{cx, cy, cw, ch};
+    drawDaemonCard(renderer, card, theme::RADIUS_CARD);
+
+    drawSpinner(renderer, width / 2, cy + padY + spinnerR, spinnerR, time);
+    drawTextCentered(renderer, width / 2,
+                     cy + padY + spinnerR * 2 + gap, text, 2, textColor, true);
 }
 

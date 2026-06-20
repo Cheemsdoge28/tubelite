@@ -16,19 +16,17 @@ namespace {
 // case DASH support returns later.
 constexpr int kQualitySteps[] = {144, 240, 360, 480, 720};
 
-// Row layout — single ordered list with a `kind` per row so render/handleKey
-// stay table-driven instead of growing switches.
 enum RowKind {
     KIND_HEADER,        // non-focusable section label
-    KIND_CYCLE,         // ◄ value ►   (max quality, home tab)
+    KIND_CYCLE,         // < value >   (max quality, home tab)
     KIND_TOGGLE,        // ON/OFF pill (hover previews, autoplay, etc.)
-    KIND_SLIDER,        // ▰▰▰▱▱ N    (volume)
+    KIND_SLIDER,        // ▰▰▰ N      (volume)
     KIND_ACTION,        // > Reset to defaults
 };
 
 struct Row {
     RowKind kind;
-    const char* label;     // displayed text
+    const char* label;
 };
 
 // One source of truth for the modal layout.  Edit here to add/remove rows.
@@ -47,10 +45,16 @@ const Row kRows[] = {
     {KIND_ACTION, "Reset to defaults"},
 };
 constexpr int kRowCount = static_cast<int>(sizeof(kRows) / sizeof(kRows[0]));
-constexpr int kRowH     = 22;     // pixels per row
-constexpr int kHeaderH  = 20;     // headers are slightly tighter
-constexpr int kTopH     = 38;     // SETTINGS title block
-constexpr int kBotH     = 36;     // footer hint reserve
+
+// Tight daemon-style spacing — matches the now-playing card's compact feel.
+constexpr int kRowH     = 18;     // data rows
+constexpr int kHeaderH  = 16;     // headers
+constexpr int kHeaderSp = 4;      // space above each header
+constexpr int kAccentW  = 3;      // left accent bar width (daemon uses 4 on 380px)
+constexpr int kPadL     = 14;     // card left padding (after accent bar)
+constexpr int kPadR     = 14;     // card right padding
+constexpr int kTopH     = 30;     // SETTINGS title strip
+constexpr int kBotH     = 28;     // footer hint bar
 
 int clamp(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
 
@@ -68,7 +72,6 @@ bool isFocusable(int rowIdx) {
 }
 
 int firstFocusableFrom(int start, int direction) {
-    // Walk in `direction` (±1) until we land on a focusable row.  Wraps.
     int i = start;
     for (int step = 0; step < kRowCount; ++step) {
         i = (i + direction + kRowCount) % kRowCount;
@@ -77,48 +80,43 @@ int firstFocusableFrom(int start, int direction) {
     return start;
 }
 
-// Render a small ON/OFF pill.  ON = green tint, OFF = dim panel.
-void drawTogglePill(SDL_Renderer* r, int xRight, int y, bool on) {
+// Right-aligned ON/OFF pill — wrapper around the shared drawStatusPill so
+// the value column ends flush with `xRight`.
+void drawPill(SDL_Renderer* r, int xRight, int y, bool on) {
     const char* label = on ? "ON" : "OFF";
     int tw = 0, th = 0;
     getTextSize(label, 1, &tw, &th);
-    const int padX = 8, padY = 4;
-    SDL_Rect pill{xRight - tw - padX * 2, y - padY / 2,
-                  tw + padX * 2, th + padY};
-    SDL_Color bg     = on ? theme::GREEN.a8(200) : theme::PANEL.a8(200);
-    SDL_Color border = on ? theme::GREEN          : theme::CHIP;
-    SDL_Color text   = on ? theme::BLACK          : theme::TEXT_2;
-    fillRoundedRect(r, pill, 8, bg);
-    drawRoundedRect(r, pill, 8, border);
-    drawText(r, pill.x + padX, y, label, 1, text);
+    const int width = tw + 14;
+    SDL_Color tint = on ? SDL_Color(theme::GREEN) : SDL_Color(theme::TEXT_MUTED);
+    drawStatusPill(r, xRight - width, y - 1, label, tint);
 }
 
-// Render a slim horizontal slider showing `value/100`, plus the numeric.
+// Slim slider: 90px pill track, accent-red fill, numeric to the right.
 void drawSlider(SDL_Renderer* r, int xRight, int y, int value) {
     std::string num = std::to_string(value);
     int nw = 0, nh = 0;
     getTextSize(num, 1, &nw, &nh);
-    const int barW = 100;
-    const int barH = 6;
+    const int barW = 90;
+    const int barH = 5;
     const int gap  = 8;
     SDL_Rect track{xRight - nw - gap - barW, y + (nh - barH) / 2, barW, barH};
-    fillRoundedRect(r, track, 3, theme::PANEL.a8(200));
+    fillRoundedRect(r, track, barH / 2, theme::TRACK.a8(220));
     SDL_Rect fill{track.x, track.y, (track.w * clamp(value, 0, 100)) / 100, track.h};
-    fillRoundedRect(r, fill, 3, theme::ACCENT);
+    fillRoundedRect(r, fill, barH / 2, theme::ACCENT);
     drawText(r, xRight - nw, y, num, 1, theme::TEXT_ON);
 }
 
-// Render the value side of a CYCLE row with ◄ ► chevrons when focused.
+// Cycle value with < > chevrons only when focused (avoids visual noise on
+// unfocused rows).  Chevron-row width is tight: each glyph + 4px.
 void drawCycleValue(SDL_Renderer* r, int xRight, int y, const std::string& value, bool focused) {
     int vw = 0, vh = 0;
     getTextSize(value, 1, &vw, &vh);
-    const int chevW = 10;
-    SDL_Color col = focused ? SDL_Color(theme::ACCENT) : SDL_Color(theme::TEXT_ON);
+    SDL_Color col = focused ? SDL_Color(theme::ACCENT_BRIGHT) : SDL_Color(theme::TEXT_ON);
     if (focused) {
-        drawText(r, xRight - vw - chevW * 2 - 4, y, "<", 1, theme::TEXT_2);
-        drawText(r, xRight + 2,                   y, ">", 1, theme::TEXT_2);
+        drawText(r, xRight - vw - 18, y, "<", 1, theme::TEXT_2);
+        drawText(r, xRight + 6,       y, ">", 1, theme::TEXT_2);
     }
-    drawText(r, xRight - vw - chevW,             y, value, 1, col);
+    drawText(r, xRight - vw - 4, y, value, 1, col);
 }
 
 } // namespace
@@ -138,63 +136,72 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
     SDL_Rect scrim{0, 0, width, height};
     fillRoundedRect(renderer, scrim, 0, theme::BLACK.a8(210));
 
-    // Auto-sized card from the row table so adding rows doesn't push
-    // content past the hint bar.  Headers are tighter than data rows.
+    // Auto-sized card from the row table.
     int contentH = kTopH + kBotH;
     for (int i = 0; i < kRowCount; ++i) {
-        contentH += (kRows[i].kind == KIND_HEADER) ? kHeaderH : kRowH;
+        if (kRows[i].kind == KIND_HEADER) contentH += kHeaderH + (i == 0 ? 0 : kHeaderSp);
+        else                              contentH += kRowH;
     }
-    const int cw = std::min(width  - 24, 480);
+    const int cw = std::min(width  - 24, 420);
     const int ch = std::min(height - 16, contentH);
     const int cx = (width  - cw) / 2;
     const int cy = (height - ch) / 2;
 
+    // Daemon-card chrome (shared with sign-in modal and any future panel).
     SDL_Rect card{cx, cy, cw, ch};
-    fillRoundedRect(renderer, card, theme::RADIUS_CARD, theme::SURFACE);
-    drawRoundedRect(renderer, card, theme::RADIUS_CARD, theme::ACCENT.a8(220));
+    drawDaemonCard(renderer, card, theme::RADIUS_CARD);
 
-    // Header strip
-    int x = cx + 18;
-    int y = cy + 12;
-    drawTextShadow(renderer, x, y, "SETTINGS", 2, theme::ACCENT);
+    // Header strip: title left, inline shortcut summary right.
+    int x = cx + kAccentW + kPadL;
+    int y = cy + 8;
+    drawText(renderer, x, y, "Settings", 2, theme::TEXT);
     {
-        const char* sub = "UP/DN pick   LF/RT adjust   B close";
+        const char* sub = "B close";
         int sw = 0, sh = 0;
         getTextSize(sub, 1, &sw, &sh);
-        drawText(renderer, cx + cw - 18 - sw, y + 4, sub, 1, theme::TEXT_2);
+        drawText(renderer, cx + cw - kPadR - sw, y + 4, sub, 1, theme::TEXT_MUTED);
     }
-    // Thin divider under the header
-    SDL_Rect divider{cx + 12, cy + kTopH - 4, cw - 24, 1};
-    SDL_SetRenderDrawColor(renderer, theme::HAIRLINE.r, theme::HAIRLINE.g,
-                           theme::HAIRLINE.b, 200);
-    SDL_RenderFillRect(renderer, &divider);
+    drawHairline(renderer, cx + 8, cy + kTopH - 1, cw - 16, theme::HAIRLINE.a8(110));
 
-    // Make sure the cursor is on a focusable row (in case row table changed
-    // from a previous run, or someone set it to a header index).
+    // Cursor housekeeping (in case the row table changed across runs)
     int& cursor = app->state_.settingsModalIndex;
     if (!isFocusable(cursor)) cursor = firstFocusableFrom(cursor, +1);
     cursor = clamp(cursor, 0, kRowCount - 1);
 
-    // Render rows
-    y = cy + kTopH;
-    const int valX = cx + cw - 18;   // right edge for value rendering
+    // Rows
+    y = cy + kTopH + 2;
+    const int valX = cx + cw - kPadR;
     for (int i = 0; i < kRowCount; ++i) {
         const Row& row = kRows[i];
+
         if (row.kind == KIND_HEADER) {
-            drawText(renderer, x, y + 4, row.label, 1, theme::ACCENT);
+            if (i != 0) y += kHeaderSp;
+            // Section header in accent — small, uppercase, with a tiny rule
+            // under it to mirror the daemon's hairline-divided sections.
+            drawText(renderer, x, y + 2, row.label, 1, theme::ACCENT);
+            int hw = 0, hh = 0;
+            getTextSize(row.label, 1, &hw, &hh);
+            drawHairline(renderer, x + hw + 8, y + 8,
+                         (cx + cw - kPadR) - (x + hw + 8),
+                         theme::HAIRLINE.a8(70));
             y += kHeaderH;
             continue;
         }
 
         const bool focused = (i == cursor);
         if (focused) {
-            SDL_Rect highlight{cx + 8, y - 2, cw - 16, kRowH - 2};
-            fillRoundedRect(renderer, highlight, 6, theme::PANEL.a8(180));
+            // High-contrast selection: warm tinted background + bright
+            // accent left-stub.  Replaces the old PANEL.a8(180) which was
+            // nearly invisible against SURFACE (same hue).
+            SDL_Rect bg{cx + kAccentW + 4, y - 1, cw - kAccentW - 8, kRowH - 1};
+            fillRoundedRect(renderer, bg, theme::RADIUS_SM, theme::ACCENT.a8(36));
+            SDL_Rect stub{cx + kAccentW + 4, y - 1, 2, kRowH - 1};
+            fillRoundedRect(renderer, stub, 1, theme::ACCENT);
         }
-        SDL_Color labelCol = focused ? SDL_Color(theme::TEXT_ON) : SDL_Color(theme::TEXT_2);
-        drawText(renderer, x + 4, y + 4, row.label, 1, labelCol);
+        SDL_Color labelCol = focused ? SDL_Color(theme::TEXT) : SDL_Color(theme::TEXT_ON);
+        drawText(renderer, x + 4, y + 3, row.label, 1, labelCol);
 
-        const int valY = y + 4;
+        const int valY = y + 3;
         if (row.kind == KIND_CYCLE) {
             std::string val;
             if (std::strcmp(row.label, "Max quality") == 0) {
@@ -209,28 +216,29 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
             else if (std::strcmp(row.label, "Autoplay next")     == 0) v = app->state_.autoplayNextEnabled;
             else if (std::strcmp(row.label, "Background daemon") == 0) v = app->state_.backgroundDaemonEnabled;
             else if (std::strcmp(row.label, "Debug overlay")     == 0) v = app->state_.showDebugOverlay;
-            drawTogglePill(renderer, valX, valY, v);
+            drawPill(renderer, valX, valY, v);
         } else if (row.kind == KIND_SLIDER) {
             drawSlider(renderer, valX, valY, app->state_.volume);
         } else if (row.kind == KIND_ACTION) {
-            const char* hint = focused ? "A to confirm  >" : ">";
+            const char* hint = focused ? "A to confirm" : "";
             int hw = 0, hh = 0;
             getTextSize(hint, 1, &hw, &hh);
             drawText(renderer, valX - hw, valY, hint, 1,
-                     focused ? SDL_Color(theme::ACCENT) : SDL_Color(theme::TEXT_2));
+                     focused ? SDL_Color(theme::ACCENT_BRIGHT) : SDL_Color(theme::TEXT_MUTED));
         }
         y += kRowH;
     }
 
-    // Footer hint bar
+    // Footer hint bar (daemon-style: hairline above, compact chips)
+    drawHairline(renderer, cx + 8, cy + ch - kBotH + 2, cw - 16, theme::HAIRLINE.a8(90));
     std::vector<HintItem> hints = {
-        {"UP/DN", theme::TEXT_ON, "PICK"},
-        {"LF/RT", theme::BLUE,    "ADJUST"},
+        {"DPAD",  theme::TEXT_ON, "MOVE"},
+        {"LF/RT", theme::BLUE,    "EDIT"},
         {"A",     theme::ACCENT,  "TOGGLE"},
         {"B",     theme::YELLOW,  "CLOSE"},
     };
-    drawHintButtons(renderer, hints, cy + ch - 26, 20, 1, 2 * cx + cw,
-                    theme::PANEL.a8(200), theme::CHIP.a8(180), theme::TEXT_ON);
+    drawHintButtons(renderer, hints, cy + ch - 22, 18, 1, 2 * cx + cw,
+                    theme::PANEL.a8(210), theme::CHIP.a8(180), theme::TEXT_ON);
 
     app->uiDirty_ = true;
 }
@@ -255,21 +263,17 @@ bool SettingsModal::handleKey(App* app, SDL_Keycode key) {
                 }
                 break;
             case KIND_TOGGLE:
-                if      (std::strcmp(label, "Hover previews")    == 0) app->state_.hoverPreviewsEnabled = !app->state_.hoverPreviewsEnabled;
-                else if (std::strcmp(label, "Autoplay next")     == 0) app->state_.autoplayNextEnabled  = !app->state_.autoplayNextEnabled;
+                if      (std::strcmp(label, "Hover previews")    == 0) app->state_.hoverPreviewsEnabled    = !app->state_.hoverPreviewsEnabled;
+                else if (std::strcmp(label, "Autoplay next")     == 0) app->state_.autoplayNextEnabled     = !app->state_.autoplayNextEnabled;
                 else if (std::strcmp(label, "Background daemon") == 0) app->state_.backgroundDaemonEnabled = !app->state_.backgroundDaemonEnabled;
-                else if (std::strcmp(label, "Debug overlay")     == 0) app->state_.showDebugOverlay     = !app->state_.showDebugOverlay;
+                else if (std::strcmp(label, "Debug overlay")     == 0) app->state_.showDebugOverlay        = !app->state_.showDebugOverlay;
                 break;
             case KIND_SLIDER:
                 app->state_.volume = clamp(app->state_.volume + delta * 5, 0, 100);
                 break;
             case KIND_ACTION:
-                // "Reset to defaults" — restore every field to its factory
-                // value.  We use a fresh Settings{} and feed it through the
-                // shared apply path so any future setting that gets a
-                // default gets picked up here automatically.
                 if (std::strcmp(label, "Reset to defaults") == 0 && delta > 0) {
-                    Settings defaults;     // struct-init = defaults
+                    Settings defaults;
                     SettingsModal::apply(app, defaults);
                 }
                 break;
@@ -290,9 +294,9 @@ bool SettingsModal::handleKey(App* app, SDL_Keycode key) {
         case SDLK_LEFT:   applyStep(-1); return true;
         case SDLK_RIGHT:  applyStep(+1); return true;
         case SDLK_RETURN:
-        case SDLK_a:      applyStep(+1); return true;   // A toggles/advances/confirms
+        case SDLK_a:      applyStep(+1); return true;
         case SDLK_ESCAPE:
-        case SDLK_b:      return false;                 // B closes (caller saves)
+        case SDLK_b:      return false;
         default:          return true;
     }
 }
