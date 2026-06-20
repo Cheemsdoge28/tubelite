@@ -586,10 +586,7 @@ def _run_ytdlp(args, timeout, is_preview=False):
         with _preview_lock:
             _preview_procs.add(p)
 
-    def _emit_stderr(err_bytes):
-        if not err_bytes:
-            return
-        txt = err_bytes.decode("utf-8", "replace").rstrip()
+    def _classify_and_log(txt):
         if not txt:
             return
         # Disk-full / temp-dir failure → trip the breaker and DON'T spam the log
@@ -606,18 +603,35 @@ def _run_ytdlp(args, timeout, is_preview=False):
         if "android client https formats have been skipped" in txt:
             log("yt-dlp: android SABR-blocked — falling through to default chain")
             return
-        # Tag each line so users can grep yt-dlp failures out of tubed.log.
         for line in txt.splitlines():
             log("yt-dlp:", line)
+
+    # Drain stderr in a background thread so each line is logged the moment
+    # it's emitted.  Without this, all stderr is buffered in the pipe and we
+    # only see it when the process exits — which is useless when it hangs.
+    _stderr_buf = []
+    def _drain_stderr():
+        try:
+            for raw in iter(p.stderr.readline, b""):
+                if not raw:
+                    break
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line:
+                    _stderr_buf.append(line)
+                    _classify_and_log(line)
+        except Exception:
+            pass
+    _err_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    _err_thread.start()
 
     def _reap(reason):
         log(reason)
         _kill_proc_group(p)
         try:
-            _, err = p.communicate(timeout=2)
-            _emit_stderr(err)
+            p.wait(timeout=2)
         except Exception:
             pass
+        _err_thread.join(timeout=1)
         return ""
 
     try:
@@ -627,8 +641,8 @@ def _run_ytdlp(args, timeout, is_preview=False):
         deadline = time.time() + timeout
         while True:
             try:
-                out, err = p.communicate(timeout=0.5)
-                _emit_stderr(err)
+                out, _ = p.communicate(timeout=0.5)
+                _err_thread.join(timeout=0.5)
                 if p.returncode not in (0, None):
                     if p.returncode == -9 and not _was_killed_by_us(p):
                         # SIGKILL we didn't issue — the kernel OOM-killer fired.
