@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.1-print-fast"   # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.2-feed-fallback" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -906,23 +906,50 @@ def op_trending(req):
 
 # URLs for personalized feeds, exposed by `op_feed` with kind=<key>.
 # These require valid cookies; without them yt-dlp returns the guest
-# trending/home feed instead (which is fine — we degrade gracefully).
+# trending/home feed instead.  For subscriptions we keep an ordered list
+# of URL variants — yt-dlp's `?flow=2` "videos" layout sometimes returns
+# entries when the default `/feed/subscriptions` URL is redirected back
+# to the home page in the InnerTube response (a quirk seen with partial
+# cookie sets that authenticate identity but not the watch surface).
 _FEED_URLS = {
-    "subscriptions":  "https://www.youtube.com/feed/subscriptions",
-    "home":           "https://www.youtube.com/",
-    "history":        "https://www.youtube.com/feed/history",
-    "liked":          "https://www.youtube.com/playlist?list=LL",
-    "watch_later":    "https://www.youtube.com/playlist?list=WL",
+    "subscriptions": [
+        "https://www.youtube.com/feed/subscriptions",
+        "https://www.youtube.com/feed/subscriptions?flow=2",
+    ],
+    "home":        ["https://www.youtube.com/"],
+    "history":     ["https://www.youtube.com/feed/history"],
+    "liked":       ["https://www.youtube.com/playlist?list=LL"],
+    "watch_later": ["https://www.youtube.com/playlist?list=WL"],
 }
+
+
+def _cookie_summary():
+    """Cheap diagnostic: report how many lines the cookies file has and
+    whether the key YouTube auth cookies appear in it.  Logged on every
+    empty feed result so users see why subscriptions look empty."""
+    try:
+        with open(COOKIES, "r", errors="replace") as fh:
+            text = fh.read()
+        rows = [ln for ln in text.splitlines()
+                if ln.strip() and not ln.startswith("#")]
+        # Names worth checking — at least SAPISID + SID are needed for
+        # signed-in tab requests.  LOGIN_INFO / __Secure-3PSID are the
+        # modern equivalents on some sessions.
+        needles = ("SAPISID", "SID", "HSID", "SSID", "LOGIN_INFO", "__Secure-3PSID")
+        present = [n for n in needles if n in text]
+        return f"cookies.txt: {len(rows)} rows, auth cookies present: {','.join(present) or 'NONE'}"
+    except OSError as ex:
+        return f"cookies.txt: unreadable ({ex})"
+
 
 def op_feed(req):
     """Fetch a personalized YouTube feed for the signed-in user.
 
-    Returns the same {results: [...]} shape as op_search so the C++ side
-    can render it through the existing video-card path.  If cookies are
-    missing or expired, yt-dlp returns an unauthenticated equivalent —
-    we don't try to detect that here; the C++ side already shows guest
-    vs signed-in state via op_auth_status."""
+    Returns the same {results: [...]} shape as op_search.  Tries each URL
+    variant in _FEED_URLS[kind] in order; the first one that yields any
+    entries wins.  If all variants return zero entries we surface a clear
+    error including a cookie-summary diagnostic so the user can tell
+    whether yt-dlp just couldn't authenticate."""
     kind = (req.get("kind") or "subscriptions").strip()
     page = max(1, int(req.get("page") or 1))
     if kind not in _FEED_URLS:
@@ -937,31 +964,41 @@ def op_feed(req):
 
     start = (page - 1) * 15 + 1
     end   = page * 15
-    url   = _FEED_URLS[kind]
-
-    args = _ytdlp_base_args(use_cookies=True) + [
-        "--flat-playlist", "--dump-json",
-        "--extractor-args", "youtubetab:approximate_date",
-        "--playlist-start", str(start), "--playlist-end", str(end),
-        url,
-    ]
-    with _work_sem:
-        out = _run_ytdlp(args, timeout=30)
 
     results = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            v = _video_from_entry(json.loads(line))
-            if v:
-                results.append(v)
-        except Exception:
-            continue
+    last_url = ""
+    for url in _FEED_URLS[kind]:
+        last_url = url
+        args = _ytdlp_base_args(use_cookies=True) + [
+            "--flat-playlist", "--dump-json",
+            "--extractor-args", "youtubetab:approximate_date",
+            "--playlist-start", str(start), "--playlist-end", str(end),
+            url,
+        ]
+        with _work_sem:
+            out = _run_ytdlp(args, timeout=30)
+
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                v = _video_from_entry(json.loads(line))
+                if v:
+                    results.append(v)
+            except (ValueError, TypeError):
+                continue
+
+        if results:
+            log(f"feed {kind}: {len(results)} items via {url}")
+            break
+        log(f"feed {kind}: 0 items via {url}; trying next variant")
 
     if not results:
-        return {"ok": False, "error": "no results"}
+        log(f"feed {kind}: ALL variants returned 0 items — {_cookie_summary()}")
+        return {"ok": False, "error":
+                f"feed empty (last url: {last_url}; cookies may not be "
+                f"authenticated — see tubed.log)"}
     CACHE.set(ck, results, TTL_FEED)
     return {"ok": True, "results": results, "finished": True}
 

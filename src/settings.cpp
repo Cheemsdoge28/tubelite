@@ -35,6 +35,11 @@ bool load(Settings& out) {
             out.volume = j["volume"].get<int>();
         if (j.contains("showDebugOverlay") && j["showDebugOverlay"].is_boolean())
             out.showDebugOverlay = j["showDebugOverlay"].get<bool>();
+        // Legacy snake_case key kept readable so older on-disk files still load.
+        if (j.contains("backgroundDaemonEnabled") && j["backgroundDaemonEnabled"].is_boolean())
+            out.backgroundDaemonEnabled = j["backgroundDaemonEnabled"].get<bool>();
+        else if (j.contains("background_daemon_enabled") && j["background_daemon_enabled"].is_boolean())
+            out.backgroundDaemonEnabled = j["background_daemon_enabled"].get<bool>();
         return true;
     } catch (...) {
         return false;
@@ -43,10 +48,14 @@ bool load(Settings& out) {
 
 bool save(const Settings& s) {
     nlohmann::json j;
-    j["maxQualityHeight"] = s.maxQualityHeight;
-    j["homeFeedKind"]     = s.homeFeedKind;
-    j["volume"]           = s.volume;
-    j["showDebugOverlay"] = s.showDebugOverlay;
+    j["maxQualityHeight"]        = s.maxQualityHeight;
+    j["homeFeedKind"]            = s.homeFeedKind;
+    j["volume"]                  = s.volume;
+    j["showDebugOverlay"]        = s.showDebugOverlay;
+    j["backgroundDaemonEnabled"] = s.backgroundDaemonEnabled;
+    // Also write the legacy snake_case key so older code paths still read
+    // a sane value before they migrate.
+    j["background_daemon_enabled"] = s.backgroundDaemonEnabled;
     std::ofstream f(resolvePath());
     if (!f) {
         std::cerr << "settings: failed to open " << resolvePath() << " for write\n";

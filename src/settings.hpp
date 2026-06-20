@@ -26,6 +26,9 @@ struct Settings {
 
     // Show debug overlay on launch.
     bool showDebugOverlay = false;
+
+    // Background-daemon mode (audio continues when app is sent to background).
+    bool backgroundDaemonEnabled = true;
 };
 
 namespace settings {

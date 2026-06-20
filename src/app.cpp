@@ -220,9 +220,21 @@ void App::run() {
         }
         if (state_.authed != youtube_api_.isAuthed() ||
             state_.authChecked != youtube_api_.authChecked()) {
+            const bool wasAuthed = state_.authed;
             state_.authed      = youtube_api_.isAuthed();
             state_.authChecked = youtube_api_.authChecked();
             uiDirty_ = true;
+            // Late sign-in: cookies just became valid (e.g. user dropped a
+            // fresh cookies.txt and pressed A on the sign-in help modal to
+            // re-check).  If the user opted into Subscriptions but we'd
+            // been showing the trending fallback, reload Home now so the
+            // change is immediate instead of next restart.
+            if (!wasAuthed && state_.authed &&
+                state_.homeFeedKind == "subscriptions" &&
+                state_.currentScreen == TubeState::Screen::Home) {
+                cached_home_kind_.clear();   // force re-fetch (not from cache)
+                loadHomeFeeds();
+            }
         }
 
         // Handle Playback HUD timeout and fadeout
@@ -2094,41 +2106,25 @@ void App::updateHoverPreviews() {
 }
 
 void App::saveSettings() {
-    // Mirror current TubeState into the persisted Settings struct.
-    // Anything the settings_modal can edit lives here so the JSON file is
-    // a single source of truth across launches.
+    // Single source of truth: all persistent fields go through settings::save.
+    // Previously this method also did a second write that only contained
+    // backgroundDaemonEnabled — that second write CLOBBERED everything the
+    // settings modal just saved.  Hence "settings not persistent": the
+    // modal wrote correctly, then this method immediately overwrote it.
     Settings s;
-    s.maxQualityHeight = state_.maxQualityHeight;
-    s.homeFeedKind     = state_.homeFeedKind;
-    s.volume           = state_.volume;
-    s.showDebugOverlay = state_.showDebugOverlay;
+    s.maxQualityHeight        = state_.maxQualityHeight;
+    s.homeFeedKind            = state_.homeFeedKind;
+    s.volume                  = state_.volume;
+    s.showDebugOverlay        = state_.showDebugOverlay;
+    s.backgroundDaemonEnabled = state_.backgroundDaemonEnabled;
     settings::save(s);
-
-    // Legacy: backgroundDaemonEnabled still goes through getAppDataPath for
-    // back-compat with any external readers.  Once nothing else looks at
-    // that file we can fold it into settings.json too.
-    try {
-        nlohmann::json j;
-        j["background_daemon_enabled"] = state_.backgroundDaemonEnabled;
-        std::ofstream ofs(getAppDataPath("settings.json"));
-        if (ofs) ofs << j.dump(4);
-    } catch (...) {}
 }
 
 void App::loadSettings() {
     Settings s;
     settings::load(s);                     // populates only what's on disk
     SettingsModal::apply(this, s);         // mirror into state_
-
-    // Legacy daemon flag still lives in the cwd-relative file.
-    try {
-        std::ifstream ifs(getAppDataPath("settings.json"));
-        if (ifs) {
-            nlohmann::json j;
-            ifs >> j;
-            state_.backgroundDaemonEnabled = j.value("background_daemon_enabled", true);
-        }
-    } catch (...) {}
+    state_.backgroundDaemonEnabled = s.backgroundDaemonEnabled;
 }
 
 void App::saveDaemonQueue() {
