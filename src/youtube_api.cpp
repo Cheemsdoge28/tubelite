@@ -195,13 +195,21 @@ void YouTubeAPI::refreshAuthStatus() {
         json req = {{"op", "auth_status"}};
         json resp;
         bool ok = tubedRequest(req, resp, 4000);
+        bool real_answer = false;
         if (ok && resp.value("ok", false)) {
             authed_.store(resp.value("authed", false), std::memory_order_relaxed);
-        } else {
-            // tubed unreachable — leave the last known value, just mark checked.
+            real_answer = true;
         }
+        // Only mark checked when we got an actual answer.  On tubed-not-up-
+        // yet (cold app start), the previous behavior latched authed=false
+        // and authChecked=true permanently, so the status bar would show
+        // GUEST until the user manually re-triggered.  Now the main loop
+        // keeps polling refreshAuthStatus() each frame until a real
+        // response arrives.
 #endif
-        auth_checked_.store(true, std::memory_order_relaxed);
+        if (real_answer) {
+            auth_checked_.store(true, std::memory_order_relaxed);
+        }
         auth_inflight_.store(false, std::memory_order_relaxed);
     }).detach();
 }

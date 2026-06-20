@@ -29,6 +29,15 @@ struct Settings {
 
     // Background-daemon mode (audio continues when app is sent to background).
     bool backgroundDaemonEnabled = true;
+
+    // Show a short video preview when a card is focused for a moment.
+    // Off by default for low-bandwidth users; saves a yt-dlp call + a
+    // mpv decode pipeline per hovered card.
+    bool hoverPreviewsEnabled = true;
+
+    // Auto-advance to the next video in the current grid when the current
+    // one finishes.  Off mirrors classic YouTube "one-and-done" behaviour.
+    bool autoplayNextEnabled = true;
 };
 
 namespace settings {

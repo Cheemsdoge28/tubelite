@@ -223,7 +223,13 @@ void App::run() {
 
         // Auth status: kick a first check once (tubed spawns lazily for it),
         // then mirror the cached result into TubeState for the overlays.
-        if (!auth_initial_check_done_) {
+        // Keep polling until we get a real answer from tubed.  Previously
+        // we fired refreshAuthStatus() exactly once at startup, which lost
+        // the answer if tubed wasn't up yet (cold launch) — the status bar
+        // would show GUEST for the rest of the session even if cookies
+        // were valid.  refreshAuthStatus() internally coalesces concurrent
+        // calls, so spamming it every frame is cheap.
+        if (!youtube_api_.authChecked()) {
             youtube_api_.refreshAuthStatus();
             auth_initial_check_done_ = true;
         }
@@ -1370,11 +1376,12 @@ void App::handleKey(SDL_Keycode key) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             mpv_player_.cycleStatsOverlay();
             showPlaybackToast("Stats Overlay");
-        } else if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
-            if (state_.maxQualityHeight == 240) state_.maxQualityHeight = 360;
-            else if (state_.maxQualityHeight == 360) state_.maxQualityHeight = 480;
-            else if (state_.maxQualityHeight == 480) state_.maxQualityHeight = 720;
-            else state_.maxQualityHeight = 240;
+        } else if (state_.currentScreen == TubeState::Screen::Home ||
+                   state_.currentScreen == TubeState::Screen::Search) {
+            // Keyboard parity with the controller X binding: open sign-in
+            // help.  Replaces the old dead resolution cycler.
+            state_.showSignInHelp = true;
+            youtube_api_.refreshAuthStatus();
             uiDirty_ = true;
         }
         break;
@@ -1531,13 +1538,6 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 uiDirty_ = true;
                 return;
             }
-        } else if (button == SDL_CONTROLLER_BUTTON_X) {
-            // SELECT+X → open the sign-in help modal (cookies.txt steps).
-            state_.showSignInHelp = true;
-            youtube_api_.refreshAuthStatus();
-            select_action_triggered_ = true;
-            uiDirty_ = true;
-            return;
         } else if (button == SDL_CONTROLLER_BUTTON_Y) {
             // SELECT+Y → open the settings modal.
             // (Previously bound to a debug profile-dump; F11 still does that
@@ -1633,11 +1633,15 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_manager_.transitionTo(TubeState::Screen::Home);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-        if (state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) {
-            if (state_.maxQualityHeight == 240) state_.maxQualityHeight = 360;
-            else if (state_.maxQualityHeight == 360) state_.maxQualityHeight = 480;
-            else if (state_.maxQualityHeight == 480) state_.maxQualityHeight = 720;
-            else state_.maxQualityHeight = 240;
+        // X opens the sign-in help modal directly (replaced the old SEL+X
+        // chord and the dead resolution cycler).  If SELECT is held we
+        // mark the chord as "consumed" so SELECT release doesn't ALSO
+        // toggle the miniplayer.
+        if (state_.currentScreen == TubeState::Screen::Home ||
+            state_.currentScreen == TubeState::Screen::Search) {
+            state_.showSignInHelp = true;
+            youtube_api_.refreshAuthStatus();
+            if (select_held_) select_action_triggered_ = true;
             uiDirty_ = true;
         }
     } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) {
@@ -1989,6 +1993,13 @@ void App::loadMoreSearchResults() {
 // Legacy presentation queue methods removed.
 
 void App::updateHoverPreviews() {
+    // Respect the user's modal preference.  When disabled, ensure any
+    // in-flight preview is torn down so we don't leak an mpv pipeline
+    // after the user flips the toggle off mid-session.
+    if (!state_.hoverPreviewsEnabled) {
+        if (is_playing_preview_ || preview_card_) stopBrowsePreviewState();
+        return;
+    }
     if ((state_.currentScreen != TubeState::Screen::Home && state_.currentScreen != TubeState::Screen::Search) || state_.isLoadingVideo || state_.inputMode == TubeState::InputMode::SearchText || state_.miniplayerActive) {
         stopBrowsePreviewState();
         return;
@@ -2116,6 +2127,8 @@ void App::saveSettings() {
     s.volume                  = state_.volume;
     s.showDebugOverlay        = state_.showDebugOverlay;
     s.backgroundDaemonEnabled = state_.backgroundDaemonEnabled;
+    s.hoverPreviewsEnabled    = state_.hoverPreviewsEnabled;
+    s.autoplayNextEnabled     = state_.autoplayNextEnabled;
     settings::save(s);
 }
 
@@ -2363,9 +2376,16 @@ bool App::loadHomeCache() {
 }
 
 void App::handleVideoEnded() {
+    // Respect the modal toggle: when autoplay is off, just stop on end so
+    // the user can decide what to do next instead of being whisked to the
+    // following video.
+    if (!state_.autoplayNextEnabled) {
+        leavePlayback();
+        return;
+    }
     std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
     bool playedNext = false;
-    
+
     if (grid && !grid->videos.empty()) {
         for (size_t i = 0; i < grid->videos.size(); ++i) {
             if (grid->videos[i].id == current_video_.id) {

@@ -34,6 +34,8 @@ struct TubeState {
     bool authChecked{false};         // has tubed been queried at least once
     bool backgroundDaemonEnabled{true};
     std::string homeFeedKind{"trending"};  // "trending" | "subscriptions" (modal-controlled)
+    bool hoverPreviewsEnabled{true};       // mute card hover-previews (saves CPU/network)
+    bool autoplayNextEnabled{true};        // auto-advance to next track on video end
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};

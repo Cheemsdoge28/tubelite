@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.4-cookies-always" # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.5-feed-retry"   # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -991,8 +991,9 @@ def op_feed(req):
 
     results = []
     last_url = ""
-    for url in _FEED_URLS[kind]:
-        last_url = url
+
+    def _try(url, attempt):
+        out_items = []
         args = _ytdlp_base_args(use_cookies=True) + [
             "--flat-playlist", "--dump-json",
             "--extractor-args", "youtubetab:approximate_date",
@@ -1000,23 +1001,37 @@ def op_feed(req):
             url,
         ]
         with _work_sem:
-            out = _run_ytdlp(args, timeout=30)
-
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
+            raw = _run_ytdlp(args, timeout=30)
+        for ln in raw.splitlines():
+            ln = ln.strip()
+            if not ln:
                 continue
             try:
-                v = _video_from_entry(json.loads(line))
+                v = _video_from_entry(json.loads(ln))
                 if v:
-                    results.append(v)
+                    out_items.append(v)
             except (ValueError, TypeError):
                 continue
+        log(f"feed {kind}: attempt {attempt} via {url} → {len(out_items)} items")
+        return out_items
 
+    # Try each URL variant; retry each variant ONCE on empty because the
+    # first call after a cold tubed start often returns 0 even with valid
+    # cookies (yt-dlp's first /youtubei call gets a partial Innertube
+    # response while it negotiates client params).  The 2nd call usually
+    # succeeds.  Total worst case: 2 attempts × N variants.
+    for url in _FEED_URLS[kind]:
+        last_url = url
+        for attempt in (1, 2):
+            results = _try(url, attempt)
+            if results:
+                break
+            # Brief pause before the retry lets any half-built InnerTube
+            # client state stabilize.
+            time.sleep(0.5)
         if results:
-            log(f"feed {kind}: {len(results)} items via {url}")
             break
-        log(f"feed {kind}: 0 items via {url}; trying next variant")
+        log(f"feed {kind}: variant {url} exhausted; trying next")
 
     if not results:
         summary = _cookie_summary()

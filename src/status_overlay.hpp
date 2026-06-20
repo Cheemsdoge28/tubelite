@@ -17,4 +17,5 @@ private:
     int last_max_quality_{0};
     bool last_background_daemon_enabled_{false};
     bool last_authed_{false};
+    bool last_auth_checked_{false};
 };

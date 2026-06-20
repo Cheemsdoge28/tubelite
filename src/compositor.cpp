@@ -394,9 +394,28 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
     SDL_Rect scrim{0, 0, width, height};
     fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(190));
 
-    // Centered card.
+    // Card height is derived from the text block so changes to the line
+    // list below don't silently push content under the hint bar.  Layout:
+    //   title (34) + status (24) + N lines × line_h (13) + footer pad (40)
+    // The footer hint sits 26 px above the card bottom, so we keep ≥14 px
+    // gap between the last text line and the hint by reserving 40 px.
+    const char* lines[] = {
+        "Sign in to unlock subscriptions, history, and",
+        "private videos. TubeLite reads cookies.txt:",
+        "",
+        "1. On a PC, install a 'Get cookies.txt' extension",
+        "   and log in to youtube.com.",
+        "2. Export ALL cookies for youtube.com (use the",
+        "   extension's full export, not a filtered one).",
+        "3. Copy the file to:",
+        "     /roms/tools/tubelite/cookies.txt",
+        "4. Press A here to re-check.",
+    };
+    constexpr int kLineH = 13;
+    const int textBlockH = static_cast<int>(sizeof(lines) / sizeof(lines[0])) * kLineH;
+
     const int cw = std::min(width - 40, 460);
-    const int ch = std::min(height - 40, 300);
+    const int ch = std::min(height - 20, 16 + 34 + 24 + textBlockH + 40);
     const int cx = (width - cw) / 2;
     const int cy = (height - ch) / 2;
     SDL_Rect card{cx, cy, cw, ch};
@@ -413,30 +432,12 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
                                      : "Status: GUEST (360p, may be rate-limited)",
              1, authed ? theme::GREEN : theme::YELLOW);
     y += 24;
-
-    // Instructions — concise, wrapped manually to fit the card.
-    const char* lines[] = {
-        "Sign in to unlock subscriptions, history, and",
-        "private videos. TubeLite reads cookies.txt:",
-        "",
-        "1. On a PC, install a 'Get cookies.txt' extension",
-        "   and log in to youtube.com.",
-        "2. EXPORT ALL COOKIES (not just essential ones)",
-        "   — you NEED SAPISID, __Secure-3PAPISID, HSID,",
-        "   SID. Missing SAPISID = YouTube ignores you.",
-        "3. Copy the file to:",
-        "     /roms/tools/tubelite/cookies.txt",
-        "4. Press A here to re-check.",
-        "",
-        "If feeds show 'cookies missing SAPISID' check",
-        "yt-dlp wiki: Extractors#exporting-youtube-cookies",
-    };
     for (const char* ln : lines) {
         // Highlight the path line in blue; everything else muted.
         SDL_Color col = (std::strstr(ln, "/roms") != nullptr) ? SDL_Color(theme::BLUE)
                                                               : SDL_Color(theme::TEXT_2);
         drawText(renderer_, x, y, ln, 1, col);
-        y += 15;
+        y += kLineH;
     }
 
     // Footer hint bar.  drawHintButtons centers within [0,width]; pass

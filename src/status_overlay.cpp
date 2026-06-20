@@ -18,7 +18,8 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
         state.currentScreen != last_screen_ ||
         state.maxQualityHeight != last_max_quality_ ||
         state.backgroundDaemonEnabled != last_background_daemon_enabled_ ||
-        state.authed != last_authed_
+        state.authed != last_authed_ ||
+        state.authChecked != last_auth_checked_   // flip from "..." to real
     );
 
     if (needsRecreate || stateChanged) {
@@ -35,6 +36,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             last_max_quality_ = state.maxQualityHeight;
             last_background_daemon_enabled_ = state.backgroundDaemonEnabled;
             last_authed_ = state.authed;
+            last_auth_checked_ = state.authChecked;
 
             SDL_Texture* prev = SDL_GetRenderTarget(renderer);
             SDL_SetRenderTarget(renderer, texture_);
@@ -75,19 +77,26 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     {"L1/R1", textColor, "SPD"}
                 };
             } else {
+                // Sign-in state shows "..." until the first tubed
+                // auth_status round-trip completes — avoids flashing
+                // "GUEST" on every cold start before the check finishes.
+                std::string authLabel;
+                SDL_Color   authColor = blue;
+                if (!state.authChecked)      { authLabel = "..."; authColor = blue; }
+                else if (state.authed)       { authLabel = "SIGNED IN"; authColor = green; }
+                else                         { authLabel = "GUEST";    authColor = yellow; }
+
                 activeHints = {
                     {"A", red, "PLAY"},
                     {"B", yellow, "BACK"},
                     {"Y", green, "SEARCH"},
+                    // X opens the sign-in help modal directly (was SEL+X).
+                    // Chip is always blue per the standard X-button color.
+                    {"X", blue, authLabel},
                     {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
-                    // Sign-in state + entry point.  Green ●=signed in,
-                    // yellow ○=guest.  SEL+X opens the help.
-                    {"SEL+X", state.authed ? green : yellow,
-                              state.authed ? "SIGNED IN" : "GUEST"},
-                    // SEL+Y opens the settings modal (max quality, home
-                    // feed, volume, debug overlay).
                     {"SEL+Y", textColor, "SETTINGS"},
                 };
+                (void)authColor;  // kept for future "tint label too" tweak
             }
 
             drawHintButtons(renderer, activeHints, boxY, boxH, 1, width, panel, theme::CHIP, textColor);

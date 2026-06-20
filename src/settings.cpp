@@ -40,6 +40,10 @@ bool load(Settings& out) {
             out.backgroundDaemonEnabled = j["backgroundDaemonEnabled"].get<bool>();
         else if (j.contains("background_daemon_enabled") && j["background_daemon_enabled"].is_boolean())
             out.backgroundDaemonEnabled = j["background_daemon_enabled"].get<bool>();
+        if (j.contains("hoverPreviewsEnabled") && j["hoverPreviewsEnabled"].is_boolean())
+            out.hoverPreviewsEnabled = j["hoverPreviewsEnabled"].get<bool>();
+        if (j.contains("autoplayNextEnabled") && j["autoplayNextEnabled"].is_boolean())
+            out.autoplayNextEnabled = j["autoplayNextEnabled"].get<bool>();
         return true;
     } catch (...) {
         return false;
@@ -53,6 +57,8 @@ bool save(const Settings& s) {
     j["volume"]                  = s.volume;
     j["showDebugOverlay"]        = s.showDebugOverlay;
     j["backgroundDaemonEnabled"] = s.backgroundDaemonEnabled;
+    j["hoverPreviewsEnabled"]    = s.hoverPreviewsEnabled;
+    j["autoplayNextEnabled"]     = s.autoplayNextEnabled;
     // Also write the legacy snake_case key so older code paths still read
     // a sane value before they migrate.
     j["background_daemon_enabled"] = s.backgroundDaemonEnabled;
