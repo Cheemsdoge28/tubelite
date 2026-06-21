@@ -38,6 +38,10 @@ struct Settings {
     // Auto-advance to the next video in the current grid when the current
     // one finishes.  Off mirrors classic YouTube "one-and-done" behaviour.
     bool autoplayNextEnabled = true;
+
+    // Procedural UI sounds (focus tick, A/B chirps, settings toggle clicks).
+    // Synthesized at startup — no audio assets shipped.  See ui_sounds.cpp.
+    bool uiSoundsEnabled = true;
 };
 
 namespace settings {

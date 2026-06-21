@@ -1,5 +1,6 @@
 #include "ui_framework.hpp"
 #include "renderer_utils.hpp"
+#include "ui_sounds.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -514,6 +515,7 @@ void FocusManager::handleInput(int dx, int dy) {
     if (newIdx != focusedCardIdx_) {
         focusedCardIdx_ = newIdx;
         updateTargetFocus();
+        ui_sounds::play(ui_sounds::Sound::Tick, 0.55f);
 
         // Speculative prefetching: load more cards when user gets 70% of the way through current grid
         if (newIdx >= static_cast<int>(grid_->videos.size()) * 7 / 10) {
@@ -581,7 +583,10 @@ std::shared_ptr<VideoCard> FocusManager::getFocusedCard() const {
 
 void FocusManager::clickFocused() {
     auto card = getFocusedCard();
-    if (card && card->onClick) card->onClick();
+    if (card && card->onClick) {
+        ui_sounds::play(ui_sounds::Sound::Select);
+        card->onClick();
+    }
 }
 
 void FocusManager::pruneGridIfNeeded(int maxCards) {

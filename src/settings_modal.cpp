@@ -8,6 +8,7 @@
 #include "app.hpp"
 #include "renderer_utils.hpp"
 #include "theme.hpp"
+#include "ui_sounds.hpp"
 
 namespace {
 
@@ -59,6 +60,7 @@ const Row kRows[] = {
     {KIND_SLIDER, "Default volume"},
     {KIND_HEADER, "ADVANCED"},
     {KIND_TOGGLE, "Background daemon"},
+    {KIND_TOGGLE, "UI sounds"},
     {KIND_TOGGLE, "Debug overlay"},
     {KIND_ACTION, "Reset to defaults"},
 };
@@ -153,6 +155,8 @@ void SettingsModal::apply(App* app, const Settings& s) {
     app->state_.backgroundDaemonEnabled = s.backgroundDaemonEnabled;
     app->state_.hoverPreviewsEnabled    = s.hoverPreviewsEnabled;
     app->state_.autoplayNextEnabled     = s.autoplayNextEnabled;
+    app->state_.uiSoundsEnabled         = s.uiSoundsEnabled;
+    ui_sounds::setEnabled(s.uiSoundsEnabled);
 }
 
 void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int height) {
@@ -271,6 +275,7 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
             if      (std::strcmp(row.label, "Hover previews")    == 0) v = app->state_.hoverPreviewsEnabled;
             else if (std::strcmp(row.label, "Autoplay next")     == 0) v = app->state_.autoplayNextEnabled;
             else if (std::strcmp(row.label, "Background daemon") == 0) v = app->state_.backgroundDaemonEnabled;
+            else if (std::strcmp(row.label, "UI sounds")         == 0) v = app->state_.uiSoundsEnabled;
             else if (std::strcmp(row.label, "Debug overlay")     == 0) v = app->state_.showDebugOverlay;
             drawPill(renderer, contentRight, yCenter, v);
         } else if (row.kind == KIND_SLIDER) {
@@ -330,7 +335,12 @@ bool SettingsModal::handleKey(App* app, SDL_Keycode key) {
                 if      (std::strcmp(label, "Hover previews")    == 0) app->state_.hoverPreviewsEnabled    = !app->state_.hoverPreviewsEnabled;
                 else if (std::strcmp(label, "Autoplay next")     == 0) app->state_.autoplayNextEnabled     = !app->state_.autoplayNextEnabled;
                 else if (std::strcmp(label, "Background daemon") == 0) app->state_.backgroundDaemonEnabled = !app->state_.backgroundDaemonEnabled;
+                else if (std::strcmp(label, "UI sounds")         == 0) {
+                    app->state_.uiSoundsEnabled = !app->state_.uiSoundsEnabled;
+                    ui_sounds::setEnabled(app->state_.uiSoundsEnabled);
+                }
                 else if (std::strcmp(label, "Debug overlay")     == 0) app->state_.showDebugOverlay        = !app->state_.showDebugOverlay;
+                ui_sounds::play(ui_sounds::Sound::Toggle);
                 break;
             case KIND_SLIDER:
                 app->state_.volume = clamp(app->state_.volume + delta * 5, 0, 100);
@@ -349,10 +359,12 @@ bool SettingsModal::handleKey(App* app, SDL_Keycode key) {
     switch (key) {
         case SDLK_UP:
             cursor = firstFocusableFrom(cursor, -1);
+            ui_sounds::play(ui_sounds::Sound::Tick);
             app->uiDirty_ = true;
             return true;
         case SDLK_DOWN:
             cursor = firstFocusableFrom(cursor, +1);
+            ui_sounds::play(ui_sounds::Sound::Tick);
             app->uiDirty_ = true;
             return true;
         case SDLK_LEFT:   applyStep(-1); return true;
@@ -360,7 +372,9 @@ bool SettingsModal::handleKey(App* app, SDL_Keycode key) {
         case SDLK_RETURN:
         case SDLK_a:      applyStep(+1); return true;
         case SDLK_ESCAPE:
-        case SDLK_b:      return false;
+        case SDLK_b:
+            ui_sounds::play(ui_sounds::Sound::Back);
+            return false;
         default:          return true;
     }
 }

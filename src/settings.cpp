@@ -44,6 +44,8 @@ bool load(Settings& out) {
             out.hoverPreviewsEnabled = j["hoverPreviewsEnabled"].get<bool>();
         if (j.contains("autoplayNextEnabled") && j["autoplayNextEnabled"].is_boolean())
             out.autoplayNextEnabled = j["autoplayNextEnabled"].get<bool>();
+        if (j.contains("uiSoundsEnabled") && j["uiSoundsEnabled"].is_boolean())
+            out.uiSoundsEnabled = j["uiSoundsEnabled"].get<bool>();
         return true;
     } catch (...) {
         return false;
@@ -59,6 +61,7 @@ bool save(const Settings& s) {
     j["backgroundDaemonEnabled"] = s.backgroundDaemonEnabled;
     j["hoverPreviewsEnabled"]    = s.hoverPreviewsEnabled;
     j["autoplayNextEnabled"]     = s.autoplayNextEnabled;
+    j["uiSoundsEnabled"]         = s.uiSoundsEnabled;
     // Also write the legacy snake_case key so older code paths still read
     // a sane value before they migrate.
     j["background_daemon_enabled"] = s.backgroundDaemonEnabled;

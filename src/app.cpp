@@ -6,6 +6,7 @@
 #include "settings.hpp"
 #include "settings_modal.hpp"
 #include "stb_image.h"
+#include "ui_sounds.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cstdio>
@@ -97,9 +98,11 @@ bool App::initialize() {
     }
     SDL_GameControllerEventState(SDL_ENABLE);
     if (!createWindow()) return false;
-    
 
-    
+    // UI sounds: initialize after SDL is up but before any user-facing
+    // interaction can fire.  Failure is non-fatal — sounds become a no-op.
+    ui_sounds::init();
+
     if (!initFonts(renderer_)) {
         logError("Failed to initialize TTF fonts, falling back to pixel font");
     }
@@ -221,17 +224,18 @@ void App::run() {
 
         { PROFILE_SCOPE("main_queue"); processMainThreadQueue(); }
 
-        // Auth status: kick a first check once (tubed spawns lazily for it),
-        // then mirror the cached result into TubeState for the overlays.
-        // Keep polling until we get a real answer from tubed.  Previously
-        // we fired refreshAuthStatus() exactly once at startup, which lost
-        // the answer if tubed wasn't up yet (cold launch) — the status bar
-        // would show GUEST for the rest of the session even if cookies
-        // were valid.  refreshAuthStatus() internally coalesces concurrent
-        // calls, so spamming it every frame is cheap.
+        // Auth status: poll tubed until we get a real answer (handles cold
+        // tubed start where the first request races the daemon).  Throttled
+        // to ~2 Hz instead of per-frame — internal coalescing made the
+        // per-frame version cheap, but it still chewed atomics + thread
+        // spawns every 16 ms for no gain over polling every 500 ms.
         if (!youtube_api_.authChecked()) {
-            youtube_api_.refreshAuthStatus();
-            auth_initial_check_done_ = true;
+            static auto lastAuthPoll = steady_clock::now() - seconds(1);
+            if (now_dt - lastAuthPoll >= milliseconds(500)) {
+                youtube_api_.refreshAuthStatus();
+                auth_initial_check_done_ = true;
+                lastAuthPoll = now_dt;
+            }
         }
         if (state_.authed != youtube_api_.isAuthed() ||
             state_.authChecked != youtube_api_.authChecked()) {
@@ -457,6 +461,7 @@ void App::shutdown() {
     mpv_player_.shutdown();
     thumb_atlas_.reset();
     cleanupFonts();
+    ui_sounds::shutdown();
     if (renderer_) { SDL_DestroyRenderer(renderer_); renderer_ = nullptr; }
     if (window_)   { SDL_DestroyWindow(window_);     window_ = nullptr;   }
     SDL_Quit();
@@ -1246,6 +1251,7 @@ void App::handleKey(SDL_Keycode key) {
     if (key == SDLK_F1) {
         state_.showSignInHelp = true;
         youtube_api_.refreshAuthStatus();
+        ui_sounds::play(ui_sounds::Sound::Select);
         uiDirty_ = true;
         return;
     }
@@ -1269,6 +1275,7 @@ void App::handleKey(SDL_Keycode key) {
     }
     if (key == SDLK_F2) {
         state_.showSettingsModal = true;
+        ui_sounds::play(ui_sounds::Sound::Select);
         uiDirty_ = true;
         return;
     }
@@ -1387,6 +1394,7 @@ void App::handleKey(SDL_Keycode key) {
             // help.  Replaces the old dead resolution cycler.
             state_.showSignInHelp = true;
             youtube_api_.refreshAuthStatus();
+            ui_sounds::play(ui_sounds::Sound::Select);
             uiDirty_ = true;
         }
         break;
@@ -1549,6 +1557,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             // on a keyboard, and the user-facing settings modal is the more
             // valuable chord here.)
             state_.showSettingsModal = true;
+            ui_sounds::play(ui_sounds::Sound::Select);
             select_action_triggered_ = true;
             uiDirty_ = true;
             return;
@@ -1627,14 +1636,18 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showDescriptionDrawer) {
                 state_.showDescriptionDrawer = false;
+                ui_sounds::play(ui_sounds::Sound::Back);
                 uiDirty_ = true;
             } else {
+                ui_sounds::play(ui_sounds::Sound::Back);
                 leavePlayback();
             }
         } else if (state_.isLoadingVideo) {
             state_.isLoadingVideo = false;
+            ui_sounds::play(ui_sounds::Sound::Back);
             uiDirty_ = true;
         } else if (state_.currentScreen == TubeState::Screen::Search) {
+            ui_sounds::play(ui_sounds::Sound::Back);
             state_manager_.transitionTo(TubeState::Screen::Home);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_X) {
@@ -1646,6 +1659,7 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_.currentScreen == TubeState::Screen::Search) {
             state_.showSignInHelp = true;
             youtube_api_.refreshAuthStatus();
+            ui_sounds::play(ui_sounds::Sound::Select);
             if (select_held_) select_action_triggered_ = true;
             uiDirty_ = true;
         }
@@ -2138,13 +2152,14 @@ void App::saveSettings() {
     s.backgroundDaemonEnabled = state_.backgroundDaemonEnabled;
     s.hoverPreviewsEnabled    = state_.hoverPreviewsEnabled;
     s.autoplayNextEnabled     = state_.autoplayNextEnabled;
+    s.uiSoundsEnabled         = state_.uiSoundsEnabled;
     settings::save(s);
 }
 
 void App::loadSettings() {
     Settings s;
     settings::load(s);                     // populates only what's on disk
-    SettingsModal::apply(this, s);         // mirror into state_
+    SettingsModal::apply(this, s);         // mirror into state_ (also primes ui_sounds)
     state_.backgroundDaemonEnabled = s.backgroundDaemonEnabled;
 }
 

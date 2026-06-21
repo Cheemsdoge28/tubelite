@@ -36,6 +36,7 @@ struct TubeState {
     std::string homeFeedKind{"trending"};  // "trending" | "subscriptions" (modal-controlled)
     bool hoverPreviewsEnabled{true};       // mute card hover-previews (saves CPU/network)
     bool autoplayNextEnabled{true};        // auto-advance to next track on video end
+    bool uiSoundsEnabled{true};            // procedural click/select/back UI sounds
 
     float leftStickX{0.0f};
     float leftStickY{0.0f};
