@@ -83,38 +83,51 @@ std::vector<int16_t> toPCM(const std::vector<float>& f) {
 // that scream "synth beep" — premium-feeling UI sounds always have an
 // attack ≥ a couple ms and a longer release than attack.
 
+// Design rules (v2 — gentler):
+//   * Frequencies in the 500-1200 Hz range; anything above 2 kHz sounds
+//     "beep-y" through small handheld speakers.
+//   * Long releases (40-80 ms) and slow attacks (4-8 ms) → no audible
+//     transient click that registers as harsh.
+//   * Peak gain ≤0.10 — half the old levels.  Multiple rapid plays still
+//     read clearly because of the soft envelope.
+//   * Two stacked sines an octave or fifth apart sound "rounded" without
+//     adding apparent loudness.
+
 Waveform makeTick() {                       // focus move
-    constexpr float dur = 0.030f;           // 30 ms
+    constexpr float dur = 0.050f;           // 50 ms (was 30 ms — slower decay)
     std::vector<float> buf(static_cast<size_t>(dur * kSampleRate), 0.0f);
-    mixSine(buf, 2400.0f, dur, 0.002f, 0.020f, 0.18f);
+    // Low fundamental + octave, soft.  No high frequencies that clash.
+    mixSine(buf, 600.0f,  dur, 0.005f, 0.045f, 0.08f);
+    mixSine(buf, 1200.0f, dur, 0.005f, 0.045f, 0.04f);
     return Waveform{toPCM(buf)};
 }
 
 Waveform makeSelect() {                     // confirm / A
-    constexpr float dur = 0.100f;           // 100 ms total
+    constexpr float dur = 0.140f;
     std::vector<float> buf(static_cast<size_t>(dur * kSampleRate), 0.0f);
-    // Two-tone rising: low fundamental + perfect-fifth above, slightly
-    // staggered so the second note starts as the first is decaying.
-    mixSine(buf, 880.0f,  0.080f, 0.003f, 0.060f, 0.28f, 0.000f);
-    mixSine(buf, 1320.0f, 0.070f, 0.003f, 0.055f, 0.22f, 0.025f);
+    // Warm rising fifth: low A4 (440) → E5 (660).  Lower than before so
+    // it sits below voice/dialogue range.
+    mixSine(buf, 440.0f, 0.110f, 0.006f, 0.090f, 0.11f, 0.000f);
+    mixSine(buf, 660.0f, 0.110f, 0.008f, 0.090f, 0.08f, 0.030f);
     return Waveform{toPCM(buf)};
 }
 
 Waveform makeBack() {                       // cancel / B
-    constexpr float dur = 0.080f;
+    constexpr float dur = 0.120f;
     std::vector<float> buf(static_cast<size_t>(dur * kSampleRate), 0.0f);
-    // Descending: high then low.  Reverse of Select's direction.
-    mixSine(buf, 880.0f, 0.045f, 0.003f, 0.035f, 0.25f, 0.000f);
-    mixSine(buf, 660.0f, 0.050f, 0.003f, 0.040f, 0.22f, 0.025f);
+    // Descending fifth: E5 (660) → A4 (440).
+    mixSine(buf, 660.0f, 0.090f, 0.006f, 0.075f, 0.10f, 0.000f);
+    mixSine(buf, 440.0f, 0.100f, 0.008f, 0.085f, 0.08f, 0.025f);
     return Waveform{toPCM(buf)};
 }
 
 Waveform makeToggle() {                     // settings switch
-    constexpr float dur = 0.045f;
+    constexpr float dur = 0.060f;
     std::vector<float> buf(static_cast<size_t>(dur * kSampleRate), 0.0f);
-    // Short sharp click — two harmonics for a "switch" feel.
-    mixSine(buf, 1500.0f, dur, 0.002f, 0.030f, 0.22f);
-    mixSine(buf, 3000.0f, 0.020f, 0.001f, 0.015f, 0.10f);
+    // Single warm click — 800 Hz with a soft octave below.  No upper
+    // harmonic at 3 kHz like the old version; that's what made it sharp.
+    mixSine(buf, 800.0f, dur, 0.004f, 0.050f, 0.10f);
+    mixSine(buf, 400.0f, dur, 0.004f, 0.050f, 0.05f);
     return Waveform{toPCM(buf)};
 }
 

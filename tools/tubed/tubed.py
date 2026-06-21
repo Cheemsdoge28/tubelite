@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.7-loose-timeouts" # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.8-android-itag18" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -844,13 +844,31 @@ def _video_from_entry(e):
         return None
     dur = int(e.get("duration") or 0)
     author = e.get("uploader") or e.get("channel") or ""
-    # `live_status` is the modern field ("is_live", "is_upcoming", "was_live",
-    # "post_live", "not_live").  Some older yt-dlp paths still set the
-    # boolean `is_live` instead — accept either.  We treat only currently-
-    # streaming entries as live for playback purposes; upcoming/was-live
-    # render as normal VOD cards.
+    # Live detection — accept any of three signals because yt-dlp emits
+    # different ones depending on feed type and version:
+    #   * is_live: bool (older entries, search results)
+    #   * live_status: "is_live" (modern flat-playlist subscriptions)
+    #   * concurrent_view_count: int > 0 (only set for currently-streaming)
+    # The last one is the most reliable for the subscriptions feed where
+    # the first two are sometimes missing entirely.
     live_status = (e.get("live_status") or "").lower()
-    is_live = bool(e.get("is_live")) or live_status == "is_live"
+    concurrent = int(e.get("concurrent_view_count") or 0)
+    is_live = (bool(e.get("is_live"))
+               or live_status == "is_live"
+               or concurrent > 0)
+
+    # Views: prefer concurrent_view_count for live ("12K watching"),
+    # otherwise view_count.  Subscriptions feed often omits view_count for
+    # recent uploads — leave empty in that case so the card doesn't lie
+    # with "0 views".
+    views_n = concurrent if is_live else int(e.get("view_count") or 0)
+    if is_live and views_n > 0:
+        views_str = _views_str(views_n).replace("views", "watching")
+    elif views_n > 0:
+        views_str = _views_str(views_n)
+    else:
+        views_str = ""
+
     return {
         "id": vid,
         "title": e.get("title") or "",
@@ -859,8 +877,11 @@ def _video_from_entry(e):
         "duration_seconds": dur,
         # Live streams have no meaningful duration — leave the string empty
         # so the client renders a LIVE badge instead of "0:00".
-        "duration_string": "" if is_live else f"{dur // 60}:{dur % 60:02d}",
-        "view_count_string": _views_str(e.get("view_count")),
+        # Live → empty so the card renders LIVE badge.  VOD with 0 dur
+        # → empty rather than "0:00" (subscriptions sometimes lack duration
+        # on freshly-uploaded videos that haven't been transcoded yet).
+        "duration_string": "" if (is_live or dur <= 0) else f"{dur // 60}:{dur % 60:02d}",
+        "view_count_string": views_str,
         "uploaded_ago_string": _uploaded_ago(e),
         "is_live": is_live,
     }
@@ -1100,40 +1121,49 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=
     if _breaker_open():
         raise RuntimeError("circuit breaker open")
 
-    # Headroom math (muxed-only ios+android, no deno, --print output).
-    # The PO-Token-aware ios client + SABR-skipping android fallback can
-    # genuinely take ~20-22 s of real extraction work — production tubed.log
-    # shows yt-dlp printing `[info] Downloading 1 format(s): 18` exactly at
-    # the 22 s mark right as the previous tight timeout killed it.  Loosen
-    # the ceilings so we don't murder a working resolve at the finish line:
+    # Headroom math (android-exclusive 360p muxed path):
     #   PyInstaller bootloader   ~8 s
-    #   webpage + ios JSON       ~5 s
-    #   android JSON + format    ~7 s
+    #   webpage + android JSON   ~4 s
     #   --print flush            ~1 s
-    #   total                    ~21 s typical, 30 s worst case
-    # Plus possible queue wait ~15 s behind a search → overall_deadline 50 s.
-    # Live adds another ~5 s for the HLS manifest fetch.
-    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else (55.0 if is_live else 50.0))
+    #   total                    ~13 s typical, 25 s worst case (slow net)
+    # Plus possible queue wait ~15 s behind a search → overall_deadline 40 s.
+    # Live adds ~5 s for the HLS manifest fetch.  Dropping the ios client
+    # round-trip cut about 8 s of typical resolve time vs. the old path.
+    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else (45.0 if is_live else 40.0))
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    run_timeout = min(remaining - 2.0, 13.0 if preview else (38.0 if is_live else 35.0))
+    run_timeout = min(remaining - 2.0, 13.0 if preview else (32.0 if is_live else 28.0))
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    # ANDROID-EXCLUSIVE 360p PROGRESSIVE.
+    #
+    # Why we dropped ios: every recent yt-dlp version warns
+    #   "ios client https formats require a GVS PO Token which was not
+    #    provided. They will be skipped..."
+    # so the iOS leg returns zero usable formats anyway — pure latency
+    # waste.  The android client still serves itag 18 (360p H.264 + AAC,
+    # muxed progressive) for all non-SABR videos, which is the canonical
+    # path that worked pre-tubed (commit c707db7).
+    #
+    # We force itag 18 directly instead of `best[height<=N]` so on the
+    # rare SABR-only video where android returns multiple muxed formats
+    # we always pick the deterministic one mpv knows hardware-decodes
+    # cleanly on RK3326.
     if is_live:
-        # HLS path: prefer the best variant that fits the height cap, fall
-        # back to whatever yt-dlp picks otherwise.  mpv consumes m3u8
-        # directly so audio_url stays empty.  We DON'T pass skip=hls here
-        # (the whole point), but still skip dash to keep us off the deno
-        # n-sig path that we know doesn't survive on this device.
+        # HLS path: allow yt-dlp to pick the best variant.  We don't try
+        # to force itag because live streams use HLS manifests entirely,
+        # not progressive itags.
         fmt = f"best[height<={max_height}]/best"
-        extractor_args = "youtube:player_client=ios,android;skip=dash"
+        extractor_args = "youtube:player_client=android;skip=dash"
         log(f"resolving LIVE stream for {video_id}")
     else:
-        fmt = f"best[height<={max_height}]/best"
-        extractor_args = "youtube:player_client=ios,android;skip=dash,hls"
+        # itag 18 first (canonical 360p muxed), fall back to any 360p
+        # muxed if 18 is missing, then any muxed at all.
+        fmt = "18/best[height<=360][vcodec*=avc1]/best[height<=360]/best"
+        extractor_args = "youtube:player_client=android;skip=dash,hls"
 
     # Pass cookies on stream resolves too when they exist.  Previous comment
     # claimed cookies caused bot challenges with DASH+android_vr — but the
@@ -1169,7 +1199,17 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=
         except (ValueError, TypeError):
             return 0
 
-    url, sub_url = parts[0].strip(), parts[1].strip()
+    url = parts[0].strip()
+    sub_url = parts[1].strip()
+    # Subtitle URL post-processing: yt-dlp's first English entry is
+    # usually `fmt=json3`, but mpv's subtitle decoder only handles
+    # WebVTT/SRT reliably on this device.  YouTube serves both formats
+    # from the same endpoint differing only in the `fmt` query param —
+    # so we just rewrite it.  Without this, subtitles silently no-op
+    # ever since the switch from --dump-single-json + _best_subtitle_url
+    # to the leaner --print template.
+    if sub_url and "fmt=json3" in sub_url:
+        sub_url = sub_url.replace("fmt=json3", "fmt=vtt")
     meta = {
         "view_count":       _int(parts[2]),
         "like_count":       _int(parts[3]),
