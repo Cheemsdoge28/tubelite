@@ -95,14 +95,6 @@ int rowHeight(int rowIdx) {
     return kHeaderH + (rowIdx == 0 ? 0 : kSectionGap);
 }
 
-// Vertical text baseline for a row whose top edge is at `rowTop` — centers
-// the 1× font glyphs in the row's height block.
-int centerY(int rowTop, int rowH) {
-    int gh = 0;
-    getTextSize("Ay", 1, nullptr, &gh);
-    return rowTop + (rowH - gh) / 2;
-}
-
 // ── Component drawing ──────────────────────────────────────────────────────
 
 // Right-aligned ON/OFF pill — green = on, muted grey = off.

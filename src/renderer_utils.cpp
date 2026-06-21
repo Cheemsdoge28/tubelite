@@ -1235,6 +1235,92 @@ void maskRoundedCornersTop(SDL_Renderer* renderer, const SDL_Rect& rect, int rad
     SDL_RenderCopy(renderer, g_corner_mask_texture, &srcTR, &dstTR);
 }
 
+void drawHairline(SDL_Renderer* renderer, int x, int y, int w, SDL_Color color) {
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_Rect line{x, y, w, 1};
+    SDL_RenderFillRect(renderer, &line);
+}
+
+SDL_Rect drawStatusPill(SDL_Renderer* renderer, int x, int y,
+                        const std::string& label, SDL_Color tint) {
+    int tw = 0, th = 0;
+    getTextSize(label, 1, &tw, &th);
+    constexpr int padX = 7, padY = 2;
+    SDL_Rect pill{x, y, tw + padX * 2, th + padY * 2};
+    fillRoundedRect(renderer, pill, theme::RADIUS_PILL,
+                    SDL_Color{tint.r, tint.g, tint.b, 38});
+    drawRoundedRect(renderer, pill, theme::RADIUS_PILL,
+                    SDL_Color{tint.r, tint.g, tint.b, 180});
+    drawText(renderer, pill.x + padX, pill.y + padY, label, 1, tint);
+    return pill;
+}
+
+void drawDaemonCard(SDL_Renderer* renderer, const SDL_Rect& rect,
+                    int radius, bool drawShadow, bool drawAccentBar) {
+    // Blend mode is set ONCE up-front instead of inside each call below —
+    // every primitive we draw here is alpha-blended, so the state stays
+    // valid across the whole function and we save ~30 redundant
+    // SDL_SetRenderDrawBlendMode calls per frame.
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    const int cx = rect.x, cy = rect.y, cw = rect.w, ch = rect.h;
+
+    // Diffuse two-pass shadow.
+    if (drawShadow) {
+        SDL_Rect s1{cx + 2, cy + 4, cw, ch};
+        SDL_Rect s2{cx + 1, cy + 2, cw, ch + 1};
+        fillRoundedRect(renderer, s1, radius, theme::BLACK.a8(70));
+        fillRoundedRect(renderer, s2, radius, theme::BLACK.a8(40));
+    }
+
+    // Card body.
+    SDL_Rect body{cx, cy, cw, ch};
+    fillRoundedRect(renderer, body, radius, theme::SURFACE);
+
+    // Top-half lift gradient — 12 stacked 2 px-tall bands with decreasing
+    // alpha.  These are all radius=0, so we bypass fillRoundedRect's
+    // shortcut path entirely and call SDL directly — saves the per-call
+    // texture branch + two extra function frames.  Pre-batched as one
+    // FRect array would be slightly faster still but requires SDL2
+    // ≥2.0.18; the explicit loop is portable and still cheap.
+    {
+        const int bandX = cx + 1;
+        const int bandW = cw - 2;
+        for (int i = 0; i < 12; ++i) {
+            const int alpha = 14 - i;
+            if (alpha <= 0) break;
+            SDL_SetRenderDrawColor(renderer,
+                                   theme::RAISED.r, theme::RAISED.g, theme::RAISED.b,
+                                   static_cast<Uint8>(alpha));
+            SDL_Rect band{bandX, cy + 1 + i * 2, bandW, 2};
+            SDL_RenderFillRect(renderer, &band);
+        }
+    }
+
+    // Left accent bar + horizontal glow.  Signature daemon element —
+    // 3 px solid accent on the left, then a 16 px gradient fading right.
+    if (drawAccentBar) {
+        constexpr int kAccentW = 3;
+        SDL_Rect accent{cx, cy, kAccentW, ch};
+        fillRoundedRect(renderer, accent, 2, theme::ACCENT);
+        const int glowX0 = cx + kAccentW;
+        const int glowY0 = cy + 1;
+        const int glowH  = ch - 2;
+        for (int i = 0; i < 16; ++i) {
+            const int alpha = 30 - i * 2;
+            if (alpha <= 0) break;
+            SDL_SetRenderDrawColor(renderer,
+                                   theme::ACCENT.r, theme::ACCENT.g, theme::ACCENT.b,
+                                   static_cast<Uint8>(alpha));
+            SDL_Rect g{glowX0 + i, glowY0, 1, glowH};
+            SDL_RenderFillRect(renderer, &g);
+        }
+    }
+
+    // Border line.
+    drawRoundedRect(renderer, body, radius, theme::BORDER);
+}
+
 void drawHintButtons(SDL_Renderer* renderer, const std::vector<HintItem>& hints, int y, int height, int scale, int width, SDL_Color panelColor, SDL_Color borderColor, SDL_Color textColor) {
     if (hints.empty()) return;
     int fontHeight = 14;
