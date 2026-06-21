@@ -423,10 +423,32 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
     const int cx = (width - cw) / 2;
     const int cy = (height - ch) / 2;
 
-    // Shared daemon-card chrome (shadow + body + lift gradient + accent
-    // bar + glow + border).  Same helper the settings modal uses.
+    // Diffuse shadow (two passes)
+    {
+        SDL_Rect s1{cx + 2, cy + 4, cw, ch};
+        SDL_Rect s2{cx + 1, cy + 2, cw, ch + 1};
+        fillRoundedRect(renderer_, s1, theme::RADIUS_CARD, theme::BLACK.a8(70));
+        fillRoundedRect(renderer_, s2, theme::RADIUS_CARD, theme::BLACK.a8(40));
+    }
+    // Card body + top lift gradient
     SDL_Rect card{cx, cy, cw, ch};
-    drawDaemonCard(renderer_, card, theme::RADIUS_CARD);
+    fillRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::SURFACE);
+    for (int i = 0; i < 12; ++i) {
+        int alpha = 14 - i;
+        if (alpha <= 0) break;
+        SDL_Rect band{cx + 1, cy + 1 + i * 2, cw - 2, 2};
+        fillRoundedRect(renderer_, band, 0, theme::RAISED.a8(alpha));
+    }
+    // Left accent bar + glow
+    SDL_Rect accent{cx, cy, kAccentW, ch};
+    fillRoundedRect(renderer_, accent, 2, theme::ACCENT);
+    for (int i = 0; i < 16; ++i) {
+        int alpha = 30 - i * 2;
+        if (alpha <= 0) break;
+        SDL_Rect g{cx + kAccentW + i, cy + 1, 1, ch - 2};
+        fillRoundedRect(renderer_, g, 0, theme::ACCENT.a8(alpha));
+    }
+    drawRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::BORDER);
 
     int x = cx + kAccentW + kPadL;
     int y = cy + 8;
@@ -439,16 +461,27 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
         getTextSize(sub, 1, &sw, nullptr);
         drawText(renderer_, cx + cw - kPadR - sw, y + 4, sub, 1, theme::TEXT_MUTED);
     }
-    drawHairline(renderer_, cx + 8, cy + kTopH - 1, cw - 16, theme::HAIRLINE.a8(110));
+    // Hairline under title
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    {
+        SDL_Color hl = theme::HAIRLINE.a8(110);
+        SDL_SetRenderDrawColor(renderer_, hl.r, hl.g, hl.b, hl.a);
+        SDL_Rect hr{cx + 8, cy + kTopH - 1, cw - 16, 1};
+        SDL_RenderFillRect(renderer_, &hr);
+    }
 
     y = cy + kTopH + 4;
 
-    // Status pill via shared helper (same shape used in the status bar
-    // and the settings modal toggles).
+    // Status pill (matches daemon badge styling: low-alpha tint + colored text)
     const bool authed = app->state_.authed;
-    drawStatusPill(renderer_, x, y,
-                   authed ? "SIGNED IN" : "GUEST",
-                   authed ? SDL_Color(theme::GREEN) : SDL_Color(theme::YELLOW));
+    const char* statusLabel = authed ? "SIGNED IN" : "GUEST";
+    SDL_Color statusTint = authed ? SDL_Color(theme::GREEN) : SDL_Color(theme::YELLOW);
+    int tw = 0, th = 0;
+    getTextSize(statusLabel, 1, &tw, &th);
+    SDL_Rect pill{x, y, tw + 14, th + 4};
+    fillRoundedRect(renderer_, pill, theme::RADIUS_PILL, SDL_Color{statusTint.r, statusTint.g, statusTint.b, 38});
+    drawRoundedRect(renderer_, pill, theme::RADIUS_PILL, SDL_Color{statusTint.r, statusTint.g, statusTint.b, 180});
+    drawText(renderer_, pill.x + 7, pill.y + 2, statusLabel, 1, statusTint);
 
     y += kStatusH;
 
@@ -461,7 +494,12 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
     }
 
     // Footer hairline + hint bar
-    drawHairline(renderer_, cx + 8, cy + ch - kBotH + 2, cw - 16, theme::HAIRLINE.a8(90));
+    {
+        SDL_Color hl = theme::HAIRLINE.a8(90);
+        SDL_SetRenderDrawColor(renderer_, hl.r, hl.g, hl.b, hl.a);
+        SDL_Rect hr{cx + 8, cy + ch - kBotH + 2, cw - 16, 1};
+        SDL_RenderFillRect(renderer_, &hr);
+    }
     std::vector<HintItem> hints = {
         {"A", theme::ACCENT, "RE-CHECK"},
         {"B", theme::YELLOW, "CLOSE"},

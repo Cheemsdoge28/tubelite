@@ -19,26 +19,6 @@ std::string formatStatsNumber(long long count);
 void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);
 void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color);
 
-// Daemon-card chrome.  Renders the shared visual language used by the DRM
-// now-playing overlay AND every in-app modal/panel: diffuse two-pass
-// shadow, surface fill, top-half lift gradient, left accent bar + glow,
-// optional border.  Call once per panel; the caller then draws its own
-// content inside the card rect.  Pass radius=0 to skip rounded corners.
-void drawDaemonCard(SDL_Renderer* renderer, const SDL_Rect& rect,
-                    int radius = 8, bool drawShadow = true,
-                    bool drawAccentBar = true);
-
-// 1px horizontal rule helper used everywhere in the daemon-styled UI.
-// Pass an already-alpha'd color (e.g. theme::HAIRLINE.a8(110)).
-void drawHairline(SDL_Renderer* renderer, int x, int y, int w, SDL_Color color);
-
-// Daemon-style status pill: low-alpha tinted fill + matching border +
-// bright text.  Used everywhere a small "LIVE" / "SIGNED IN" / "LOADING"
-// affordance appears.  Returns the rect actually drawn so callers can
-// position adjacent elements relative to it.
-SDL_Rect drawStatusPill(SDL_Renderer* renderer, int x, int y,
-                        const std::string& label, SDL_Color tint);
-
 void drawSpinner(SDL_Renderer* renderer, int x, int y, int radius, float time);
 SDL_Texture* createTargetTexture(SDL_Renderer* renderer, int width, int height);
 

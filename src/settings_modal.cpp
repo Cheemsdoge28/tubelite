@@ -80,15 +80,26 @@ int firstFocusableFrom(int start, int direction) {
     return start;
 }
 
-// Right-aligned ON/OFF pill — wrapper around the shared drawStatusPill so
-// the value column ends flush with `xRight`.
+// Daemon-style 1px hairline rule.
+void hrule(SDL_Renderer* r, int x, int y, int w, SDL_Color color) {
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, color.r, color.g, color.b, color.a);
+    SDL_Rect line{x, y, w, 1};
+    SDL_RenderFillRect(r, &line);
+}
+
+// ON/OFF status pill matching the daemon's badge styling: low-alpha tinted
+// fill + slightly stronger border + bright text.
 void drawPill(SDL_Renderer* r, int xRight, int y, bool on) {
     const char* label = on ? "ON" : "OFF";
     int tw = 0, th = 0;
     getTextSize(label, 1, &tw, &th);
-    const int width = tw + 14;
+    const int padX = 7;
+    SDL_Rect pill{xRight - tw - padX * 2, y - 1, tw + padX * 2, th + 2};
     SDL_Color tint = on ? SDL_Color(theme::GREEN) : SDL_Color(theme::TEXT_MUTED);
-    drawStatusPill(r, xRight - width, y - 1, label, tint);
+    fillRoundedRect(r, pill, theme::RADIUS_PILL, SDL_Color{tint.r, tint.g, tint.b, 38});
+    drawRoundedRect(r, pill, theme::RADIUS_PILL, SDL_Color{tint.r, tint.g, tint.b, 180});
+    drawText(r, pill.x + padX, y, label, 1, tint);
 }
 
 // Slim slider: 90px pill track, accent-red fill, numeric to the right.
@@ -147,9 +158,39 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
     const int cx = (width  - cw) / 2;
     const int cy = (height - ch) / 2;
 
-    // Daemon-card chrome (shared with sign-in modal and any future panel).
+    // Diffuse shadow (daemon-style, two passes).
+    {
+        SDL_Rect s1{cx + 2, cy + 4, cw, ch};
+        SDL_Rect s2{cx + 1, cy + 2, cw, ch + 1};
+        fillRoundedRect(renderer, s1, theme::RADIUS_CARD, theme::BLACK.a8(70));
+        fillRoundedRect(renderer, s2, theme::RADIUS_CARD, theme::BLACK.a8(40));
+    }
+
+    // Card body
     SDL_Rect card{cx, cy, cw, ch};
-    drawDaemonCard(renderer, card, theme::RADIUS_CARD);
+    fillRoundedRect(renderer, card, theme::RADIUS_CARD, theme::SURFACE);
+
+    // Subtle top-half lift (faked gradient via stacked low-alpha bands).
+    for (int i = 0; i < 12; ++i) {
+        int alpha = 14 - i;
+        if (alpha <= 0) break;
+        SDL_Rect band{cx + 1, cy + 1 + i * 2, cw - 2, 2};
+        fillRoundedRect(renderer, band, 0, theme::RAISED.a8(alpha));
+    }
+
+    // Left accent bar (the daemon's signature)
+    SDL_Rect accent{cx, cy, kAccentW, ch};
+    fillRoundedRect(renderer, accent, 2, theme::ACCENT);
+    // Glow to the right of the bar — short horizontal gradient.
+    for (int i = 0; i < 16; ++i) {
+        int alpha = 30 - i * 2;
+        if (alpha <= 0) break;
+        SDL_Rect g{cx + kAccentW + i, cy + 1, 1, ch - 2};
+        fillRoundedRect(renderer, g, 0, theme::ACCENT.a8(alpha));
+    }
+
+    // Card border
+    drawRoundedRect(renderer, card, theme::RADIUS_CARD, theme::BORDER);
 
     // Header strip: title left, inline shortcut summary right.
     int x = cx + kAccentW + kPadL;
@@ -161,7 +202,7 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
         getTextSize(sub, 1, &sw, &sh);
         drawText(renderer, cx + cw - kPadR - sw, y + 4, sub, 1, theme::TEXT_MUTED);
     }
-    drawHairline(renderer, cx + 8, cy + kTopH - 1, cw - 16, theme::HAIRLINE.a8(110));
+    hrule(renderer, cx + 8, cy + kTopH - 1, cw - 16, theme::HAIRLINE.a8(110));
 
     // Cursor housekeeping (in case the row table changed across runs)
     int& cursor = app->state_.settingsModalIndex;
@@ -181,9 +222,9 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
             drawText(renderer, x, y + 2, row.label, 1, theme::ACCENT);
             int hw = 0, hh = 0;
             getTextSize(row.label, 1, &hw, &hh);
-            drawHairline(renderer, x + hw + 8, y + 8,
-                         (cx + cw - kPadR) - (x + hw + 8),
-                         theme::HAIRLINE.a8(70));
+            hrule(renderer, x + hw + 8, y + 8,
+                  (cx + cw - kPadR) - (x + hw + 8),
+                  theme::HAIRLINE.a8(70));
             y += kHeaderH;
             continue;
         }
@@ -230,7 +271,7 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
     }
 
     // Footer hint bar (daemon-style: hairline above, compact chips)
-    drawHairline(renderer, cx + 8, cy + ch - kBotH + 2, cw - 16, theme::HAIRLINE.a8(90));
+    hrule(renderer, cx + 8, cy + ch - kBotH + 2, cw - 16, theme::HAIRLINE.a8(90));
     std::vector<HintItem> hints = {
         {"DPAD",  theme::TEXT_ON, "MOVE"},
         {"LF/RT", theme::BLUE,    "EDIT"},

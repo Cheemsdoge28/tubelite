@@ -47,26 +47,9 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             SDL_SetRenderDrawColor(renderer, theme::BAR.r, theme::BAR.g, theme::BAR.b, 255);
             SDL_RenderClear(renderer);
 
-            // Top border line — full-width hairline.  Same as before, sits
-            // above an inset accent-glow strip (added below) so the bar
-            // reads as the bottom edge of a daemon-styled card chrome.
+            // Top border line
             SDL_SetRenderDrawColor(renderer, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 255);
             SDL_RenderDrawLine(renderer, 0, 0, width, 0);
-
-            // Daemon-style accent glow trailing down from the top edge —
-            // a soft red wash that ties the bar to the rest of the app's
-            // chrome (modals + browse header all share the same accent
-            // gradient signature).
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            for (int i = 0; i < 6; ++i) {
-                int alpha = 18 - i * 3;
-                if (alpha <= 0) break;
-                SDL_Rect glow{0, 1 + i, width, 1};
-                SDL_SetRenderDrawColor(renderer, theme::ACCENT.r, theme::ACCENT.g,
-                                       theme::ACCENT.b, alpha);
-                SDL_RenderFillRect(renderer, &glow);
-            }
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
             SDL_Color textColor = theme::TEXT_ON;
 
