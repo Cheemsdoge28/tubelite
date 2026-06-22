@@ -204,7 +204,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     char* device_list_str = nullptr;
     if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
         std::string list(device_list_str);
-        std::string best_device = "alsa";
+        std::string best_device = "alsa/default";
         
         if (list.find("alsa/dmixer") != std::string::npos) {
             best_device = "alsa/dmixer";
@@ -293,7 +293,7 @@ bool MpvPlayer::initializeAudioOnly() {
     char* device_list_str = nullptr;
     if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
         std::string list(device_list_str);
-        std::string best_device = "alsa";
+        std::string best_device = "alsa/default";
         
         if (list.find("alsa/dmixer") != std::string::npos) {
             best_device = "alsa/dmixer";

@@ -177,7 +177,9 @@ bool App::initialize() {
                 if (pipe_pos != std::string::npos) {
                     stream_url = cached_val.substr(0, pipe_pos);
                 }
-                storyboard_.start(stream_url, current_video_.duration_seconds);
+                if (!current_video_.is_live) {
+                    storyboard_.start(stream_url, current_video_.duration_seconds);
+                }
             }
         }
         
@@ -962,7 +964,9 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
         uiDirty_ = true;
 
         // Start storyboard extraction
-        storyboard_.start(stream_url, video.duration_seconds);
+        if (!video.is_live) {
+            storyboard_.start(stream_url, video.duration_seconds);
+        }
 
         // The cached URL carries no metadata, which previously left the player's
         // stat row stuck on "loading stats". Fetch stats/description from the
@@ -1102,7 +1106,7 @@ void App::updateSticks(float dt) {
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         bool kbLeft = keys[SDL_SCANCODE_LEFT];
         bool kbRight = keys[SDL_SCANCODE_RIGHT];
-        bool wantsScrub = !state_.showDescriptionDrawer && (state_.dpadLeftPressed || state_.dpadRightPressed || kbLeft || kbRight || std::abs(state_.leftStickX) > 0.2f);
+        bool wantsScrub = !current_video_.is_live && !state_.showDescriptionDrawer && (state_.dpadLeftPressed || state_.dpadRightPressed || kbLeft || kbRight || std::abs(state_.leftStickX) > 0.2f);
         if (wantsScrub) {
             showPlaybackUi();
             if (!state_.isScrubbing) {

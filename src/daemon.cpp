@@ -186,6 +186,14 @@ static bool initDrmOverlay() {
     drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     if (drm_fd < 0) { perror("[daemon] open card0"); return false; }
 
+    // Reclaim DRM master status after re-opening
+    if (drmSetMaster(drm_fd) < 0) {
+        perror("[daemon] drmSetMaster");
+        close(drm_fd);
+        drm_fd = -1;
+        return false;
+    }
+
     drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
     drmModeRes* res = drmModeGetResources(drm_fd);
@@ -245,6 +253,7 @@ static void closeDrmOverlay() {
     // CRTC cleanly — a pinned FB on a lingering plane is what crashed games.
     drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    drmDropMaster(drm_fd); // Explicitly drop master status
     if (drm_map && drm_map != MAP_FAILED) munmap(drm_map, drm_size);
     if (drm_fb_id)  drmModeRmFB(drm_fd, drm_fb_id);
     if (drm_handle) {

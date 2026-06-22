@@ -482,6 +482,8 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         json req = {{"op", "stream"}, {"id", video_id}, {"max_height", max_height}};
         if (isPreview) req["preview"] = true;
         if (isLive)    req["is_live"] = true;
+        bool isPrefetch = (parent_focus_id.rfind("autoplay_", 0) == 0);
+        if (isPrefetch) req["prefetch"] = true;
         json resp;
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
@@ -491,7 +493,8 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // SABR-skipping android fallback can take ~30 s of real work, so a
         // tight C++ timeout was killing resolves at the finish line.
         int playMs = isLive ? 60000 : 55000;
-        bool ok = tubedRequest(req, resp, isPreview ? 17000 : playMs, stillWanted);
+        int timeout = (isPreview && !isPrefetch) ? 17000 : playMs;
+        bool ok = tubedRequest(req, resp, timeout, stillWanted);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
