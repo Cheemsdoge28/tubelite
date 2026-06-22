@@ -170,8 +170,11 @@ bool init() {
 
     // Force SDL onto the ALSA backend so the device-name string below
     // is interpreted as an ALSA PCM name and not (e.g.) Pulse / pipewire.
+    // The macro `SDL_HINT_AUDIODRIVER` was only added in SDL 2.0.18 and
+    // this device's SDL is older; the hint string itself ("SDL_AUDIODRIVER")
+    // has been the same since 2.0.0, so we use the literal directly.
     // No-op on builds that only have ALSA, harmless elsewhere.
-    SDL_SetHint(SDL_HINT_AUDIODRIVER, "alsa");
+    SDL_SetHint("SDL_AUDIODRIVER", "alsa");
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
         std::cerr << "[ui_sounds] SDL_INIT_AUDIO failed: " << SDL_GetError() << "\n";
