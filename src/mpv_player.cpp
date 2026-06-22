@@ -125,6 +125,30 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "hwdec",                  "rkmpp,auto");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
+    // Route through ALSA's `plug:dmix` so the codec is shared, not
+    // grabbed exclusively.  Background:
+    //   * `default` and `dmix:CARD=...` both end up opening the
+    //     RK817 hw exclusively on this device (verified via
+    //     `fuser -v /dev/snd/*` showing `F...m` mmap, and via
+    //     `speaker-test -D default` returning -16 EBUSY while
+    //     tubelite is running).
+    //   * Raw `dmix` fails too: `speaker-test -D dmix` returns
+    //     "Sample format not available" because the RK817 doesn't
+    //     advertise dmix's default S16_LE@48000 natively.
+    //   * `plug:dmix` interposes a format/rate conversion layer
+    //     in front of dmix.  This was confirmed working on this
+    //     hardware: `speaker-test -D plug:dmix` plays, two
+    //     simultaneous `speaker-test -D plug:dmix` invocations
+    //     play together, and RetroArch with
+    //     `audio_device = "plug:dmix"` coexists with another
+    //     `plug:dmix` client.
+    // We set this BEFORE mpv_initialize because mpv applies
+    // audio-device at AO-open time, and pre-init the option
+    // string is the lowest-friction path (no need to probe
+    // audio-device-list afterwards).  The literal `plug:dmix`
+    // has no nested colon, so ALSA's PCM-name parser accepts it
+    // (unlike the `plug:dmix:CARD=...` form we tried earlier).
+    mpv_set_option_string(mpv_, "audio-device",           "alsa/plug:dmix");
     // Color-correctness fix for the rkmpp → GL pipeline on RK3326.
     //
     // YouTube videos are encoded with BT.709 primaries and a LIMITED
@@ -199,34 +223,12 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
 
-    // Now query the audio device list and find the best mixing device.
-    // This allows us to dynamically support ArkOS custom 'dmixer', Rockchip default dmix, or fall back to standard alsa default.
-    char* device_list_str = nullptr;
-    if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
-        std::string list(device_list_str);
-        std::string best_device = "alsa";
-        
-        if (list.find("alsa/dmixer") != std::string::npos) {
-            best_device = "alsa/dmixer";
-        } else {
-            size_t dmix_pos = list.find("alsa/dmix:");
-            if (dmix_pos != std::string::npos) {
-                size_t end_pos = list.find("\"", dmix_pos);
-                if (end_pos != std::string::npos) {
-                    best_device = list.substr(dmix_pos, end_pos - dmix_pos);
-                }
-            } else if (list.find("alsa/dmix") != std::string::npos) {
-                best_device = "alsa/dmix";
-            }
-        }
-        
-        std::cerr << "[mpv] Dynamic ALSA device selection: " << best_device << "\n";
-        mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
-        
-        mpv_free(device_list_str);
-    } else {
-        std::cerr << "[mpv] Failed to query audio-device-list, using default ALSA device\n";
-    }
+    // (audio-device is set BEFORE mpv_initialize — to `alsa/plug:dmix`
+    // — so no post-init device picking is needed here.  The dynamic
+    // picker that used to live here selected `alsa/dmix:CARD=...`,
+    // which failed `snd_pcm_dmix_open: unable to open slave` on this
+    // codec.  `plug:dmix` is the only PCM name that opens cleanly AND
+    // shares the device with other clients.)
 
     // ── Create GLES render context ────────────────────────────────────────────
     // Use eglGetProcAddress via dlopen — NOT SDL_GL_GetProcAddress.
@@ -266,8 +268,13 @@ bool MpvPlayer::initializeAudioOnly() {
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
     mpv_set_option_string(mpv_, "video",                  "no");
-    // Use ALSA so the daemon shares the audio device with other apps
+    // Use ALSA so the daemon shares the audio device with other apps.
     mpv_set_option_string(mpv_, "ao",                     "alsa");
+    // Same `plug:dmix` rationale as the foreground initialize() path
+    // — see the long comment there.  Without this, the daemon would
+    // grab the codec exclusively (`F...m` mmap) and block both
+    // tubelite-foreground and RetroArch from playing audio.
+    mpv_set_option_string(mpv_, "audio-device",           "alsa/plug:dmix");
     // Buffer slightly larger to smooth over scheduling jitter in a background process
     mpv_set_option_string(mpv_, "audio-buffer",           "0.5");
     mpv_set_option_string(mpv_, "gapless-audio",          "no");
@@ -288,34 +295,12 @@ bool MpvPlayer::initializeAudioOnly() {
         return false;
     }
 
-    // Now query the audio device list and find the best mixing device.
-    // This allows us to dynamically support ArkOS custom 'dmixer', Rockchip default dmix, or fall back to standard alsa default.
-    char* device_list_str = nullptr;
-    if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
-        std::string list(device_list_str);
-        std::string best_device = "alsa";
-        
-        if (list.find("alsa/dmixer") != std::string::npos) {
-            best_device = "alsa/dmixer";
-        } else {
-            size_t dmix_pos = list.find("alsa/dmix:");
-            if (dmix_pos != std::string::npos) {
-                size_t end_pos = list.find("\"", dmix_pos);
-                if (end_pos != std::string::npos) {
-                    best_device = list.substr(dmix_pos, end_pos - dmix_pos);
-                }
-            } else if (list.find("alsa/dmix") != std::string::npos) {
-                best_device = "alsa/dmix";
-            }
-        }
-        
-        std::cerr << "[mpv] Dynamic ALSA device selection: " << best_device << "\n";
-        mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
-        
-        mpv_free(device_list_str);
-    } else {
-        std::cerr << "[mpv] Failed to query audio-device-list, using default ALSA device\n";
-    }
+    // (audio-device is set BEFORE mpv_initialize — to `alsa/plug:dmix`
+    // — so no post-init device picking is needed here.  The dynamic
+    // picker that used to live here selected `alsa/dmix:CARD=...`,
+    // which failed `snd_pcm_dmix_open: unable to open slave` on this
+    // codec.  `plug:dmix` is the only PCM name that opens cleanly AND
+    // shares the device with other clients.)
 
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);
