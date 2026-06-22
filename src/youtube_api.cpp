@@ -357,6 +357,11 @@ void YouTubeAPI::search(const std::string& query, int page,
             }, 35000, stillWanted);
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
+
+        if (!ok) {
+            std::cerr << "[YouTubeAPI] search query=" << query
+                      << " page=" << page << " tubed request FAILED\n";
+        }
         callback({}, true);
         finish();
     }).detach();
