@@ -125,22 +125,12 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "hwdec",                  "rkmpp,auto");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
-    // Use the dmix software-mixing device instead of the raw codec.
-    // Without this, mpv opens /dev/snd/pcmC0D0p exclusively — meaning
-    // tubelite holds the audio device with `F...m` (mmap) and any
-    // other process (retroarch, daemon, speaker-test) gets EBUSY when
-    // it tries to play.  `dmix` is ALSA's built-in mixer that lets
-    // multiple writers share one card; the codec name comes straight
-    // from `aplay -L` on the device.  The `plug:` prefix interposes
-    // any needed sample-rate / format conversion so we don't have to
-    // match dmix's native parameters.  Failure to open dmix falls back
-    // to default (legacy behaviour) — set after the `ao` option so the
-    // option-already-applied chain doesn't reject it.
-    mpv_set_option_string(mpv_, "audio-device",
-                          "alsa/plug:dmix:CARD=rockchiprk817co,DEV=0");
-    // Also opt out of mpv's exclusive-mode hint, which on some ALSA
-    // builds promotes the open to O_EXCL.  We WANT shared access.
-    mpv_set_option_string(mpv_, "alsa-no-resume",         "no");
+    // (Audio device is selected AFTER mpv_initialize — see the
+    // dmix discovery block below — because mpv only populates
+    // `audio-device-list` once initialised.  Setting a device
+    // string here is also fragile: ALSA's name parser rejects
+    // nested-PCM syntax like `plug:dmix:CARD=...` with
+    // "Unknown PCM ..." errors.)
     // Color-correctness fix for the rkmpp → GL pipeline on RK3326.
     //
     // YouTube videos are encoded with BT.709 primaries and a LIMITED
@@ -246,7 +236,16 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
             card = list.substr(start, end - start);
         }
         if (!card.empty()) {
-            best_device = "alsa/plug:dmix:CARD=" + card + ",DEV=0";
+            // NOTE: we deliberately do NOT wrap this in `plug:`.
+            // ALSA's PCM-name parser rejects `plug:dmix:CARD=...`
+            // ("Unknown PCM plug:dmix:CARD=...") because the colon
+            // in the inner spec is read as a parameter separator
+            // for the outer `plug` plugin.  Quoting works on the
+            // command line but not through mpv's option layer.
+            // mpv does its own format / rate conversion inside the
+            // ALSA AO, so `plug` isn't needed — dmix accepts the
+            // samples directly.
+            best_device = "alsa/dmix:CARD=" + card + ",DEV=0";
         } else if (list.find("alsa/dmixer") != std::string::npos) {
             best_device = "alsa/dmixer";
         }
@@ -348,7 +347,16 @@ bool MpvPlayer::initializeAudioOnly() {
             card = list.substr(start, end - start);
         }
         if (!card.empty()) {
-            best_device = "alsa/plug:dmix:CARD=" + card + ",DEV=0";
+            // NOTE: we deliberately do NOT wrap this in `plug:`.
+            // ALSA's PCM-name parser rejects `plug:dmix:CARD=...`
+            // ("Unknown PCM plug:dmix:CARD=...") because the colon
+            // in the inner spec is read as a parameter separator
+            // for the outer `plug` plugin.  Quoting works on the
+            // command line but not through mpv's option layer.
+            // mpv does its own format / rate conversion inside the
+            // ALSA AO, so `plug` isn't needed — dmix accepts the
+            // samples directly.
+            best_device = "alsa/dmix:CARD=" + card + ",DEV=0";
         } else if (list.find("alsa/dmixer") != std::string::npos) {
             best_device = "alsa/dmixer";
         }
