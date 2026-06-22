@@ -186,14 +186,18 @@ static bool initDrmOverlay() {
     drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     if (drm_fd < 0) { perror("[daemon] open card0"); return false; }
 
-    // Reclaim DRM master status after re-opening
-    if (drmSetMaster(drm_fd) < 0) {
-        perror("[daemon] drmSetMaster");
-        close(drm_fd);
-        drm_fd = -1;
-        return false;
-    }
-
+    // Intentionally do NOT call drmSetMaster here.  On RK3326's KMSDRM
+    // a non-master client can still drive an overlay plane via
+    // drmModeSetPlane as long as DRM_CLIENT_CAP_UNIVERSAL_PLANES is
+    // set — which is what we do below.  Attempting drmSetMaster fails
+    // with EPERM the moment anything else (EmulationStation, retroarch,
+    // SDL/EGL on the foreground tubelite, etc.) already holds master,
+    // which is essentially always when the daemon is spawned mid-
+    // session.  That failure used to abort initDrmOverlay → the now-
+    // playing card never appeared.  The original 28a4123 behaviour
+    // (just open + universal planes + plane writes) is the working
+    // path.  Foreground-game arbitration is handled separately by
+    // ensureDrmReady() closing the fd entirely.
     drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
     drmModeRes* res = drmModeGetResources(drm_fd);
@@ -253,7 +257,9 @@ static void closeDrmOverlay() {
     // CRTC cleanly — a pinned FB on a lingering plane is what crashed games.
     drmModeSetPlane(drm_fd, DRM_OVERLAY_PLANE_ID, DRM_CRTC_ID,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    drmDropMaster(drm_fd); // Explicitly drop master status
+    // No drmDropMaster — we never acquired it in the first place
+    // (see comment in initDrmOverlay).  Calling drop on a non-master
+    // fd is a no-op but pointless.
     if (drm_map && drm_map != MAP_FAILED) munmap(drm_map, drm_size);
     if (drm_fb_id)  drmModeRmFB(drm_fd, drm_fb_id);
     if (drm_handle) {
