@@ -799,15 +799,48 @@ void runDaemon() {
     ::unlink("/dev/shm/tubelite_daemon_audio.live");
     bool audio_live_signalled = false;
 
+    // Audio fade-out helper.  Ramps mpv volume from current → 0 over
+    // `dur_ms` milliseconds, then sets daemon_running=false so the main
+    // loop exits cleanly on next iteration.  Used by FN+B (user-initiated
+    // exit) and by the reabsorption signal file (app-initiated exit) so
+    // BOTH exit paths produce a smooth audible fade instead of an
+    // abrupt audio cut.  Called from the main loop's own thread, so it
+    // shares the same mpv pointer without a synchronization concern.
+    auto fadeOutAndExit = [&](int dur_ms = 800) {
+        // Snapshot current effective volume (mpv exposes "volume" 0-100).
+        const int64_t cur = mpv.getPropertyInt("volume");
+        if (cur <= 0) { daemon_running = false; return; }
+        using namespace std::chrono;
+        const auto start = steady_clock::now();
+        while (true) {
+            const float t = duration<float>(steady_clock::now() - start).count();
+            const float frac = std::min(1.0f, t * 1000.0f / dur_ms);
+            int v = static_cast<int>(cur * (1.0f - frac));
+            if (v < 0) v = 0;
+            mpv.setVolume(v);
+            if (frac >= 1.0f) break;
+            mpv.update();
+            std::this_thread::sleep_for(milliseconds(20));
+        }
+        daemon_running = false;
+    };
+
     // For reabsorption: snapshot current track + position into a small
-    // JSON every ~1 s.  When TubeLite re-launches it reads this file
-    // BEFORE killing the daemon, transfers playback into its own mpv at
-    // the same offset, and opens the miniplayer — so the user sees
-    // continuous audio with the in-app HUD restored.
+    // JSON.  When TubeLite re-launches it reads this file BEFORE killing
+    // the daemon, transfers playback into its own mpv at the same
+    // offset, and opens the miniplayer.  Throttled to ~2 s — the user
+    // can't perceive a 2 s position skip on resume, and halving the
+    // write rate halves the filesystem wake-ups that prevent the
+    // device from entering deeper sleep states.
     auto last_state_write = std::chrono::steady_clock::now();
     auto writeState = [&]() {
+        // Skip when there's nothing playing — no point rewriting the
+        // same idle snapshot every 2 s, and a missing file is a clean
+        // signal to the app that there's nothing to reabsorb.
         if (daemon_current_index < 0 ||
             daemon_current_index >= (int)daemon_playlist.size()) return;
+        if (daemon_status != DaemonStatus::Playing &&
+            daemon_status != DaemonStatus::Paused) return;
         const auto& v = daemon_playlist[daemon_current_index];
         std::ofstream ofs("/dev/shm/tubelite_daemon_state.json");
         if (!ofs) return;
@@ -837,13 +870,25 @@ void runDaemon() {
             audio_live_signalled = true;
         }
 
-        // Reabsorption-state snapshot: refresh roughly once a second.
-        // Cheap (~200 byte file write) and gives the in-app reopen path
-        // a fresh-enough position to resume from without an audible skip.
+        // Reabsorption-state snapshot: refresh every ~2 s.  Cheap (~200
+        // byte file write) but throttled so we don't keep the CPU + I/O
+        // path warm in pure-audio idle mode.
         if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - last_state_write).count() >= 1000) {
+                now - last_state_write).count() >= 2000) {
             writeState();
             last_state_write = now;
+        }
+
+        // Reabsorption fade-out trigger.  When the app re-launches it
+        // creates this flag file, then begins fading its own mpv UP
+        // from volume 0.  We respond by fading our mpv DOWN over the
+        // same window and exiting cleanly — net effect is a symmetric
+        // crossfade with no perceptible audio gap.  Cleanup of the flag
+        // happens on exit (unlink at the bottom of main()).
+        if (access("/dev/shm/tubelite_daemon_fadeout", F_OK) == 0) {
+            ::unlink("/dev/shm/tubelite_daemon_fadeout");
+            fadeOutAndExit(800);
+            continue;   // fall through to the loop-exit on next iter
         }
 
         // ── Async resolve ─────────────────────────────────────────────────
@@ -951,8 +996,12 @@ void runDaemon() {
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
                             last_render_pos = -1.0;
-                        } else if (ev.code == 304) { // B → exit
-                            daemon_running = false;
+                        } else if (ev.code == 304) { // B → exit (with fade)
+                            // Fade audio out over 800 ms before exiting
+                            // so the speaker doesn't pop or cut mid-track.
+                            // Drains the input queue first — we don't want
+                            // late events queueing while we're mid-fade.
+                            fadeOutAndExit(800);
                         } else if (ev.code == 103 || ev.code == 544) { // UP → show
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
@@ -1039,6 +1088,7 @@ void runDaemon() {
 #ifndef _WIN32
     unlink("/dev/shm/tubelite_daemon_audio.live");
     unlink("/dev/shm/tubelite_daemon_state.json");
+    unlink("/dev/shm/tubelite_daemon_fadeout");
     // Background playback is over and the app isn't running, so nothing needs
     // the tubed backend — stop it so neither it nor any yt-dlp child lingers.
     {

@@ -544,11 +544,24 @@ void MpvPlayer::play(const std::string& url, const std::string& subtitle_url,
     if (!mpv_) return;
     file_ended_ = false;
     has_new_frame_ = true;
+    pending_seek_position_ = -1.0;          // stale seek from a prior file → drop
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     pending_subtitle_url_ = subtitle_url;
     pending_audio_url_    = audio_url;
-    const char* cmd[] = {"loadfile", url.c_str(), nullptr};
-    mpv_command_async(mpv_, 0, cmd);
+
+    // Explicit synchronous stop BEFORE loadfile so the previous file's
+    // demuxer cache (up to 32 MiB readahead), decoder state, hwdec
+    // surfaces and audio filter chain are torn down deterministically
+    // BEFORE the new file allocates its own.  Without this, on
+    // back-to-back track changes the old + new state are briefly both
+    // resident — a real memory spike on the 640 MB device that
+    // occasionally tripped the OOM killer for yt-dlp running alongside.
+    // The sync stop costs ~50 ms of silence at the transition; that's
+    // imperceptible against the network latency of the new loadfile.
+    const char* cmdStop[] = {"stop", nullptr};
+    mpv_command(mpv_, cmdStop);
+    const char* cmdLoad[] = {"loadfile", url.c_str(), "replace", nullptr};
+    mpv_command_async(mpv_, 0, cmdLoad);
     resume();
 }
 void MpvPlayer::pause() {
@@ -564,8 +577,13 @@ void MpvPlayer::stop() {
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
     pending_subtitle_url_.clear();
     pending_audio_url_.clear();
+    pending_seek_position_ = -1.0;
+    // Sync stop so the demuxer cache + decoder state are gone before
+    // we return — callers (track-change, app-shutdown, reabsorption)
+    // rely on this for clean memory hand-off.  playlist-clear after to
+    // make sure nothing auto-advances.
     const char* cmdStop[] = {"stop", nullptr};
-    mpv_command_async(mpv_, 0, cmdStop);
+    mpv_command(mpv_, cmdStop);
     const char* cmdClear[] = {"playlist-clear", nullptr};
     mpv_command_async(mpv_, 0, cmdClear);
 }

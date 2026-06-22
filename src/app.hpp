@@ -204,7 +204,10 @@ private:
     // are NOT saved — they get re-fetched on demand by the lazy image
     // manager, which is bandwidth-cheap compared to re-running a search.
     void saveBrowseState();
-    void loadBrowseState();
+    // Returns true if state was successfully restored (so the caller can
+    // skip the cold-fetch loadHomeFeeds(), whose async callback would
+    // otherwise clear and replace the just-restored grid contents).
+    bool loadBrowseState();
 
     // Daemon reabsorption — on launch, check whether the background
     // daemon is currently playing.  If yes, transfer the playback into

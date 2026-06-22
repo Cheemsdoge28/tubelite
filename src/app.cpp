@@ -199,15 +199,19 @@ bool App::initialize() {
     // transfer its track into our own mpv with continuous audio.  Doing
     // killExistingDaemon() before this would cut audio for a beat while
     // mpv spins up.  reabsorbDaemonPlayback() handles the daemon kill
-    // itself once playback has been picked up.
+    // (via fade-out signal) itself once playback has been picked up.
     bool reabsorbed = reabsorbDaemonPlayback();
     if (!reabsorbed) killExistingDaemon();
     loadHistory();
-    loadHomeFeeds();
-    // Restore last screen + focused card AFTER loadHomeFeeds so any
-    // cached trending entries are present; loadBrowseState then layers
-    // the previously-visible feed on top and refocuses where we left off.
-    loadBrowseState();
+    // Browse-state restore happens BEFORE loadHomeFeeds: an empty restore
+    // (no saved state, or cold install) falls through to the standard
+    // trending fetch; a successful restore short-circuits the fetch so
+    // its async callback can't clobber the just-hydrated home/search
+    // grids and reset the cursor to index 0.
+    bool restored = loadBrowseState();
+    if (!restored) {
+        loadHomeFeeds();
+    }
     SDL_StartTextInput();
 
     int width = 0, height = 0;
@@ -2246,10 +2250,10 @@ void App::saveBrowseState() {
     } catch (...) {}
 }
 
-void App::loadBrowseState() {
+bool App::loadBrowseState() {
     try {
         std::ifstream ifs(getAppDataPath("browse_state.json"));
-        if (!ifs) return;
+        if (!ifs) return false;
         nlohmann::json j;
         ifs >> j;
 
@@ -2278,6 +2282,16 @@ void App::loadBrowseState() {
         search_page_          = std::max(1, j.value("search_page", 1));
         home_page_            = std::max(1, j.value("home_page", 1));
 
+        // Seed the trending in-memory cache from the restored home grid
+        // so loadMoreHomeFeeds works correctly without a re-fetch — it
+        // relies on cached_trending_videos_ for pagination state, and
+        // without this the "load page 2" path would start from page 1
+        // and duplicate everything.
+        cached_trending_videos_ = home_grid_->videos;
+        trending_cache_time_    = std::chrono::steady_clock::now();
+        cached_home_kind_       = (state_.homeFeedKind == "subscriptions" && state_.authed)
+                                      ? "subscriptions" : "trending";
+
         // Restore which screen was active so the user lands back on it.
         std::string screen = j.value("screen", std::string("home"));
         if (screen == "search" && !search_grid_->videos.empty()) {
@@ -2288,13 +2302,19 @@ void App::loadBrowseState() {
                                       : "Search: " + current_search_query_;
         } else {
             focus_manager_.setGrid(home_grid_);
+            home_grid_->title = (state_.homeFeedKind == "subscriptions" && state_.authed)
+                                    ? "Subscriptions" : "Trending";
         }
 
         // Focus the same card.  Out-of-range gets clamped by setFocusedIndex.
         int focusedIdx = j.value("focused_index", 0);
         focus_manager_.setFocusedIndex(focusedIdx);
         uiDirty_ = true;
+        // Successful restore — tell caller it can skip the cold-fetch
+        // loadHomeFeeds() that would clobber what we just hydrated.
+        return !home_grid_->videos.empty() || !search_grid_->videos.empty();
     } catch (...) {}
+    return false;
 }
 
 bool App::reabsorbDaemonPlayback() {
@@ -2364,14 +2384,30 @@ bool App::reabsorbDaemonPlayback() {
     mpv_player_.play(streamUrl, subUrl, audioUrl);
     if (position > 1.0) mpv_player_.setPendingSeekPosition(position);
 
-    killExistingDaemon();
+    // Crossfade: signal the daemon to fade ITS audio down (it watches
+    // for this flag in its main loop and exits cleanly after ~800 ms),
+    // then we fade our own mpv UP over the same window.  Both halves
+    // run concurrently — symmetric audio crossover with no abrupt cut.
+    // The signal write is best-effort; if it fails (read-only fs) we
+    // fall back to the old hard kill.
+    {
+        std::ofstream sig("/dev/shm/tubelite_daemon_fadeout");
+        if (!sig) killExistingDaemon();
+    }
 
     // Open the miniplayer immediately so the user sees the now-playing
-    // card in the corner instead of a blank home screen.
+    // card in the corner instead of a blank home screen.  Respect the
+    // daemon's last play/pause state — if the user deliberately paused
+    // the track via FN+A in daemon mode, coming back into the app should
+    // honour that intent, not surprise them with audio resuming.  Only
+    // the *active* playing case skips the explicit pause call below
+    // (mpv defaults to playing after play()).
     state_manager_.transitionTo(TubeState::Screen::Home);
     state_manager_.setMiniplayerActive(true);
     state_.showUi = true;
-    if (!wasPlaying) mpv_player_.pause();
+    if (!wasPlaying) {
+        mpv_player_.pause();
+    }
 
     // Audio fade-in: ramp from 0 → user volume over ~1 s.  Keep it on
     // the main thread so it interleaves with the existing init code —
