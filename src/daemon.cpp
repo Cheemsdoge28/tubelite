@@ -1233,8 +1233,34 @@ void runDaemon() {
 
     int js_fd = -1;
 #ifndef _WIN32
-    js_fd = open("/dev/input/event2", O_RDONLY | O_NONBLOCK);
-    if (js_fd < 0) std::cerr << "[daemon] Warning: no event2\n";
+    // Probe /dev/input/event0..7 and pick the FIRST one that exposes a
+    // gamepad-shaped key range (BTN_GAMEPAD = 0x130 = 304).  Hard-coded
+    // event2 is correct on most ArkOS R36S images but breaks if the
+    // kernel renumbers (extra USB controller, OTG, etc) — the daemon
+    // would then silently see no input.  We log the device name so the
+    // user can confirm in stderr it picked the right one.
+    for (int idx = 0; idx < 8; ++idx) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/input/event%d", idx);
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        // EVIOCGBIT(EV_KEY, ...) tells us if BTN_GAMEPAD (0x130) is set.
+        unsigned long key_bits[(KEY_MAX / 8 / sizeof(unsigned long)) + 1] = {0};
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0) {
+            const unsigned long bit = 1UL << (304 % (8 * sizeof(unsigned long)));
+            const size_t word = 304 / (8 * sizeof(unsigned long));
+            if (key_bits[word] & bit) {
+                js_fd = fd;
+                char name[128] = {0};
+                ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
+                std::cerr << "[daemon] input device: " << path
+                          << " (" << name << ")\n";
+                break;
+            }
+        }
+        close(fd);
+    }
+    if (js_fd < 0) std::cerr << "[daemon] Warning: no gamepad-capable /dev/input/event*\n";
 #endif
 
     playCurrentTrack(mpv, yt);
@@ -1509,6 +1535,12 @@ void runDaemon() {
                     if (ev.code == 708) { fn_held = down; }
 
                     if (down && fn_held) {
+                        // Diagnostic — lets the user read off the actual
+                        // ev.code for every FN+<button> press so we can
+                        // confirm our hard-coded mappings (304/305/307/
+                        // 308/310/311/314) match this device.  Quiet
+                        // once mappings are validated.
+                        std::cerr << "[daemon] FN+key ev.code=" << ev.code << "\n";
                         if (ev.code == 310) {
                             constexpr double kRestartThresholdSec = 3.0;
                             double cur = mpv.getPlaybackTime();
@@ -1669,7 +1701,18 @@ void runDaemon() {
                             }
                         }
                     }
-                } else if (ev.type == EV_ABS && ev.code == 1 && fn_held) {
+                } else if (ev.type == EV_ABS && fn_held) {
+                    // Diagnostic — log ABS codes when FN is held so we
+                    // can verify left-stick Y is actually code 1 on
+                    // this device (could be ABS_RY=4 on some pads).
+                    // Only fires when stick is meaningfully deflected
+                    // to avoid drift spam.
+                    if (std::abs(ev.value) > 8000) {
+                        std::cerr << "[daemon] FN+abs ev.code=" << ev.code
+                                  << " value=" << ev.value << "\n";
+                    }
+                }
+                if (ev.type == EV_ABS && ev.code == 1 && fn_held) {
                     // Left-stick Y → volume.  Discretise to {-1,0,+1}
                     // and fire only on transitions away from center so
                     // a single push = one volume step, and stick drift
