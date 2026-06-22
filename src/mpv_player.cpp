@@ -229,6 +229,25 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     // which failed `snd_pcm_dmix_open: unable to open slave` on this
     // codec.  `plug:dmix` is the only PCM name that opens cleanly AND
     // shares the device with other clients.)
+    //
+    // Diagnostic: read back the *actual* audio-device and AO mpv ended
+    // up using.  If mpv silently falls back (e.g. plug:dmix open fails
+    // and mpv reopens on a different device), this is the only signal
+    // we have without an mpv IPC socket.  Cheap one-time call.
+    {
+        char* dev = nullptr;
+        char* ao  = nullptr;
+        if (mpv_get_property(mpv_, "audio-device",
+                             MPV_FORMAT_STRING, &dev) >= 0 && dev) {
+            std::cerr << "[mpv] audio-device (requested): " << dev << "\n";
+            mpv_free(dev);
+        }
+        if (mpv_get_property(mpv_, "current-ao",
+                             MPV_FORMAT_STRING, &ao) >= 0 && ao) {
+            std::cerr << "[mpv] current-ao: " << ao << "\n";
+            mpv_free(ao);
+        }
+    }
 
     // ── Create GLES render context ────────────────────────────────────────────
     // Use eglGetProcAddress via dlopen — NOT SDL_GL_GetProcAddress.
@@ -301,6 +320,25 @@ bool MpvPlayer::initializeAudioOnly() {
     // which failed `snd_pcm_dmix_open: unable to open slave` on this
     // codec.  `plug:dmix` is the only PCM name that opens cleanly AND
     // shares the device with other clients.)
+    //
+    // Diagnostic: read back the *actual* audio-device and AO mpv ended
+    // up using.  If mpv silently falls back (e.g. plug:dmix open fails
+    // and mpv reopens on a different device), this is the only signal
+    // we have without an mpv IPC socket.  Cheap one-time call.
+    {
+        char* dev = nullptr;
+        char* ao  = nullptr;
+        if (mpv_get_property(mpv_, "audio-device",
+                             MPV_FORMAT_STRING, &dev) >= 0 && dev) {
+            std::cerr << "[mpv] audio-device (requested): " << dev << "\n";
+            mpv_free(dev);
+        }
+        if (mpv_get_property(mpv_, "current-ao",
+                             MPV_FORMAT_STRING, &ao) >= 0 && ao) {
+            std::cerr << "[mpv] current-ao: " << ao << "\n";
+            mpv_free(ao);
+        }
+    }
 
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);

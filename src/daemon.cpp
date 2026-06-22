@@ -667,7 +667,15 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 //   * Caller (the main loop) checks remaining_time via mpv.getPlaybackTime/
 //     getDuration — this helper does everything else.
 static void maybePrefetchNext(YouTubeAPI& yt, double remaining_seconds) {
-    if (remaining_seconds <= 0.0 || remaining_seconds >= 90.0) return;
+    // Trigger as soon as playback has started (remaining_seconds > 0),
+    // not only when the current track is nearly over.  Original
+    // behaviour gated on `< 90 s remaining`, which meant a user on a
+    // 1-hour video who immediately skipped had to wait through a full
+    // 2-5 s tubed resolve for the next track — and rapid-skipping
+    // during that wait stacked failures.  The CAS gate further down
+    // ensures only one prefetch is in flight at a time, so this is
+    // still bounded to one extra resolve per track start.
+    if (remaining_seconds <= 0.0) return;
     if (daemon_status != DaemonStatus::Playing) return;
     if (daemon_request_serial.load(std::memory_order_relaxed) > 0 &&
         !daemon_request_finished.load(std::memory_order_relaxed)) {
@@ -1011,19 +1019,35 @@ void runDaemon() {
             audio_url = v.audio_url;
         }
 
-        std::ofstream ofs("/dev/shm/tubelite_daemon_state.json");
-        if (!ofs) return;
-        ofs << "{"
-            << "\"id\":\""        << vid        << "\","
-            << "\"title\":\""     << title     << "\","
-            << "\"author\":\""    << author    << "\","
-            << "\"position\":"    << mpv.getPlaybackTime() << ","
-            << "\"duration\":"    << mpv.getDuration()     << ","
-            << "\"playing\":"     << (daemon_status == DaemonStatus::Playing ? "true" : "false") << ","
-            << "\"stream_url\":\"" << stream_url << "\","
-            << "\"subtitle_url\":\"" << subtitle_url << "\","
-            << "\"audio_url\":\"" << audio_url << "\""
-            << "}";
+        // Build via nlohmann::json so titles/authors/URLs with quotes,
+        // backslashes, or control chars are properly escaped.  The old
+        // manual `<<` concat produced malformed JSON the instant a video
+        // title contained a `"` (very common on YouTube), which made the
+        // app's reabsorb parser throw → fall through to a 6 s tubed
+        // re-resolve → "long startup from daemon".  Write to a `.tmp`
+        // sibling and rename so the app never sees a half-written file
+        // mid-poll (rename is atomic on tmpfs, which /dev/shm is).
+        nlohmann::json j;
+        j["id"]           = vid;
+        j["title"]        = title;
+        j["author"]       = author;
+        j["position"]     = mpv.getPlaybackTime();
+        j["duration"]     = mpv.getDuration();
+        j["playing"]      = (daemon_status == DaemonStatus::Playing);
+        j["stream_url"]   = stream_url;
+        j["subtitle_url"] = subtitle_url;
+        j["audio_url"]    = audio_url;
+
+        const char* final_path = "/dev/shm/tubelite_daemon_state.json";
+        const char* tmp_path   = "/dev/shm/tubelite_daemon_state.json.tmp";
+        {
+            std::ofstream ofs(tmp_path);
+            if (!ofs) return;
+            ofs << j.dump();
+        }
+        if (rename(tmp_path, final_path) != 0) {
+            ::unlink(tmp_path);  // best-effort cleanup on rename failure
+        }
     };
 
     std::cerr << "[daemon] Loop started.\n";

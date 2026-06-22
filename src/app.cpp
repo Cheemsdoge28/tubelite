@@ -2453,23 +2453,14 @@ bool App::reabsorbDaemonPlayback() {
     mpv_player_.play(streamUrl, subUrl, audioUrl);
     if (position > 0.1) mpv_player_.setPendingSeekPosition(position);
 
-    // Wait for our player to actually start playing (buffered and decoding)
-    // before we signal the daemon to fade out. This matches the exit-to-daemon
-    // logic and ensures the daemon keeps playing until our audio is ready.
-    using namespace std::chrono;
-    const auto deadline = steady_clock::now() + milliseconds(4000);
-    while (steady_clock::now() < deadline) {
-        mpv_player_.update();
-        if (mpv_player_.getPlaybackTime() > 0.05) {
-            break;
-        }
-        SDL_Delay(25);
-    }
-
-    // Crossfade: signal the daemon to fade ITS audio down (it watches
-    // for this flag in its main loop and exits cleanly after ~800 ms),
-    // then we fade our own mpv UP over the same window.  Both halves
-    // run concurrently — symmetric audio crossover with no abrupt cut.
+    // Signal the daemon to fade out IMMEDIATELY (it ramps down over
+    // ~800 ms then exits).  Doing this in parallel with our mpv's
+    // buffering window means the user perceives a smooth crossfade
+    // instead of a several-second black-screen freeze before the
+    // window appears.  Previously we waited up to 4 s for our mpv
+    // to start producing before signalling — that compounded with
+    // a 1 s fade-in to give a worst-case 5 s blank startup; the
+    // common path was ~1-2 s of black screen even with a cached URL.
     {
         std::ofstream sig("/dev/shm/tubelite_daemon_fadeout");
         if (!sig) killExistingDaemon();
@@ -2482,11 +2473,19 @@ bool App::reabsorbDaemonPlayback() {
         mpv_player_.pause();
     }
 
-    // Audio fade-in: ramp from 0 → user volume over ~1 s.  Keep it on
-    // the main thread so it interleaves with the existing init code.
+    // Crossfade window: ~800 ms, matching the daemon's own fade-out
+    // duration in fadeOutAndExit().  We tick mpv.update() each step so
+    // the demuxer + decoder make progress, and ramp our volume up
+    // proportionally — so as soon as audio actually starts flowing,
+    // it comes in at the correct level for the current point in the
+    // ramp instead of a sudden full-volume jump.  If our mpv is still
+    // buffering at the end of the window we return anyway and let the
+    // main loop drive it — the SDL window is what the user is waiting
+    // to see, not full audio.
+    using namespace std::chrono;
     {
         const auto fadeStart = steady_clock::now();
-        const float fadeSecs = 1.0f;
+        const float fadeSecs = 0.8f;
         const int targetVol = state_.volume;
         while (true) {
             mpv_player_.update();
