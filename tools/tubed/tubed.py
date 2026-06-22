@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.10.4-streaming"      # bump on every meaningful edit so the
+TUBED_VERSION = "0.10.5-streaming"      # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -1069,7 +1069,7 @@ _FEED_URLS = {
         ":ytsubs",
         "https://www.youtube.com/feed/subscriptions",
     ],
-    "trending":    ["https://www.youtube.com/feed/trending"],
+    "trending":    ["ytsearch:trending"],
     "home":        ["https://www.youtube.com/"],
     "history":     ["https://www.youtube.com/feed/history"],
     "liked":       ["https://www.youtube.com/playlist?list=LL"],
@@ -1170,11 +1170,15 @@ def op_feed(req, writer=None):
         last_url = url
         for attempt in attempts:
             attempt_results = []
+            spec = url
+            if url.startswith("ytsearch:"):
+                term = url.split(":", 1)[1]
+                spec = f"ytsearch{end}:{term}"
             args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
                 "--flat-playlist", "--dump-json",
                 "--extractor-args", "youtubetab:approximate_date",
                 "--playlist-start", str(start), "--playlist-end", str(end),
-                url,
+                spec,
             ]
             with _work_sem:
                 for raw_line in _run_ytdlp_streaming(args, timeout=ytdlp_timeout):

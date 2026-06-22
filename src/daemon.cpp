@@ -968,16 +968,31 @@ void runDaemon() {
             daemon_current_index >= (int)daemon_playlist.size()) return;
         if (daemon_status != DaemonStatus::Playing &&
             daemon_status != DaemonStatus::Paused) return;
-        const auto& v = daemon_playlist[daemon_current_index];
+
+        std::string vid, title, author, stream_url, subtitle_url, audio_url;
+        {
+            std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
+            const auto& v = daemon_playlist[daemon_current_index];
+            vid = v.id;
+            title = v.title;
+            author = v.author;
+            stream_url = v.stream_url;
+            subtitle_url = v.subtitle_url;
+            audio_url = v.audio_url;
+        }
+
         std::ofstream ofs("/dev/shm/tubelite_daemon_state.json");
         if (!ofs) return;
         ofs << "{"
-            << "\"id\":\""        << v.id        << "\","
-            << "\"title\":\""     << v.title     << "\","
-            << "\"author\":\""    << v.author    << "\","
+            << "\"id\":\""        << vid        << "\","
+            << "\"title\":\""     << title     << "\","
+            << "\"author\":\""    << author    << "\","
             << "\"position\":"    << mpv.getPlaybackTime() << ","
             << "\"duration\":"    << mpv.getDuration()     << ","
-            << "\"playing\":"     << (daemon_status == DaemonStatus::Playing ? "true" : "false")
+            << "\"playing\":"     << (daemon_status == DaemonStatus::Playing ? "true" : "false") << ","
+            << "\"stream_url\":\"" << stream_url << "\","
+            << "\"subtitle_url\":\"" << subtitle_url << "\","
+            << "\"audio_url\":\"" << audio_url << "\""
             << "}";
     };
 

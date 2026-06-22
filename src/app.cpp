@@ -2369,57 +2369,48 @@ bool App::reabsorbDaemonPlayback() {
     std::cerr << "[App] reabsorbing daemon playback: id=" << v.id
               << " pos=" << position << "s playing=" << wasPlaying << "\n";
 
-    // ── Fast path: read the pre-resolved stream URL from daemon_queue.json ──
-    // saveDaemonQueue() writes stream_url / subtitle_url / audio_url into
-    // the queue file when the app exits to the background daemon.  Reading
-    // from there is instant (no yt-dlp cold-start, no 6s ceiling wait) and
-    // makes the crossfade work: previously the resolve took so long that
-    // the daemon had already faded out before our mpv started, producing an
-    // audio gap instead of a crossfade.
-    std::string streamUrl, subUrl, audioUrl;
-    bool gotUrlFromQueue = false;
+    // ── Retrieve stream URLs ──
+    // Read stream_url / subtitle_url / audio_url directly from the daemon state.
+    // This is the most fresh, valid URL set since the daemon is playing them.
+    // Fall back to daemon_queue.json and then to tubed resolve if needed.
+    std::string streamUrl  = j.value("stream_url", std::string());
+    std::string subUrl     = j.value("subtitle_url", std::string());
+    std::string audioUrl   = j.value("audio_url", std::string());
 
-    try {
-        std::ifstream qifs(getAppDataPath("daemon_queue.json"));
-        if (qifs) {
-            nlohmann::json q;
-            qifs >> q;
-            // Find the entry for our video id (current_index may differ if
-            // the daemon advanced tracks — scan for the matching id).
-            if (q.contains("videos") && q["videos"].is_array()) {
-                int cidx = q.value("current_index", 0);
-                const auto& vids = q["videos"];
-                // Try current_index first (most common case), then scan.
-                auto tryEntry = [&](const nlohmann::json& entry) -> bool {
-                    if (entry.value("id", std::string()) != v.id) return false;
-                    std::string u = entry.value("stream_url", std::string());
-                    if (u.empty()) return false;
-                    streamUrl = u;
-                    subUrl    = entry.value("subtitle_url", std::string());
-                    audioUrl  = entry.value("audio_url", std::string());
-                    return true;
-                };
-                if (cidx >= 0 && cidx < (int)vids.size()) {
-                    gotUrlFromQueue = tryEntry(vids[cidx]);
-                }
-                if (!gotUrlFromQueue) {
-                    for (const auto& entry : vids) {
-                        if (tryEntry(entry)) { gotUrlFromQueue = true; break; }
+    if (streamUrl.empty()) {
+        try {
+            std::ifstream qifs(getAppDataPath("daemon_queue.json"));
+            if (qifs) {
+                nlohmann::json q;
+                qifs >> q;
+                if (q.contains("videos") && q["videos"].is_array()) {
+                    int cidx = q.value("current_index", 0);
+                    const auto& vids = q["videos"];
+                    auto tryEntry = [&](const nlohmann::json& entry) -> bool {
+                        if (entry.value("id", std::string()) != v.id) return false;
+                        std::string u = entry.value("stream_url", std::string());
+                        if (u.empty()) return false;
+                        streamUrl = u;
+                        subUrl    = entry.value("subtitle_url", std::string());
+                        audioUrl  = entry.value("audio_url", std::string());
+                        return true;
+                    };
+                    bool gotUrlFromQueue = false;
+                    if (cidx >= 0 && cidx < (int)vids.size()) {
+                        gotUrlFromQueue = tryEntry(vids[cidx]);
+                    }
+                    if (!gotUrlFromQueue) {
+                        for (const auto& entry : vids) {
+                            if (tryEntry(entry)) { gotUrlFromQueue = true; break; }
+                        }
                     }
                 }
             }
-        }
-    } catch (...) {}
+        } catch (...) {}
+    }
 
-    if (gotUrlFromQueue) {
-        std::cerr << "[App] reabsorb: using pre-resolved stream URL from queue (instant)\n";
-    } else {
-        // ── Slow fallback: re-resolve via tubed ──────────────────────────────
-        // Happens when the daemon advanced to a new track that wasn't in the
-        // original queue (rare), or when the queue file is missing/corrupt.
-        // Block briefly with a 6 s ceiling — if the resolve is slow, the
-        // user will notice a tiny audio gap but still resume.
-        std::cerr << "[App] reabsorb: no pre-resolved URL in queue, resolving via tubed\n";
+    if (streamUrl.empty()) {
+        std::cerr << "[App] reabsorb: no pre-resolved URL, resolving via tubed\n";
         VideoPlaybackMetadata meta;
         std::atomic<bool> done{false}, ok{false};
         youtube_api_.getStreamUrl(v.id, state_.maxQualityHeight,
@@ -2441,14 +2432,11 @@ bool App::reabsorbDaemonPlayback() {
     }
 
     // ── Transfer playback ─────────────────────────────────────────────────────
-    // Bring up our mpv at volume 0, signal the daemon to fade its audio out,
-    // then ramp our volume up — a symmetric crossfade with no audible gap.
     current_video_ = v;
     // Populate metadata from cache if available (avoids blocking re-fetch).
     {
         VideoPlaybackMetadata meta;
         auto cachedOpt = getCachedStreamUrl(streamCacheKey(v.id, state_.maxQualityHeight));
-        // meta will stay default if not cached — description etc. not critical here.
         active_video_metadata_ = meta;
         wrapped_description_lines_ = wrapText(meta.description, 280, 1);
     }
@@ -2459,26 +2447,30 @@ bool App::reabsorbDaemonPlayback() {
     mpv_player_.setMute(state_.muted);
     mpv_player_.setSpeed(state_.speed);
     mpv_player_.play(streamUrl, subUrl, audioUrl);
-    if (position > 1.0) mpv_player_.setPendingSeekPosition(position);
+    if (position > 0.1) mpv_player_.setPendingSeekPosition(position);
+
+    // Wait for our player to actually start playing (buffered and decoding)
+    // before we signal the daemon to fade out. This matches the exit-to-daemon
+    // logic and ensures the daemon keeps playing until our audio is ready.
+    using namespace std::chrono;
+    const auto deadline = steady_clock::now() + milliseconds(4000);
+    while (steady_clock::now() < deadline) {
+        mpv_player_.update();
+        if (mpv_player_.getPlaybackTime() > 0.05) {
+            break;
+        }
+        SDL_Delay(25);
+    }
 
     // Crossfade: signal the daemon to fade ITS audio down (it watches
     // for this flag in its main loop and exits cleanly after ~800 ms),
     // then we fade our own mpv UP over the same window.  Both halves
     // run concurrently — symmetric audio crossover with no abrupt cut.
-    // The signal write is best-effort; if it fails (read-only fs) we
-    // fall back to the old hard kill.
     {
         std::ofstream sig("/dev/shm/tubelite_daemon_fadeout");
         if (!sig) killExistingDaemon();
     }
 
-    // Open the miniplayer immediately so the user sees the now-playing
-    // card in the corner instead of a blank home screen.  Respect the
-    // daemon's last play/pause state — if the user deliberately paused
-    // the track via FN+A in daemon mode, coming back into the app should
-    // honour that intent, not surprise them with audio resuming.  Only
-    // the *active* playing case skips the explicit pause call below
-    // (mpv defaults to playing after play()).
     state_manager_.transitionTo(TubeState::Screen::Home);
     state_manager_.setMiniplayerActive(true);
     state_.showUi = true;
@@ -2487,10 +2479,8 @@ bool App::reabsorbDaemonPlayback() {
     }
 
     // Audio fade-in: ramp from 0 → user volume over ~1 s.  Keep it on
-    // the main thread so it interleaves with the existing init code —
-    // the loop is short and the user expects a brief pause anyway.
+    // the main thread so it interleaves with the existing init code.
     {
-        using namespace std::chrono;
         const auto fadeStart = steady_clock::now();
         const float fadeSecs = 1.0f;
         const int targetVol = state_.volume;

@@ -14,6 +14,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #endif
 
 using json = nlohmann::json;
@@ -121,7 +122,7 @@ bool ensureTubedRunning() {
 
 // Send one request line, read one response line. `timeout_ms` bounds the whole
 // resolve (stream extraction can take a few seconds on first play).
-bool tubedRequest(const json& req, json& resp, int timeout_ms) {
+bool tubedRequest(const json& req, json& resp, int timeout_ms, std::function<bool()> still_wanted = nullptr) {
     if (!ensureTubedRunning()) return false;
     int fd = connectTubed(timeout_ms);
     if (fd < 0) return false;
@@ -139,6 +140,21 @@ bool tubedRequest(const json& req, json& resp, int timeout_ms) {
     char buf[8192];
     bool got_newline = false;
     while (true) {
+        if (still_wanted && !still_wanted()) {
+            ::close(fd);
+            return false;
+        }
+#ifndef _WIN32
+        pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int ret = ::poll(&pfd, 1, 100);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (ret == 0) continue;
+#endif
         ssize_t r = ::read(fd, buf, sizeof(buf));
         if (r <= 0) break;
         line.append(buf, static_cast<size_t>(r));
@@ -162,7 +178,8 @@ bool tubedRequest(const json& req, json& resp, int timeout_ms) {
 // an error ("ok":false).
 bool tubedStreamRequest(const json& req,
                         std::function<void(const json&)> item_cb,
-                        int timeout_ms) {
+                        int timeout_ms,
+                        std::function<bool()> still_wanted = nullptr) {
     if (!ensureTubedRunning()) return false;
     int fd = connectTubed(timeout_ms);
     if (fd < 0) return false;
@@ -181,6 +198,21 @@ bool tubedStreamRequest(const json& req,
     char buf[8192];
     bool got_ok = false;
     while (true) {
+        if (still_wanted && !still_wanted()) {
+            ::close(fd);
+            return false;
+        }
+#ifndef _WIN32
+        pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int ret = ::poll(&pfd, 1, 100);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (ret == 0) continue;
+#endif
         ssize_t r = ::read(fd, buf, sizeof(buf));
         if (r <= 0) break;  // EOF or timeout
         buf_accum.append(buf, static_cast<size_t>(r));
@@ -310,6 +342,10 @@ void YouTubeAPI::search(const std::string& query, int page,
         // card arrives within ~3-5 s without waiting for the full batch.
         // tubedStreamRequest reads until {"finished":true}; each item_cb
         // call immediately forwards to the UI via callback.
+        auto stillWanted = [this, req_id]() -> bool {
+            return req_id == current_search_request_id_;
+        };
+
         json req = {{"op", "search"}, {"query", query}, {"page", page}, {"page_size", 20}};
         bool got_any = false;
         bool ok = tubedStreamRequest(req,
@@ -317,7 +353,7 @@ void YouTubeAPI::search(const std::string& query, int page,
                 if (req_id != current_search_request_id_) return;
                 YouTubeVideo v = videoFromJson(item);
                 if (!v.id.empty()) { callback({v}, false); got_any = true; }
-            }, 35000);
+            }, 35000, stillWanted);
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
         callback({}, true);
@@ -355,17 +391,21 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
+        auto stillWanted = [this, req_id]() -> bool {
+            return req_id == current_search_request_id_;
+        };
+
         // page_size=20 (chunked) — see same reasoning in op_search
         // wrapper above.  Tubed's default is also 20; explicit here so
         // we're not at the mercy of a tubed version change.
         json req = {{"op", "feed"}, {"kind", kind}, {"page", page}, {"page_size", 20}};
-        json resp;
-        // Bumped from 20s → 35s: op_feed runs yt-dlp with a 30s internal
-        // timeout, so the 20s C++ ceiling was timing out the socket before
-        // tubed could reply — trending always appeared broken even when
-        // yt-dlp was working fine.  35s gives a comfortable margin above
-        // the 30s yt-dlp budget while still bounding the user-visible wait.
-        bool ok = tubedRequest(req, resp, 35000);
+        
+        bool ok = tubedStreamRequest(req,
+            [&](const json& item) {
+                if (req_id != current_search_request_id_) return;
+                YouTubeVideo v = videoFromJson(item);
+                if (!v.id.empty()) callback({v}, false);
+            }, 35000, stillWanted);
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
@@ -374,19 +414,8 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
         if (!ok) {
             std::cerr << "[YouTubeAPI] feed kind=" << kind
                       << " page=" << page << " tubed request FAILED\n";
-        } else if (!resp.value("ok", false)) {
-            std::cerr << "[YouTubeAPI] feed kind=" << kind
-                      << " tubed returned error: "
-                      << resp.value("error", std::string("unknown")) << "\n";
         }
 
-        if (ok && resp.value("ok", false) && resp.contains("results")) {
-            for (const auto& item : resp["results"]) {
-                if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
-                YouTubeVideo v = videoFromJson(item);
-                if (!v.id.empty()) callback({v}, false);
-            }
-        }
         callback({}, true);
         finish();
     }).detach();
@@ -456,7 +485,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // SABR-skipping android fallback can take ~30 s of real work, so a
         // tight C++ timeout was killing resolves at the finish line.
         int playMs = isLive ? 60000 : 55000;
-        bool ok = tubedRequest(req, resp, isPreview ? 17000 : playMs);
+        bool ok = tubedRequest(req, resp, isPreview ? 17000 : playMs, stillWanted);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
