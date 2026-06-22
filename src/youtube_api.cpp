@@ -437,7 +437,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
 
     int req_id = 0;
     if (isPreview) {
-        if (!parent_focus_id.empty()) {
+        if (!parent_focus_id.empty() && parent_focus_id.rfind("autoplay_", 0) != 0) {
             std::lock_guard<std::mutex> lock(preview_mutex_);
             current_preview_focus_id_ = parent_focus_id;
         }
@@ -451,7 +451,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     std::thread([this, video_id, max_height, callback, req_id, isPreview, isLive, parent_focus_id, t0]() {
         auto stillWanted = [this, req_id, isPreview, parent_focus_id]() -> bool {
             if (isPreview) {
-                if (parent_focus_id.empty()) return true;
+                if (parent_focus_id.empty() || parent_focus_id.rfind("autoplay_", 0) == 0) return true;
                 std::lock_guard<std::mutex> lock(preview_mutex_);
                 return current_preview_focus_id_ == parent_focus_id;
             }

@@ -695,7 +695,7 @@ static void maybePrefetchNext(YouTubeAPI& yt, double remaining_seconds) {
             daemon_playlist[next_idx].audio_url    = audio;
             std::cerr << "[daemon] prefetch: cached for idx=" << next_idx
                       << " id=" << next_id << "\n";
-        });
+        }, /*isPreview=*/true, /*isLive=*/false, "autoplay_" + next_id);
 }
 
 // ── Card render ───────────────────────────────────────────────────────────────
