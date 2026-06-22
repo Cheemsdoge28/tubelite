@@ -103,6 +103,54 @@ static const uint8_t C_GR_R  = theme::GREEN.r,  C_GR_G  = theme::GREEN.g,  C_GR_
 static const uint8_t C_YL_R  = theme::YELLOW.r, C_YL_G  = theme::YELLOW.g, C_YL_B  = theme::YELLOW.b;   // yellow
 static const uint8_t C_BL_R  = theme::BLUE.r,   C_BL_G  = theme::BLUE.g,   C_BL_B  = theme::BLUE.b;     // blue
 
+// ── Input event-code legend (ArkOS R36S, /dev/input/event2) ──────────────────
+//
+// Names below describe the PHYSICAL button on the handheld — they
+// don't always match the linux/input-event-codes.h symbol because this
+// device's mapping swaps A↔B and may swap SEL↔START vs the Linux
+// standard.  Verified via the original `feat: add DRM overlay support
+// and Linux input button mapping reference` commit (50b6371) plus the
+// runtime `[daemon] FN+key ev.code=N` diagnostic.
+//
+// Adding a new shortcut?  Look up the physical button here, use the
+// named constant in the input handler — no more magic numbers.
+//
+// Namespace is `btn` (not `ev`) because the local variable in the
+// input loop is `struct input_event ev` and would shadow a same-named
+// namespace.
+namespace btn {
+    // Face buttons — A and B are SWAPPED from the Linux defaults on
+    // this device (BTN_SOUTH=304 is "B" here, BTN_EAST=305 is "A").
+    constexpr uint16_t A      = 305;
+    constexpr uint16_t B      = 304;
+    constexpr uint16_t X      = 307;   // standard BTN_NORTH
+    constexpr uint16_t Y      = 308;   // standard BTN_WEST
+
+    // Shoulders.
+    constexpr uint16_t L1     = 310;   // standard BTN_TL
+    constexpr uint16_t R1     = 311;   // standard BTN_TR
+
+    // Menu cluster — accept BOTH for the show-overlay bind because
+    // SEL/START may be swapped the same way A/B are.
+    constexpr uint16_t SELECT = 314;
+    constexpr uint16_t START  = 315;
+
+    // Modifier — the daemon listens on FN by default; L3 is the legacy
+    // modifier (commit 50b6371 used 706 as the modifier before the
+    // device added a dedicated FN key).
+    constexpr uint16_t FN     = 708;   // BTN_TRIGGER_HAPPY5
+    constexpr uint16_t L3     = 706;   // BTN_TRIGGER_HAPPY3 — legacy
+
+    // D-pad UP — kernel reports under either of these on this device
+    // (KEY_UP from the keyboard layer; BTN_DPAD_UP from gamepad).
+    constexpr uint16_t DPAD_UP_KEY = 103;   // linux KEY_UP
+    constexpr uint16_t DPAD_UP_BTN = 544;   // linux BTN_DPAD_UP
+
+    // EV_ABS axes used by the daemon.
+    constexpr uint16_t ABS_LSTICK_Y = 1;    // standard ABS_Y
+    constexpr uint16_t ABS_HAT0Y    = 17;   // d-pad vertical
+}
+
 #ifndef _WIN32
 #define DRM_OVERLAY_PLANE_ID  61
 #define DRM_CRTC_ID           60
@@ -1028,9 +1076,13 @@ static void maybePrefetchNext(YouTubeAPI& yt, double remaining_seconds) {
 //  │▌ Author 11px                                   00:00 / 00:00 │ y=27
 //  │  ──────── hairline rule ───────────────────────────────────── │ y=42
 //  │  ████████████░░░░░░░░░░░░░░░░░●░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │ y=48 bar
-//  │  FN+A Pause · FN+L/R Skip · FN+B Exit           2 / 5        │ y=62
+//  │  FN: A Pause · L/R Skip · X Mute · Y Launch                  │ y=56
+//  │  FN: B Exit ×2 · SEL Show · Lstick Vol           2 / 5        │ y=68
 //  └────────────────────────────────────────────────────────────────┘
 //   ↑ 4px accent bar + glow
+//
+// Status badge is MUTED (yellow) when mpv is muted, regardless of
+// play/pause state; otherwise PLAYING / PAUSED / LOADING / ERROR.
 
 static void renderCard(MpvPlayer& mpv) {
     const uint8_t fa = fade(255);
@@ -1087,17 +1139,27 @@ static void renderCard(MpvPlayer& mpv) {
     const auto& video = daemon_playlist[daemon_current_index];
 
     // ── 5. Status badge (top-right) ───────────────────────────────────────────
+    // Badge precedence: an active LOADING / ERROR state always wins
+    // (the user needs to see they can't act), then mute takes priority
+    // over PLAYING / PAUSED so the speaker icon isn't ambiguous.
     uint8_t sr, sg, sb;
     std::string statStr;
+    const bool isMuted = (mpv.getPropertyInt("mute") != 0);
     switch ((DaemonStatus)daemon_status) {
         case DaemonStatus::Resolving:
             statStr="LOADING"; sr=C_BL_R; sg=C_BL_G; sb=C_BL_B; break;
-        case DaemonStatus::Paused:
-            statStr="PAUSED";  sr=C_YL_R; sg=C_YL_G; sb=C_YL_B; break;
         case DaemonStatus::Error:
             statStr="ERROR";   sr=C_AC_R; sg=C_AC_G; sb=C_AC_B;  break;
+        case DaemonStatus::Paused:
+            statStr = isMuted ? "MUTE\xC2\xB7PAUSE" : "PAUSED";
+            sr=C_YL_R; sg=C_YL_G; sb=C_YL_B; break;
         default:
-            statStr="PLAYING"; sr=C_GR_R; sg=C_GR_G; sb=C_GR_B;  break;
+            if (isMuted) {
+                statStr="MUTED";   sr=C_YL_R; sg=C_YL_G; sb=C_YL_B;
+            } else {
+                statStr="PLAYING"; sr=C_GR_R; sg=C_GR_G; sb=C_GR_B;
+            }
+            break;
     }
     int bw = measureText(statStr, 9) + 10;
     int bx = card_w - MR - bw;
@@ -1162,20 +1224,30 @@ static void renderCard(MpvPlayer& mpv) {
         }
     }
 
-    // ── 10. Hint row + track index ────────────────────────────────────────────
-    // Single line with middle-dot separators; track index right-aligned.
-    // Use plain "L/R" for the shoulder-button skip (the font has no ←/→ arrow
-    // glyphs, which previously rendered as tofu). U+00B7 middle dot is present.
-    const std::string hints =
-        "FN+A Pause  \xC2\xB7  FN+L/R Skip  \xC2\xB7  FN+B Exit";
-    drawText(hints, ML, 62, 9, C_HN_R, C_HN_G, C_HN_B, fade(205));
+    // ── 10. Hint rows + track index ───────────────────────────────────────────
+    // Two lines so all FN bindings fit without scrolling.  Drop the
+    // "FN+" prefix from each entry since the leading "FN:" label
+    // implies it for the whole row.  Middle dot (U+00B7) separator;
+    // arrows would render as tofu in this font, so "L/R" stays ASCII.
+    //
+    //   y=56: FN: A Pause · L/R Skip · X Mute · Y Launch
+    //   y=68: FN: B Exit (x2) · SEL Show · Lstick Vol           2 / 5
+    //
+    // 8 px font keeps both rows above the bottom hairline (y=87).
+    const std::string hints_row1 =
+        "FN: A Pause  \xC2\xB7  L/R Skip  \xC2\xB7  X Mute  \xC2\xB7  Y Launch";
+    const std::string hints_row2 =
+        "FN: B Exit \xC3\x97""2  \xC2\xB7  SEL Show  \xC2\xB7  Lstick Vol";
+    drawText(hints_row1, ML, 56, 8, C_HN_R, C_HN_G, C_HN_B, fade(205));
+    drawText(hints_row2, ML, 68, 8, C_HN_R, C_HN_G, C_HN_B, fade(175));
 
     if ((int)daemon_playlist.size() > 1) {
         // Plain ASCII slash — the font lacks the U+2044 fraction slash glyph.
         std::string idx = std::to_string(daemon_current_index + 1)
                         + " / "
                         + std::to_string(daemon_playlist.size());
-        drawTextRight(idx, card_w - MR, 62, 9,
+        // Right-aligned on the bottom hints row.
+        drawTextRight(idx, card_w - MR, 68, 8,
                       C_HN_R, C_HN_G, C_HN_B, fade(175));
     }
 
@@ -1532,16 +1604,15 @@ void runDaemon() {
             while (read(js_fd, &ev, sizeof(ev)) > 0) {
                 if (ev.type == EV_KEY) {
                     bool down = (ev.value != 0);
-                    if (ev.code == 708) { fn_held = down; }
+                    if (ev.code == btn::FN) { fn_held = down; }
 
                     if (down && fn_held) {
                         // Diagnostic — lets the user read off the actual
                         // ev.code for every FN+<button> press so we can
-                        // confirm our hard-coded mappings (304/305/307/
-                        // 308/310/311/314) match this device.  Quiet
-                        // once mappings are validated.
+                        // confirm our `namespace btn` mappings match
+                        // this device.  Quiet once validated.
                         std::cerr << "[daemon] FN+key ev.code=" << ev.code << "\n";
-                        if (ev.code == 310) {
+                        if (ev.code == btn::L1) {
                             constexpr double kRestartThresholdSec = 3.0;
                             double cur = mpv.getPlaybackTime();
                             bool restartCurrent =
@@ -1561,7 +1632,7 @@ void runDaemon() {
                             last_render_pos = -1.0;
                             continue;
                         }
-                        if (ev.code == 311) {
+                        if (ev.code == btn::R1) {
                             daemon_current_index =
                                 (daemon_current_index + 1) % (int)daemon_playlist.size();
                             playCurrentTrack(mpv, yt);
@@ -1570,7 +1641,7 @@ void runDaemon() {
                             last_render_pos = -1.0;
                             continue;
                         }
-                        if (ev.code == 305) { // A → pause/resume
+                        if (ev.code == btn::A) { // pause/resume
                             if (daemon_status == DaemonStatus::Playing) {
                                 mpv.pause();
                                 daemon_status = DaemonStatus::Paused;
@@ -1585,7 +1656,7 @@ void runDaemon() {
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
                             last_render_pos = -1.0;
-                        } else if (ev.code == 304) { // B → two-tap exit (with fade + goodbye toast)
+                        } else if (ev.code == btn::B) { // two-tap exit (with fade + goodbye toast)
                             const auto now_tp = steady_clock::now();
                             const auto since_arm_ms =
                                 duration_cast<milliseconds>(
@@ -1613,7 +1684,15 @@ void runDaemon() {
                                 overlay_active = true;
                                 last_render_pos = -1.0;
                             }
-                        } else if (ev.code == 314) { // SELECT → force-show overlay / re-toast
+                        } else if (ev.code == btn::SELECT || ev.code == btn::START) {
+                            // Force-show overlay + re-toast.  Accept BOTH
+                            // SEL and START because this device swaps
+                            // A/B from the Linux standard, so SEL/START
+                            // may be swapped the same way; binding both
+                            // means the combo works either way. Nothing
+                            // else in the daemon's FN-prefixed handlers
+                            // consumes START, so the duplication is
+                            // harmless.
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
                             last_render_pos = -1.0;
@@ -1622,7 +1701,7 @@ void runDaemon() {
                             // when nothing transitioned.
                             dispatchNotification(formatTrackNotification(
                                 mpv, "\xE2\x99\xAA", "Now Playing"));
-                        } else if (ev.code == 307) { // X → mute toggle
+                        } else if (ev.code == btn::X) { // mute toggle
                             const bool wasMuted = (mpv.getPropertyInt("mute") != 0);
                             mpv.setMute(!wasMuted);
                             // "×" = U+00D7 (BMP, every font has it);
@@ -1635,7 +1714,7 @@ void runDaemon() {
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
                             last_render_pos = -1.0;
-                        } else if (ev.code == 308) { // Y → two-tap quick-launch TubeLite
+                        } else if (ev.code == btn::Y) { // two-tap quick-launch TubeLite
                             const auto now_tp = steady_clock::now();
                             const auto since_arm_ms =
                                 duration_cast<milliseconds>(
@@ -1712,7 +1791,7 @@ void runDaemon() {
                                   << " value=" << ev.value << "\n";
                     }
                 }
-                if (ev.type == EV_ABS && ev.code == 1 && fn_held) {
+                if (ev.type == EV_ABS && ev.code == btn::ABS_LSTICK_Y && fn_held) {
                     // Left-stick Y → volume.  Discretise to {-1,0,+1}
                     // and fire only on transitions away from center so
                     // a single push = one volume step, and stick drift
