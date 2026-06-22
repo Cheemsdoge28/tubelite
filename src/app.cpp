@@ -2363,44 +2363,95 @@ bool App::reabsorbDaemonPlayback() {
     v.author = j.value("author", std::string());
     v.duration_seconds = j.value("duration", 0.0);
     if (v.id.empty()) return false;
-    const double position = std::max(0.0, j.value("position", 0.0));
+    const double position  = std::max(0.0, j.value("position", 0.0));
     const bool   wasPlaying = j.value("playing", true);
 
     std::cerr << "[App] reabsorbing daemon playback: id=" << v.id
               << " pos=" << position << "s playing=" << wasPlaying << "\n";
 
-    // Resolve the stream URL via tubed first — cache hit when we
-    // recently played, otherwise a fresh resolve.  We do this SYNC
-    // because we want to bring up audio before killing the daemon.
-    // Block briefly with a 6 s ceiling — if the resolve is slow, the
-    // user will notice a tiny audio gap but still resume.
+    // ── Fast path: read the pre-resolved stream URL from daemon_queue.json ──
+    // saveDaemonQueue() writes stream_url / subtitle_url / audio_url into
+    // the queue file when the app exits to the background daemon.  Reading
+    // from there is instant (no yt-dlp cold-start, no 6s ceiling wait) and
+    // makes the crossfade work: previously the resolve took so long that
+    // the daemon had already faded out before our mpv started, producing an
+    // audio gap instead of a crossfade.
     std::string streamUrl, subUrl, audioUrl;
-    VideoPlaybackMetadata meta;
-    std::atomic<bool> done{false}, ok{false};
-    youtube_api_.getStreamUrl(v.id, state_.maxQualityHeight,
-        [&done, &ok, &streamUrl, &subUrl, &audioUrl, &meta]
-        (bool success, const std::string& u, const std::string& sub,
-         const std::string& audio, const VideoPlaybackMetadata& m) {
-            streamUrl = u; subUrl = sub; audioUrl = audio; meta = m;
-            ok.store(success); done.store(true);
-        },
-        /*isPreview=*/false, /*isLive=*/false);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
-    while (!done.load() && std::chrono::steady_clock::now() < deadline) {
-        SDL_Delay(20);
-    }
-    if (!ok.load() || streamUrl.empty()) {
-        std::cerr << "[App] reabsorb: stream resolve failed, falling through\n";
-        return false;
+    bool gotUrlFromQueue = false;
+
+    try {
+        std::ifstream qifs(getAppDataPath("daemon_queue.json"));
+        if (qifs) {
+            nlohmann::json q;
+            qifs >> q;
+            // Find the entry for our video id (current_index may differ if
+            // the daemon advanced tracks — scan for the matching id).
+            if (q.contains("videos") && q["videos"].is_array()) {
+                int cidx = q.value("current_index", 0);
+                const auto& vids = q["videos"];
+                // Try current_index first (most common case), then scan.
+                auto tryEntry = [&](const nlohmann::json& entry) -> bool {
+                    if (entry.value("id", std::string()) != v.id) return false;
+                    std::string u = entry.value("stream_url", std::string());
+                    if (u.empty()) return false;
+                    streamUrl = u;
+                    subUrl    = entry.value("subtitle_url", std::string());
+                    audioUrl  = entry.value("audio_url", std::string());
+                    return true;
+                };
+                if (cidx >= 0 && cidx < (int)vids.size()) {
+                    gotUrlFromQueue = tryEntry(vids[cidx]);
+                }
+                if (!gotUrlFromQueue) {
+                    for (const auto& entry : vids) {
+                        if (tryEntry(entry)) { gotUrlFromQueue = true; break; }
+                    }
+                }
+            }
+        }
+    } catch (...) {}
+
+    if (gotUrlFromQueue) {
+        std::cerr << "[App] reabsorb: using pre-resolved stream URL from queue (instant)\n";
+    } else {
+        // ── Slow fallback: re-resolve via tubed ──────────────────────────────
+        // Happens when the daemon advanced to a new track that wasn't in the
+        // original queue (rare), or when the queue file is missing/corrupt.
+        // Block briefly with a 6 s ceiling — if the resolve is slow, the
+        // user will notice a tiny audio gap but still resume.
+        std::cerr << "[App] reabsorb: no pre-resolved URL in queue, resolving via tubed\n";
+        VideoPlaybackMetadata meta;
+        std::atomic<bool> done{false}, ok{false};
+        youtube_api_.getStreamUrl(v.id, state_.maxQualityHeight,
+            [&done, &ok, &streamUrl, &subUrl, &audioUrl, &meta]
+            (bool success, const std::string& u, const std::string& sub,
+             const std::string& audio, const VideoPlaybackMetadata& m) {
+                streamUrl = u; subUrl = sub; audioUrl = audio; meta = m;
+                ok.store(success); done.store(true);
+            },
+            /*isPreview=*/false, /*isLive=*/false);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+        while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+            SDL_Delay(20);
+        }
+        if (!ok.load() || streamUrl.empty()) {
+            std::cerr << "[App] reabsorb: stream resolve failed, falling through\n";
+            return false;
+        }
     }
 
-    // Now bring up our mpv at volume 0, kill the daemon (which fades
-    // its own audio out by stopping decode), seek to position, then
-    // fade our audio in over ~1 s.  Net effect: ~150 ms crossfade
-    // window in which both sides are quiet, then our mpv ramps up.
+    // ── Transfer playback ─────────────────────────────────────────────────────
+    // Bring up our mpv at volume 0, signal the daemon to fade its audio out,
+    // then ramp our volume up — a symmetric crossfade with no audible gap.
     current_video_ = v;
-    active_video_metadata_ = meta;
-    wrapped_description_lines_ = wrapText(meta.description, 280, 1);
+    // Populate metadata from cache if available (avoids blocking re-fetch).
+    {
+        VideoPlaybackMetadata meta;
+        auto cachedOpt = getCachedStreamUrl(streamCacheKey(v.id, state_.maxQualityHeight));
+        // meta will stay default if not cached — description etc. not critical here.
+        active_video_metadata_ = meta;
+        wrapped_description_lines_ = wrapText(meta.description, 280, 1);
+    }
     setCachedStreamUrl(streamCacheKey(v.id, state_.maxQualityHeight),
                        streamUrl + "|" + subUrl + "|" + audioUrl);
 

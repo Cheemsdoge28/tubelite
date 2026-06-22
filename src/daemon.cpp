@@ -549,6 +549,12 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         audio_url    = video.audio_url;
     }
 
+    // Bump serial BEFORE mpv.stop() and BEFORE the new getStreamUrl call
+    // so any in-flight callback from the PREVIOUS track is guaranteed to
+    // see a mismatch and silently drop.  Without this ordering, a rapid
+    // skip can race: old callback fires, sees the old serial still active
+    // (the bump hasn't happened yet), writes ok=false → ERROR status is
+    // shown for the new track even though its resolve hasn't started yet.
     const uint64_t request_serial = ++daemon_request_serial;
     daemon_overlay_timer = 5.0f;
     overlay_active = true;
@@ -573,6 +579,11 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 
     {
         std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
+        // Always reset to Resolving immediately so the overlay never
+        // flashes ERROR between a skip and the new resolve starting,
+        // even if the previous track's callback arrives late with a
+        // failure result.  The serial bump above ensures that callback
+        // will be discarded; this reset makes the visual correct too.
         daemon_status            = DaemonStatus::Resolving;
         daemon_request_finished  = false;
         daemon_request_success   = false;
@@ -583,16 +594,25 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
 
     yt.getStreamUrl(vid_id, 360,
         [request_serial](bool ok, const std::string& url, const std::string& sub,
-           const std::string& audio_url,
+           const std::string& audio_arg,
            const VideoPlaybackMetadata&) {
-            if (daemon_request_serial.load(std::memory_order_relaxed) != request_serial) {
+            // Check serial FIRST, outside any lock, to cheaply discard
+            // the majority of stale callbacks from rapid track switches
+            // without contending on the mutex at all.
+            if (daemon_request_serial.load(std::memory_order_acquire) != request_serial) {
                 std::cerr << "[daemon] Ignoring stale resolve serial=" << request_serial << "\n";
                 return;
             }
             std::lock_guard<std::mutex> lock(daemon_resolved_mutex);
+            // Re-check under the lock — another skip may have bumped the
+            // serial between our relaxed load above and taking the lock.
+            if (daemon_request_serial.load(std::memory_order_relaxed) != request_serial) {
+                std::cerr << "[daemon] Ignoring stale resolve (post-lock) serial=" << request_serial << "\n";
+                return;
+            }
             daemon_resolved_url     = url;
             daemon_subtitle_url     = sub;
-            daemon_audio_url        = audio_url;
+            daemon_audio_url        = audio_arg;
             daemon_request_success  = ok;
             daemon_request_finished = true;
         });

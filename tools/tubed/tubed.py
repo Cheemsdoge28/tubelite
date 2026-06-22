@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.10.1-chunked"     # bump on every meaningful edit so the
+TUBED_VERSION = "0.10.2-trending-feed"  # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -959,21 +959,17 @@ def op_search(req):
 
 
 def op_trending(req):
-    # Trending used to dispatch through op_search ("ytsearch15:trending"),
-    # which actually performed a TEXT SEARCH for videos containing the word
-    # "trending" — not YouTube's curated Trending feed.  That's why
-    # results looked random and unrelated to the real Trending tab.
-    #
-    # Now routed through op_feed("trending") so we use the same
-    # flat-playlist + dump-json pipeline as the subscriptions feed,
-    # against the actual https://www.youtube.com/feed/trending URL.
-    # No cookies required — the trending feed is public.
-    feed_req = {
-        "kind": "trending",
-        "page": req.get("page", 1),
-        "page_size": req.get("page_size", _FEED_PAGE_DEFAULT),
-    }
-    return op_feed(feed_req)
+    # Reverted to op_search("trending") dispatch — the dedicated
+    # /feed/trending tab proved unreliable in production (frequent empty
+    # responses, slow extractor, regional differences).  A plain text
+    # search for "trending" goes through the much-better-tested
+    # ytsearchN:query path that already handles cookies, retry, page
+    # streaming, etc.  Result quality is "videos popular right now"
+    # which matches user expectations for the Home tab without the tab
+    # extractor's flakiness.
+    req = dict(req)
+    req["query"] = req.get("query") or "trending"
+    return op_search(req)
 
 
 # URLs for feeds, exposed by `op_feed` with kind=<key>.  For subscriptions
