@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>     // setenv() — used to route SDL's ALSA backend through plug:dmix
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -168,13 +169,23 @@ void audioCallback(void* /*ud*/, Uint8* stream, int byteLen) {
 bool init() {
     if (g_initialized.load()) return true;
 
-    // Force SDL onto the ALSA backend so the device-name string below
-    // is interpreted as an ALSA PCM name and not (e.g.) Pulse / pipewire.
-    // The macro `SDL_HINT_AUDIODRIVER` was only added in SDL 2.0.18 and
-    // this device's SDL is older; the hint string itself ("SDL_AUDIODRIVER")
-    // has been the same since 2.0.0, so we use the literal directly.
-    // No-op on builds that only have ALSA, harmless elsewhere.
+    // Force SDL onto the ALSA backend.
     SDL_SetHint("SDL_AUDIODRIVER", "alsa");
+
+    // Route SDL through the same shared `plug:dmix` PCM mpv uses, via
+    // the ONE mechanism SDL actually honours for arbitrary ALSA names:
+    // the `AUDIODEV` env var.  SDL_OpenAudioDevice() validates explicit
+    // device names against its own enumerated list (which contains
+    // things like `default`, `dmix:CARD=...`, `hw:CARD=...` — but NOT
+    // bare `plug:dmix` because `plug` is a template that isn't part of
+    // the hint enumeration).  When we pass `NULL` for the device,
+    // SDL's ALSA backend calls `getenv("AUDIODEV")` and uses that
+    // string directly with `snd_pcm_open()` — bypassing the
+    // enumeration check entirely.  This is the same path tools like
+    // `aplay` use, and how RetroArch's direct-ALSA `audio_device =
+    // "plug:dmix"` reaches the kernel.  Set with overwrite=1 so a
+    // previous (possibly-wrong) value doesn't win.
+    setenv("AUDIODEV", "plug:dmix", 1);
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
         std::cerr << "[ui_sounds] SDL_INIT_AUDIO failed: " << SDL_GetError() << "\n";
@@ -188,33 +199,25 @@ bool init() {
     want.samples  = kBufSamples;
     want.callback = audioCallback;
 
-    // Open SDL's audio device through ALSA's shared `plug:dmix` PCM so
-    // UI sounds don't grab the codec exclusively.  Without this, SDL
-    // passes nullptr → ALSA `default` → on the RK817/ArkOS device that
-    // resolves to `hw:0,0`, which opens the codec O_EXCL-style and
-    // blocks both mpv and any other audio client (`fuser -v` shows
-    // tubelite holding `F...m` mmap on pcmC0D0p).  `plug:dmix` is the
-    // same shared PCM mpv uses (see mpv_player.cpp), and dmix allows
-    // multiple openers via /dev/shm/asound.<key> coordination.
-    //
-    // If the host doesn't have `plug:dmix` available (unlikely on
-    // anything with default ALSA install), fall back to nullptr so UI
-    // sounds still work — they just won't share the device.
+    // Pass NULL so SDL's ALSA backend takes the `AUDIODEV` env-var
+    // path set above and ends up calling `snd_pcm_open("plug:dmix")`
+    // directly — same path RetroArch's `audio_device = "plug:dmix"`
+    // uses.  An explicit string here would fail SDL's enumeration
+    // check ("No such device") because bare `plug:dmix` isn't in
+    // ALSA's hint-enumeration; the env-var path skips that check.
     SDL_AudioSpec have{};
-    g_dev = SDL_OpenAudioDevice("plug:dmix", 0, &want, &have,
+    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have,
                                 SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (g_dev == 0) {
-        std::cerr << "[ui_sounds] SDL_OpenAudioDevice(plug:dmix) failed: "
-                  << SDL_GetError() << " — falling back to default\n";
-        g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have,
-                                    SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    }
-    if (g_dev == 0) {
-        std::cerr << "[ui_sounds] SDL_OpenAudioDevice failed: "
-                  << SDL_GetError() << "\n";
+        // No fallback to a hw device here on purpose — UI tick blips
+        // are cosmetic and not worth grabbing the codec exclusively
+        // and blocking mpv + retroarch + everything else.
+        std::cerr << "[ui_sounds] SDL_OpenAudioDevice via AUDIODEV=plug:dmix failed: "
+                  << SDL_GetError() << " — UI sounds disabled\n";
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return false;
     }
+    std::cerr << "[ui_sounds] opened via AUDIODEV (plug:dmix)\n";
 
     g_waveforms[(int)Sound::Tick]   = makeTick();
     g_waveforms[(int)Sound::Select] = makeSelect();
