@@ -1905,46 +1905,72 @@ void App::loadHomeFeeds() {
     pendingMoreHome_ = false;
 
     int reqPage = home_page_;
-    auto accumulated_results = std::make_shared<std::vector<YouTubeVideo>>();
-    auto cb = [this, reqPage, accumulated_results, kind](const std::vector<YouTubeVideo>& results, bool finished) {
-        queueOnMainThread([this, reqPage, results, finished, accumulated_results, kind]() {
+    // Streamed/incremental population: render each card the instant it
+    // arrives from the YouTubeAPI callback chain instead of waiting for
+    // the whole batch.  Net effect: the UI starts showing results within
+    // a couple of seconds even when the full page takes 15+ seconds.
+    //
+    // The first arriving card flips focus to the home grid (so the
+    // loading overlay can clear) and marks the load as a success early
+    // — the user can scroll/click while subsequent items stream in.
+    // cached_trending_videos_ is cleared once at the start of this page
+    // so we don't accumulate stale entries on top of a refresh.
+    if (!cached_trending_videos_.empty()) {
+        // Was a cache-hit render before; refreshing → clear and rebuild
+        // so we don't accumulate stale entries on top of fresh ones.
+        home_grid_->clear();
+        cached_trending_videos_.clear();
+    }
+    // Flag shared between callback firings: first arriving chunk flips
+    // the loading overlay off + binds focus to the grid.
+    auto first_chunk_flag = std::make_shared<bool>(false);
+
+    auto cb = [this, reqPage, kind, first_chunk_flag]
+              (const std::vector<YouTubeVideo>& results, bool finished) {
+        queueOnMainThread([this, reqPage, results, finished, kind, first_chunk_flag]() {
             if (state_.currentScreen != TubeState::Screen::Home || home_page_ != reqPage) return;
+
+            // Stream cards in as they arrive — DO NOT wait for finished.
+            // Each per-result callback fires from the YouTubeAPI worker
+            // thread; here we just append to the grid and let the
+            // virtualized renderer pick it up next frame.
+            if (!results.empty()) {
+                for (const auto& v : results) {
+                    home_grid_->addVideo(v);
+                    cached_trending_videos_.push_back(v);
+                }
+                if (!*first_chunk_flag) {
+                    *first_chunk_flag = true;
+                    focus_manager_.setGrid(home_grid_);
+                    // First item landed — clear the loading overlay so
+                    // the user can start interacting even though more
+                    // items are still streaming.
+                    state_.isSearching = false;
+                    homeLoadFailed_    = false;
+                }
+                uiDirty_ = true;
+            }
 
             if (finished) {
                 std::cout << "[App] loadHomeFeeds: kind='" << kind
-                          << "' finished; got " << accumulated_results->size()
-                          << " items" << std::endl;
-                if (!accumulated_results->empty()) {
-                    homeLoadFailed_ = false;
-                    home_grid_->clear();
-                    cached_trending_videos_.clear();
-                    for (const auto& v : *accumulated_results) {
-                        home_grid_->addVideo(v);
-                        cached_trending_videos_.push_back(v);
-                    }
-                    focus_manager_.setGrid(home_grid_);
-                    trending_cache_time_ = std::chrono::steady_clock::now();
-                    cached_home_kind_ = kind;       // record what's in the cache
-                    saveHomeCache();
-                } else if (home_grid_->videos.empty()) {
+                          << "' finished; grid has "
+                          << home_grid_->videos.size() << " items" << std::endl;
+                if (home_grid_->videos.empty()) {
+                    // No results at all — surface the failure state.
                     homeLoadFailed_ = true;
+                } else {
+                    trending_cache_time_ = std::chrono::steady_clock::now();
+                    cached_home_kind_    = kind;
+                    saveHomeCache();
                 }
                 state_.isSearching = false;
                 uiDirty_ = true;
-                return;
-            }
-
-            if (!results.empty()) {
-                accumulated_results->insert(accumulated_results->end(), results.begin(), results.end());
             }
         });
     };
+
     // Trending and subscriptions BOTH go through fetchFeed now — they
-    // share the same flat-playlist + dump-json + retry pipeline so feed
-    // entries (live detection, view-count handling) are processed
-    // identically.  The previous "ytsearch15:trending" path was a text
-    // search for the word "trending", not the actual Trending tab.
-    // `kind` is the std::string declared near the top of this function.
+    // share the same flat-playlist + dump-json + retry pipeline.
     std::cout << "[App] loadHomeFeeds: dispatching fetchFeed(" << kind
               << ") page=" << reqPage << std::endl;
     youtube_api_.fetchFeed(kind, reqPage, cb);

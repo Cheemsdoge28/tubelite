@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.10.0-search-mass" # bump on every meaningful edit so the
+TUBED_VERSION = "0.10.1-chunked"     # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -1001,11 +1001,14 @@ _FEED_URLS = {
 # to return anything.
 _FEED_AUTH_REQUIRED = {"subscriptions", "home", "history", "liked", "watch_later"}
 
-# Default per-page size for op_feed.  Larger than search (15) because the
-# subscriptions feed is metadata-only — yt-dlp returns lightweight
-# flat-playlist entries cheaply once cookies authenticate.  Caller can
-# override via `page_size` in the request.
-_FEED_PAGE_DEFAULT = 50
+# Default per-page size.  Smaller chunks finish faster — a 20-item page
+# typically completes in 6-10 s vs ~18-22 s for a 50-item page, which
+# matters because the C++ socket timeout is 30 s and a borderline-slow
+# Innertube response with 50 items would time out at the finish line.
+# The UI streams cards in as they arrive (see App::loadHomeFeeds), so
+# smaller pages actually FEEL faster — first card visible in ~3 s, not
+# 15.  Callers can override via `page_size` for a one-shot bulk fetch.
+_FEED_PAGE_DEFAULT = 20
 
 
 def _cookie_summary():

@@ -237,12 +237,12 @@ void YouTubeAPI::search(const std::string& query, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
-        // page_size=50 matches what fetchFeed sends and what tubed's
-        // op_search now uses by default — kept explicit so a future tubed
-        // version that changes its default still gets the size the UI's
-        // virtualization is tuned for.  Search and feed share the same
-        // mass-fetch pipeline now.
-        json req = {{"op", "search"}, {"query", query}, {"page", page}, {"page_size", 50}};
+        // page_size=20 (chunked).  Smaller chunks finish well under the
+        // C++ socket timeout (~6-10 s vs 18-22 s for 50), and the UI
+        // streams cards in as they arrive — first result visible in
+        // ~3 s instead of waiting for the full batch.  Subsequent pages
+        // load on scroll-bottom via loadMoreSearchResults().
+        json req = {{"op", "search"}, {"query", query}, {"page", page}, {"page_size", 20}};
         json resp;
         // Bumped from 20 s → 30 s to match fetchFeed's tubed-side timeout:
         // op_search now retries twice on empty (same as op_feed), so a
@@ -294,10 +294,10 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
-        // page_size=50 matches tubed's _FEED_PAGE_DEFAULT; explicit here so a
-        // future tubed version that changes its default still gets the size
-        // the UI's virtualization is tuned for.
-        json req = {{"op", "feed"}, {"kind", kind}, {"page", page}, {"page_size", 50}};
+        // page_size=20 (chunked) — see same reasoning in op_search
+        // wrapper above.  Tubed's default is also 20; explicit here so
+        // we're not at the mercy of a tubed version change.
+        json req = {{"op", "feed"}, {"kind", kind}, {"page", page}, {"page_size", 20}};
         json resp;
         bool ok = tubedRequest(req, resp, 20000);
 
