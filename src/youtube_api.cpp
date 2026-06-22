@@ -257,6 +257,7 @@ done:
     ::close(fd);
     return got_ok;
 }
+#endif
 
 
 template <typename T>
