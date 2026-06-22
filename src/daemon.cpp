@@ -146,9 +146,12 @@ namespace btn {
     constexpr uint16_t DPAD_UP_KEY = 103;   // linux KEY_UP
     constexpr uint16_t DPAD_UP_BTN = 544;   // linux BTN_DPAD_UP
 
-    // EV_ABS axes used by the daemon.
-    constexpr uint16_t ABS_LSTICK_Y = 1;    // standard ABS_Y
-    constexpr uint16_t ABS_HAT0Y    = 17;   // d-pad vertical
+    // EV_ABS axes used by the daemon.  Names deliberately omit the
+    // `ABS_` prefix because linux/input-event-codes.h defines
+    // `ABS_HAT0Y` as a #define = 17 and the preprocessor would mangle
+    // our constant name into the literal 17 before namespace lookup.
+    constexpr uint16_t LSTICK_Y = 1;        // standard ABS_Y
+    constexpr uint16_t HAT0_Y   = 17;       // standard ABS_HAT0Y (d-pad vertical)
 }
 
 #ifndef _WIN32
@@ -1791,7 +1794,7 @@ void runDaemon() {
                                   << " value=" << ev.value << "\n";
                     }
                 }
-                if (ev.type == EV_ABS && ev.code == btn::ABS_LSTICK_Y && fn_held) {
+                if (ev.type == EV_ABS && ev.code == btn::LSTICK_Y && fn_held) {
                     // Left-stick Y → volume.  Discretise to {-1,0,+1}
                     // and fire only on transitions away from center so
                     // a single push = one volume step, and stick drift
