@@ -361,7 +361,7 @@ void App::run() {
         } else if (mpv_player_.isPlaying()) {
             double pos = mpv_player_.getPlaybackTime();
             double dur = mpv_player_.getDuration();
-            if (dur > 0.0 && (dur - pos <= 45.0 || pos / dur >= 0.75)) {
+            if (dur > 0.0 && pos > 0.0 && dur - pos <= 90.0) {
                 prefetchNextVideo();
             }
         }
