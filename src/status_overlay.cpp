@@ -95,6 +95,10 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     // Chip is always blue per the standard X-button color.
                     {"X", blue, authLabel},
                     {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
+                    // R3 (right-stick click) refreshes the active feed —
+                    // the binding existed in handleControllerButton but
+                    // wasn't discoverable from the HUD.
+                    {"R3", textColor, "RELOAD"},
                     {"SEL+Y", textColor, "SETTINGS"},
                 };
                 (void)authColor;  // kept for future "tint label too" tweak

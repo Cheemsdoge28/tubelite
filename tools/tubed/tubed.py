@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.9-trending-tab" # bump on every meaningful edit so the
+TUBED_VERSION = "0.10.0-search-mass" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -888,48 +888,73 @@ def _video_from_entry(e):
 
 
 def op_search(req):
-    query = (req.get("query") or "").strip()
-    page = int(req.get("page") or 1)
-    trending = req.get("_trending", False)
-    if not query and not trending:
-        return {"ok": False, "error": "empty query"}
-    if trending and not query:
-        query = "trending"
+    """Mirrors op_feed's pipeline so the UI sees identical data shape and
+    behaviour regardless of which surface the user came in through:
 
-    ck = ("trending" if trending else "search") + f":{query}:{page}"
+      * page_size defaulted to _FEED_PAGE_DEFAULT (50) — same as feeds, so
+        each search round-trip mass-fetches 50 entries instead of the old
+        15.  The virtualized grid only materializes visible rows, so
+        bigger pages cost essentially nothing in RAM.
+      * Retry-twice on empty result with a 0.5 s settle pause between
+        attempts — same transient-failure rescue as op_feed (yt-dlp's
+        first Innertube call after a cold start sometimes returns 0
+        items).
+      * Cookies passed when available — even text search benefits from
+        being signed in (region-localised + age-gated results shown,
+        no "verify you're human" interstitial)."""
+    query = (req.get("query") or "").strip()
+    if not query:
+        return {"ok": False, "error": "empty query"}
+
+    page = max(1, int(req.get("page") or 1))
+    page_size = max(1, min(int(req.get("page_size") or _FEED_PAGE_DEFAULT), 100))
+
+    ck = f"search:{query}:{page}:{page_size}"
     cached = CACHE.get(ck)
     if cached is not None:
         return {"ok": True, "results": cached, "finished": True}
 
-    start = (page - 1) * 15 + 1
-    end = page * 15
+    start = (page - 1) * page_size + 1
+    end   = page * page_size
+    # `ytsearch{end}:` is yt-dlp's virtual-playlist syntax — it tells the
+    # search extractor to enumerate AT LEAST `end` matches, which we then
+    # slice client-side via --playlist-start/--playlist-end.  Same shape
+    # as a feed URL from the extractor's point of view.
     spec = f"ytsearch{end}:{query}"
 
-    args = _ytdlp_base_args() + [
-        "--flat-playlist", "--dump-json",
-        # Ask the tab extractor for approximate upload dates so the cards can
-        # show "x years ago" (flat extraction omits exact dates otherwise).
-        "--extractor-args", "youtubetab:approximate_date",
-        "--playlist-start", str(start), "--playlist-end", str(end),
-        spec,
-    ]
+    def _try(attempt):
+        out_items = []
+        args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
+            "--flat-playlist", "--dump-json",
+            "--extractor-args", "youtubetab:approximate_date",
+            "--playlist-start", str(start), "--playlist-end", str(end),
+            spec,
+        ]
+        with _work_sem:
+            raw = _run_ytdlp(args, timeout=30)
+        for ln in raw.splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                v = _video_from_entry(json.loads(ln))
+                if v:
+                    out_items.append(v)
+            except (ValueError, TypeError):
+                continue
+        log(f"search: attempt {attempt} for {query!r} page {page} → {len(out_items)} items")
+        return out_items
+
     results = []
-    with _work_sem:
-        out = _run_ytdlp(args, timeout=30)
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            v = _video_from_entry(json.loads(line))
-            if v:
-                results.append(v)
-        except Exception:
-            continue
+    for attempt in (1, 2):
+        results = _try(attempt)
+        if results:
+            break
+        time.sleep(0.5)
 
     if not results:
         return {"ok": False, "error": "no results"}
-    CACHE.set(ck, results, TTL_TRENDING if trending else TTL_SEARCH)
+    CACHE.set(ck, results, TTL_SEARCH)
     return {"ok": True, "results": results, "finished": True}
 
 

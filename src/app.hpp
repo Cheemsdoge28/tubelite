@@ -198,6 +198,21 @@ private:
     void saveHomeCache();
     bool loadHomeCache();
 
+    // Browse-state persistence — last screen, focused index, search query
+    // + results, so reopening the app drops the user right back where
+    // they left off (no re-search, no scroll-back-to-here).  Thumbnails
+    // are NOT saved — they get re-fetched on demand by the lazy image
+    // manager, which is bandwidth-cheap compared to re-running a search.
+    void saveBrowseState();
+    void loadBrowseState();
+
+    // Daemon reabsorption — on launch, check whether the background
+    // daemon is currently playing.  If yes, transfer the playback into
+    // our own mpv at the same offset with a soft audio fade-in, open
+    // the miniplayer, and kill the daemon.  Mirrors the exit-fade in
+    // shutdown() for symmetry.  Returns true if reabsorption happened.
+    bool reabsorbDaemonPlayback();
+
     void loadHomeFeeds();
     void loadMoreHomeFeeds();
     void loadMoreSearchResults();

@@ -799,6 +799,28 @@ void runDaemon() {
     ::unlink("/dev/shm/tubelite_daemon_audio.live");
     bool audio_live_signalled = false;
 
+    // For reabsorption: snapshot current track + position into a small
+    // JSON every ~1 s.  When TubeLite re-launches it reads this file
+    // BEFORE killing the daemon, transfers playback into its own mpv at
+    // the same offset, and opens the miniplayer — so the user sees
+    // continuous audio with the in-app HUD restored.
+    auto last_state_write = std::chrono::steady_clock::now();
+    auto writeState = [&]() {
+        if (daemon_current_index < 0 ||
+            daemon_current_index >= (int)daemon_playlist.size()) return;
+        const auto& v = daemon_playlist[daemon_current_index];
+        std::ofstream ofs("/dev/shm/tubelite_daemon_state.json");
+        if (!ofs) return;
+        ofs << "{"
+            << "\"id\":\""        << v.id        << "\","
+            << "\"title\":\""     << v.title     << "\","
+            << "\"author\":\""    << v.author    << "\","
+            << "\"position\":"    << mpv.getPlaybackTime() << ","
+            << "\"duration\":"    << mpv.getDuration()     << ","
+            << "\"playing\":"     << (daemon_status == DaemonStatus::Playing ? "true" : "false")
+            << "}";
+    };
+
     std::cerr << "[daemon] Loop started.\n";
 
     while (daemon_running) {
@@ -813,6 +835,15 @@ void runDaemon() {
             mpv.getPlaybackTime() > 0.05) {
             std::ofstream(("/dev/shm/tubelite_daemon_audio.live")) << "1";
             audio_live_signalled = true;
+        }
+
+        // Reabsorption-state snapshot: refresh roughly once a second.
+        // Cheap (~200 byte file write) and gives the in-app reopen path
+        // a fresh-enough position to resume from without an audible skip.
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_state_write).count() >= 1000) {
+            writeState();
+            last_state_write = now;
         }
 
         // ── Async resolve ─────────────────────────────────────────────────
@@ -1007,6 +1038,7 @@ void runDaemon() {
     unlink("/dev/shm/tubelite_daemon.pid");
 #ifndef _WIN32
     unlink("/dev/shm/tubelite_daemon_audio.live");
+    unlink("/dev/shm/tubelite_daemon_state.json");
     // Background playback is over and the app isn't running, so nothing needs
     // the tubed backend — stop it so neither it nor any yt-dlp child lingers.
     {

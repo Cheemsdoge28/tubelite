@@ -195,9 +195,19 @@ bool App::initialize() {
         return false;
     }
     loadSettings();
-    killExistingDaemon();
+    // Reabsorb FIRST — if the daemon is currently playing, we want to
+    // transfer its track into our own mpv with continuous audio.  Doing
+    // killExistingDaemon() before this would cut audio for a beat while
+    // mpv spins up.  reabsorbDaemonPlayback() handles the daemon kill
+    // itself once playback has been picked up.
+    bool reabsorbed = reabsorbDaemonPlayback();
+    if (!reabsorbed) killExistingDaemon();
     loadHistory();
     loadHomeFeeds();
+    // Restore last screen + focused card AFTER loadHomeFeeds so any
+    // cached trending entries are present; loadBrowseState then layers
+    // the previously-visible feed on top and refocuses where we left off.
+    loadBrowseState();
     SDL_StartTextInput();
 
     int width = 0, height = 0;
@@ -395,6 +405,7 @@ void App::run() {
 #endif
 
     saveSettings();
+    saveBrowseState();
     // Spawn daemon if audio is playing OR if the user is in miniplayer/fullscreen mode
     // (covers paused state and search-screen miniplayer where isPlaying() may be false).
     bool daemonEligible = mpv_player_.isPlaying()
@@ -1166,11 +1177,23 @@ void App::renderFrame() {
 
 void App::handleEvent(SDL_Event& event) {
     if (state_.currentScreen == TubeState::Screen::Playback) {
-        if (event.type == SDL_KEYDOWN || event.type == SDL_CONTROLLERBUTTONDOWN ||
-            event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYHATMOTION ||
-            event.type == SDL_CONTROLLERAXISMOTION || event.type == SDL_JOYAXISMOTION) {
-            showPlaybackUi();
+        // Wake the HUD on ACTUAL user input.  Axis motion is filtered to
+        // outside-deadzone values only — sticks at rest constantly emit
+        // motion events from drift/noise, which were keeping the 5 s
+        // auto-hide timer in a permanent reset loop so the HUD never
+        // disappeared on its own.  Threshold ~24 % of full range matches
+        // a deliberate stick push.
+        bool wake = (event.type == SDL_KEYDOWN
+                  || event.type == SDL_CONTROLLERBUTTONDOWN
+                  || event.type == SDL_JOYBUTTONDOWN
+                  || event.type == SDL_JOYHATMOTION);
+        if (!wake && event.type == SDL_CONTROLLERAXISMOTION) {
+            wake = std::abs(event.caxis.value) > 8000;
         }
+        if (!wake && event.type == SDL_JOYAXISMOTION) {
+            wake = std::abs(event.jaxis.value) > 8000;
+        }
+        if (wake) showPlaybackUi();
     }
 
     switch (event.type) {
@@ -2161,6 +2184,214 @@ void App::loadSettings() {
     settings::load(s);                     // populates only what's on disk
     SettingsModal::apply(this, s);         // mirror into state_ (also primes ui_sounds)
     state_.backgroundDaemonEnabled = s.backgroundDaemonEnabled;
+}
+
+void App::saveBrowseState() {
+    // Persist enough to drop the user back where they were on next
+    // launch: which screen, search query, search/home page, focused
+    // index, and the actual videos that were on screen so we don't have
+    // to re-run the search/feed call.  Thumbnails are NOT serialized —
+    // they're cheap to re-fetch via the image manager and would bloat
+    // the file by an order of magnitude.
+    try {
+        nlohmann::json j;
+        const char* screenName = "home";
+        if (state_.currentScreen == TubeState::Screen::Search) screenName = "search";
+        j["screen"]        = screenName;
+        j["search_query"]  = current_search_query_;
+        j["search_page"]   = search_page_;
+        j["home_page"]     = home_page_;
+        // Focused index in the grid the user was looking at when they exited.
+        auto activeIdx = [&]() -> int {
+            auto grid = activeGrid();
+            if (!grid || grid->videos.empty()) return 0;
+            // FocusManager stores the index per-grid; just use the
+            // currently focused card to recover.
+            auto focused = focus_manager_.getFocusedCard();
+            if (!focused) return 0;
+            for (size_t i = 0; i < grid->videos.size(); ++i) {
+                if (grid->videos[i].id == focused->video.id) return static_cast<int>(i);
+            }
+            return 0;
+        };
+        j["focused_index"] = activeIdx();
+
+        // Snapshot of the active grid's videos so the cards reappear
+        // exactly as the user left them.  We dump both grids if both have
+        // content — loading is cheap and the user might toggle between
+        // them.  Cap each at the in-memory ceiling (500) to keep the
+        // file small enough for the SD card.
+        auto serializeGrid = [](const std::shared_ptr<ui::GridContainer>& g) {
+            nlohmann::json arr = nlohmann::json::array();
+            if (!g) return arr;
+            const size_t cap = std::min<size_t>(g->videos.size(), 500);
+            for (size_t i = 0; i < cap; ++i) {
+                const auto& v = g->videos[i];
+                arr.push_back({
+                    {"id", v.id}, {"title", v.title}, {"author", v.author},
+                    {"duration_string", v.duration_string},
+                    {"view_count_string", v.view_count_string},
+                    {"uploaded_ago_string", v.uploaded_ago_string},
+                    {"duration_seconds", v.duration_seconds},
+                    {"is_live", v.is_live},
+                });
+            }
+            return arr;
+        };
+        j["home_videos"]   = serializeGrid(home_grid_);
+        j["search_videos"] = serializeGrid(search_grid_);
+
+        std::ofstream ofs(getAppDataPath("browse_state.json"));
+        if (ofs) ofs << j.dump();   // compact; not meant for hand-editing
+    } catch (...) {}
+}
+
+void App::loadBrowseState() {
+    try {
+        std::ifstream ifs(getAppDataPath("browse_state.json"));
+        if (!ifs) return;
+        nlohmann::json j;
+        ifs >> j;
+
+        // Hydrate grids first so the focus/screen restore below can see
+        // populated containers.
+        auto hydrate = [](std::shared_ptr<ui::GridContainer>& g, const nlohmann::json& arr) {
+            if (!g || !arr.is_array()) return;
+            for (const auto& item : arr) {
+                YouTubeVideo v;
+                v.id                  = item.value("id", std::string());
+                if (v.id.empty()) continue;
+                v.title               = item.value("title", std::string());
+                v.author              = item.value("author", std::string());
+                v.duration_string     = item.value("duration_string", std::string());
+                v.view_count_string   = item.value("view_count_string", std::string());
+                v.uploaded_ago_string = item.value("uploaded_ago_string", std::string());
+                v.duration_seconds    = item.value("duration_seconds", 0);
+                v.is_live             = item.value("is_live", false);
+                g->addVideo(v);
+            }
+        };
+        if (j.contains("home_videos"))   hydrate(home_grid_,   j["home_videos"]);
+        if (j.contains("search_videos")) hydrate(search_grid_, j["search_videos"]);
+
+        current_search_query_ = j.value("search_query", std::string());
+        search_page_          = std::max(1, j.value("search_page", 1));
+        home_page_            = std::max(1, j.value("home_page", 1));
+
+        // Restore which screen was active so the user lands back on it.
+        std::string screen = j.value("screen", std::string("home"));
+        if (screen == "search" && !search_grid_->videos.empty()) {
+            state_manager_.transitionTo(TubeState::Screen::Search);
+            focus_manager_.setGrid(search_grid_);
+            search_grid_->title = current_search_query_.empty()
+                                      ? std::string("Search")
+                                      : "Search: " + current_search_query_;
+        } else {
+            focus_manager_.setGrid(home_grid_);
+        }
+
+        // Focus the same card.  Out-of-range gets clamped by setFocusedIndex.
+        int focusedIdx = j.value("focused_index", 0);
+        focus_manager_.setFocusedIndex(focusedIdx);
+        uiDirty_ = true;
+    } catch (...) {}
+}
+
+bool App::reabsorbDaemonPlayback() {
+#ifdef _WIN32
+    return false;
+#else
+    // Look for the daemon's state snapshot.  If absent or unreadable,
+    // there's nothing to reabsorb — return so the caller can do the
+    // standard cold start.
+    std::ifstream ifs("/dev/shm/tubelite_daemon_state.json");
+    if (!ifs) return false;
+
+    nlohmann::json j;
+    try { ifs >> j; } catch (...) { return false; }
+    if (!j.is_object()) return false;
+
+    YouTubeVideo v;
+    v.id     = j.value("id", std::string());
+    v.title  = j.value("title", std::string());
+    v.author = j.value("author", std::string());
+    v.duration_seconds = j.value("duration", 0.0);
+    if (v.id.empty()) return false;
+    const double position = std::max(0.0, j.value("position", 0.0));
+    const bool   wasPlaying = j.value("playing", true);
+
+    std::cerr << "[App] reabsorbing daemon playback: id=" << v.id
+              << " pos=" << position << "s playing=" << wasPlaying << "\n";
+
+    // Resolve the stream URL via tubed first — cache hit when we
+    // recently played, otherwise a fresh resolve.  We do this SYNC
+    // because we want to bring up audio before killing the daemon.
+    // Block briefly with a 6 s ceiling — if the resolve is slow, the
+    // user will notice a tiny audio gap but still resume.
+    std::string streamUrl, subUrl, audioUrl;
+    VideoPlaybackMetadata meta;
+    std::atomic<bool> done{false}, ok{false};
+    youtube_api_.getStreamUrl(v.id, state_.maxQualityHeight,
+        [&done, &ok, &streamUrl, &subUrl, &audioUrl, &meta]
+        (bool success, const std::string& u, const std::string& sub,
+         const std::string& audio, const VideoPlaybackMetadata& m) {
+            streamUrl = u; subUrl = sub; audioUrl = audio; meta = m;
+            ok.store(success); done.store(true);
+        },
+        /*isPreview=*/false, /*isLive=*/false);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+        SDL_Delay(20);
+    }
+    if (!ok.load() || streamUrl.empty()) {
+        std::cerr << "[App] reabsorb: stream resolve failed, falling through\n";
+        return false;
+    }
+
+    // Now bring up our mpv at volume 0, kill the daemon (which fades
+    // its own audio out by stopping decode), seek to position, then
+    // fade our audio in over ~1 s.  Net effect: ~150 ms crossfade
+    // window in which both sides are quiet, then our mpv ramps up.
+    current_video_ = v;
+    active_video_metadata_ = meta;
+    wrapped_description_lines_ = wrapText(meta.description, 280, 1);
+    setCachedStreamUrl(streamCacheKey(v.id, state_.maxQualityHeight),
+                       streamUrl + "|" + subUrl + "|" + audioUrl);
+
+    mpv_player_.setVolume(0);
+    mpv_player_.setMute(state_.muted);
+    mpv_player_.setSpeed(state_.speed);
+    mpv_player_.play(streamUrl, subUrl, audioUrl);
+    if (position > 1.0) mpv_player_.setPendingSeekPosition(position);
+
+    killExistingDaemon();
+
+    // Open the miniplayer immediately so the user sees the now-playing
+    // card in the corner instead of a blank home screen.
+    state_manager_.transitionTo(TubeState::Screen::Home);
+    state_manager_.setMiniplayerActive(true);
+    state_.showUi = true;
+    if (!wasPlaying) mpv_player_.pause();
+
+    // Audio fade-in: ramp from 0 → user volume over ~1 s.  Keep it on
+    // the main thread so it interleaves with the existing init code —
+    // the loop is short and the user expects a brief pause anyway.
+    {
+        using namespace std::chrono;
+        const auto fadeStart = steady_clock::now();
+        const float fadeSecs = 1.0f;
+        const int targetVol = state_.volume;
+        while (true) {
+            mpv_player_.update();
+            float t = duration<float>(steady_clock::now() - fadeStart).count();
+            if (t >= fadeSecs) { mpv_player_.setVolume(targetVol); break; }
+            mpv_player_.setVolume(static_cast<int>(targetVol * (t / fadeSecs)));
+            SDL_Delay(25);
+        }
+    }
+    uiDirty_ = true;
+    return true;
+#endif
 }
 
 void App::saveDaemonQueue() {

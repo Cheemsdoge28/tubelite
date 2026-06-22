@@ -237,9 +237,18 @@ void YouTubeAPI::search(const std::string& query, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
-        json req = {{"op", "search"}, {"query", query}, {"page", page}};
+        // page_size=50 matches what fetchFeed sends and what tubed's
+        // op_search now uses by default — kept explicit so a future tubed
+        // version that changes its default still gets the size the UI's
+        // virtualization is tuned for.  Search and feed share the same
+        // mass-fetch pipeline now.
+        json req = {{"op", "search"}, {"query", query}, {"page", page}, {"page_size", 50}};
         json resp;
-        bool ok = tubedRequest(req, resp, 20000);
+        // Bumped from 20 s → 30 s to match fetchFeed's tubed-side timeout:
+        // op_search now retries twice on empty (same as op_feed), so a
+        // legitimately-slow YouTube response can still complete inside
+        // the C++ budget.
+        bool ok = tubedRequest(req, resp, 30000);
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
