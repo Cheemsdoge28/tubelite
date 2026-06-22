@@ -1144,12 +1144,39 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     // The bottom-panel BACKGROUND lives in hud_static_layer_; here we only draw
     // the live progress bar, timestamps, and scrub thumbnail.
     const int botH = 52;
-
-    // Progress bar — flatter (4px), pulled right against the top of the panel
     const int mg  = 12;
-    const int pbY = height - botH + 4;
-    const int pbH = 4;
-    const int pbW = width - mg * 2;
+
+    if (app->current_video_.is_live) {
+        // Draw a premium LIVE badge in the bottom-left
+        const char* lbl = "LIVE";
+        int lw = 0, lh = 0;
+        getTextSize(lbl, 1, &lw, &lh);
+        const int padX = 6, padY = 4;
+        const int dotR = 3;
+        const int pillW = lw + padX * 2 + dotR * 2 + 4;
+        const int pillH = lh + padY;
+        const int pillX = mg;
+        const int pillY = height - botH + 8;
+        SDL_Rect pillRect{pillX, pillY, pillW, pillH};
+        fillRoundedRect(renderer_, pillRect, theme::RADIUS_PILL, theme::ACCENT);
+        // Filled white dot at the leading edge for the "● LIVE" look.
+        SDL_SetRenderDrawColor(renderer_, theme::WHITE.r, theme::WHITE.g, theme::WHITE.b, 255);
+        for (int dy = -dotR; dy <= dotR; ++dy) {
+            for (int dx = -dotR; dx <= dotR; ++dx) {
+                if (dx*dx + dy*dy <= dotR*dotR) {
+                    SDL_RenderDrawPoint(renderer_,
+                        pillX + padX + dotR + dx,
+                        pillY + pillH / 2 + dy);
+                }
+            }
+        }
+        drawText(renderer_, pillX + padX + dotR * 2 + 4,
+                 pillY + (pillH - lh) / 2, lbl, 1, theme::WHITE);
+    } else {
+        // Progress bar — flatter (4px), pulled right against the top of the panel
+        const int pbY = height - botH + 4;
+        const int pbH = 4;
+        const int pbW = width - mg * 2;
 
     // Track (background)
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
@@ -1241,6 +1268,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             int rw = 0; getTextSize(remStr, 1, &rw, nullptr);
             drawText(renderer_, mg + pbW - rw, tsY, remStr, 1, theme::TEXT_3);
         }
+    }
     }
 
     // ── Description Drawer ─────────────────────────────────────────────────────

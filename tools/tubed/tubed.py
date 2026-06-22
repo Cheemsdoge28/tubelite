@@ -1243,7 +1243,7 @@ _PRINT_FIELDS = [
 _PRINT_TEMPLATE = _PRINT_SEP.join(_PRINT_FIELDS)
 
 
-def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=False):
+def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=False, prefetch=False):
     """Resolve playback URLs via yt-dlp `--print` (NOT `--dump-single-json`).
 
     The --print path is materially faster: yt-dlp emits ONLY the fields we
@@ -1268,11 +1268,12 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=
     # Plus possible queue wait ~15 s behind a search → overall_deadline 40 s.
     # Live adds ~5 s for the HLS manifest fetch.  Dropping the ios client
     # round-trip cut about 8 s of typical resolve time vs. the old path.
-    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if preview else (45.0 if is_live else 40.0))
+    is_short_timeout = preview and not prefetch
+    overall_deadline = deadline if deadline is not None else time.time() + (15.0 if is_short_timeout else (45.0 if is_live else 40.0))
     remaining = overall_deadline - time.time()
     if remaining < 4.0:
         raise RuntimeError("deadline exceeded")
-    run_timeout = min(remaining - 2.0, 13.0 if preview else (32.0 if is_live else 28.0))
+    run_timeout = min(remaining - 2.0, 13.0 if is_short_timeout else (32.0 if is_live else 28.0))
     if run_timeout < 4.0:
         raise RuntimeError("deadline exceeded")
 
@@ -1365,16 +1366,18 @@ def op_stream(req):
     vid = (req.get("id") or "").strip()
     h = int(req.get("max_height") or 360)
     preview = bool(req.get("preview", False))
+    prefetch = bool(req.get("prefetch", False))
     is_live = bool(req.get("is_live", False))
     if not vid:
         return {"ok": False, "error": "missing id"}
 
-    log(f"op_stream: vid={vid} h={h} preview={preview} live={is_live}")
+    log(f"op_stream: vid={vid} h={h} preview={preview} prefetch={prefetch} live={is_live}")
     # Anchor the resolve deadline to NOW — before any semaphore wait — so that
     # semaphore wait + yt-dlp time together stay inside the C++ socket budget
     # (preview 14s, play 40s).  _extract_stream receives this deadline so it
     # can't accidentally run over the budget even after a long semaphore wait.
-    req_deadline = time.time() + (11.0 if preview else 37.0)
+    is_short_timeout = preview and not prefetch
+    req_deadline = time.time() + (11.0 if is_short_timeout else 37.0)
 
     # Auth state is part of the cache key: a guest-resolved 360p muxed entry
     # must NOT be served once the user signs in (they should get the DASH
@@ -1444,7 +1447,8 @@ def op_stream(req):
             try:
                 url, audio_url, sub, meta = _extract_stream(vid, h, preview=preview,
                                                               deadline=req_deadline,
-                                                              is_live=is_live)
+                                                              is_live=is_live,
+                                                              prefetch=prefetch)
             except Exception as ex:
                 log(f"op_stream: extract failed for {vid}: {ex}")
                 # Mark fail in the per-kind bucket: preview fails poison only

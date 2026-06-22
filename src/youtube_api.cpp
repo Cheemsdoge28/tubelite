@@ -437,7 +437,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
 
     int req_id = 0;
     if (isPreview) {
-        if (!parent_focus_id.empty()) {
+        if (!parent_focus_id.empty() && parent_focus_id.rfind("autoplay_", 0) != 0) {
             std::lock_guard<std::mutex> lock(preview_mutex_);
             current_preview_focus_id_ = parent_focus_id;
         }
@@ -451,7 +451,7 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
     std::thread([this, video_id, max_height, callback, req_id, isPreview, isLive, parent_focus_id, t0]() {
         auto stillWanted = [this, req_id, isPreview, parent_focus_id]() -> bool {
             if (isPreview) {
-                if (parent_focus_id.empty()) return true;
+                if (parent_focus_id.empty() || parent_focus_id.rfind("autoplay_", 0) == 0) return true;
                 std::lock_guard<std::mutex> lock(preview_mutex_);
                 return current_preview_focus_id_ == parent_focus_id;
             }
@@ -482,6 +482,8 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         json req = {{"op", "stream"}, {"id", video_id}, {"max_height", max_height}};
         if (isPreview) req["preview"] = true;
         if (isLive)    req["is_live"] = true;
+        bool isPrefetch = (parent_focus_id.rfind("autoplay_", 0) == 0);
+        if (isPrefetch) req["prefetch"] = true;
         json resp;
         // Previews use a shorter ceiling so a stale one releases its socket
         // quickly; tubed sees the disconnect and kills the underlying yt-dlp
@@ -491,7 +493,8 @@ void YouTubeAPI::getStreamUrl(const std::string& video_id, int max_height,
         // SABR-skipping android fallback can take ~30 s of real work, so a
         // tight C++ timeout was killing resolves at the finish line.
         int playMs = isLive ? 60000 : 55000;
-        bool ok = tubedRequest(req, resp, isPreview ? 17000 : playMs, stillWanted);
+        int timeout = (isPreview && !isPrefetch) ? 17000 : playMs;
+        bool ok = tubedRequest(req, resp, timeout, stillWanted);
 
         if (!stillWanted()) { callback(false, "", "", "", VideoPlaybackMetadata()); finish(false, true); return; }
 
