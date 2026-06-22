@@ -168,6 +168,11 @@ void audioCallback(void* /*ud*/, Uint8* stream, int byteLen) {
 bool init() {
     if (g_initialized.load()) return true;
 
+    // Force SDL onto the ALSA backend so the device-name string below
+    // is interpreted as an ALSA PCM name and not (e.g.) Pulse / pipewire.
+    // No-op on builds that only have ALSA, harmless elsewhere.
+    SDL_SetHint(SDL_HINT_AUDIODRIVER, "alsa");
+
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
         std::cerr << "[ui_sounds] SDL_INIT_AUDIO failed: " << SDL_GetError() << "\n";
         return false;
@@ -180,9 +185,27 @@ bool init() {
     want.samples  = kBufSamples;
     want.callback = audioCallback;
 
+    // Open SDL's audio device through ALSA's shared `plug:dmix` PCM so
+    // UI sounds don't grab the codec exclusively.  Without this, SDL
+    // passes nullptr → ALSA `default` → on the RK817/ArkOS device that
+    // resolves to `hw:0,0`, which opens the codec O_EXCL-style and
+    // blocks both mpv and any other audio client (`fuser -v` shows
+    // tubelite holding `F...m` mmap on pcmC0D0p).  `plug:dmix` is the
+    // same shared PCM mpv uses (see mpv_player.cpp), and dmix allows
+    // multiple openers via /dev/shm/asound.<key> coordination.
+    //
+    // If the host doesn't have `plug:dmix` available (unlikely on
+    // anything with default ALSA install), fall back to nullptr so UI
+    // sounds still work — they just won't share the device.
     SDL_AudioSpec have{};
-    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have,
+    g_dev = SDL_OpenAudioDevice("plug:dmix", 0, &want, &have,
                                 SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    if (g_dev == 0) {
+        std::cerr << "[ui_sounds] SDL_OpenAudioDevice(plug:dmix) failed: "
+                  << SDL_GetError() << " — falling back to default\n";
+        g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have,
+                                    SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    }
     if (g_dev == 0) {
         std::cerr << "[ui_sounds] SDL_OpenAudioDevice failed: "
                   << SDL_GetError() << "\n";
