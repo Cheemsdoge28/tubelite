@@ -85,6 +85,14 @@ private:
 
     SDL_Window* window_{nullptr};
     SDL_Renderer* renderer_{nullptr};
+    // Cached SDL window dimensions.  The handheld is fixed 640x480
+    // KMSDRM fullscreen (no resize possible), so calling
+    // SDL_GetWindowSize per frame in renderFrame() (and per keystroke
+    // in keyboard input handlers) is pure overhead.  Initialised right
+    // after createWindow() in App::initialize and refreshed defensively
+    // on SDL_WINDOWEVENT_SIZE_CHANGED.
+    int cached_window_w_{640};
+    int cached_window_h_{480};
     SDL_GameController* controller_{nullptr};
     SDL_Joystick* joystick_{nullptr};
 

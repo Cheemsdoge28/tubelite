@@ -129,20 +129,45 @@ static std::string getAppDataPath(const std::string& filename) {
 #ifdef _WIN32
     return filename;
 #else
-    if (std::filesystem::exists("/roms/tools/tubelite"))
-        return "/roms/tools/tubelite/" + filename;
-    return filename;
+    // Resolve the install-dir prefix once — stat() per call adds up
+    // (called from loadDaemonQueue, quick-launch path resolution, etc).
+    static const std::string base = []() {
+        if (std::filesystem::exists("/roms/tools/tubelite"))
+            return std::string("/roms/tools/tubelite/");
+        return std::string();
+    }();
+    return base + filename;
 #endif
 }
 
 static std::string formatTime(double s) {
     if (s < 0) s = 0;
     int tot = (int)s;
+    // Memoise the last (seconds → string) pair.  renderCard runs at up
+    // to 60 Hz while a fade is animating, and within any 1-second
+    // window getPlaybackTime() returns multiple distinct doubles that
+    // truncate to the same int — so all those snprintf+heap-allocation
+    // bursts produce the same string.  Two slots (one for `pos`, one
+    // for `dur`) lets the common renderCard call site
+    //   formatTime(pos) + " / " + formatTime(dur)
+    // get both halves from cache.  Single-threaded daemon, so plain
+    // statics are safe.
+    static int         cached_tot[2] = { -1, -1 };
+    static std::string cached_str[2];
+    for (int i = 0; i < 2; ++i) {
+        if (cached_tot[i] == tot) return cached_str[i];
+    }
     int h = tot / 3600, m = (tot % 3600) / 60, sec = tot % 60;
     char buf[16];
     if (h > 0) snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, sec);
     else        snprintf(buf, sizeof(buf), "%d:%02d", m, sec);
-    return buf;
+    // Round-robin into the two-slot LRU.
+    static int next_slot = 0;
+    cached_tot[next_slot] = tot;
+    cached_str[next_slot] = buf;
+    std::string out = cached_str[next_slot];
+    next_slot ^= 1;
+    return out;
 }
 
 static bool loadDaemonQueue() {
@@ -298,7 +323,27 @@ static void commitOverlay() {
 //      consulted when the daemon is about to (re)acquire DRM — i.e. rarely —
 //      so the /proc scan cost is irrelevant.
 static bool foregroundGameActive() {
+    // The sentinel check is constant-time so always honour it — a
+    // launch hook touching the file should take effect immediately,
+    // not after the TTL.
     if (access("/dev/shm/tubelite_suspend_overlay", F_OK) == 0) return true;
+
+    // TTL-cache the /proc scan.  The scan walks every PID and
+    // fopen+fgets per match candidate, which adds up on a device
+    // with hundreds of background processes — and the callers
+    // (dispatchNotification on every transition, ensureDrmReady on
+    // every render frame the overlay is up) burn that work
+    // pointlessly when the answer hasn't changed.  500 ms TTL means
+    // an emulator launched mid-window is detected within half a
+    // second; well under any user-noticeable threshold.
+    static auto last_scan = std::chrono::steady_clock::time_point::min();
+    static bool last_result = false;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_scan != std::chrono::steady_clock::time_point::min() &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_scan).count() < 500) {
+        return last_result;
+    }
 
     static const char* kEmu[] = {
         "retroarch", "retroarch32", "ra32", "drastic", "PPSSPPSDL", "ppsspp",
@@ -308,7 +353,7 @@ static bool foregroundGameActive() {
     };
 
     DIR* d = opendir("/proc");
-    if (!d) return false;
+    if (!d) { last_scan = now; last_result = false; return false; }
     bool found = false;
     struct dirent* e;
     while (!found && (e = readdir(d)) != nullptr) {
@@ -328,6 +373,8 @@ static bool foregroundGameActive() {
         fclose(f);
     }
     closedir(d);
+    last_scan = now;
+    last_result = found;
     return found;
 }
 
@@ -338,8 +385,22 @@ static bool foregroundGameActive() {
 // frame.
 #ifndef _WIN32
 static bool retroArchRunning() {
+    // Same TTL approach as foregroundGameActive — this is only called
+    // when foregroundGameActive() already returned true, so under
+    // typical conditions both scans batch within the same notification
+    // event.  500 ms TTL keeps responsiveness while eliminating the
+    // duplicate-scan cost.
+    static auto last_scan = std::chrono::steady_clock::time_point::min();
+    static bool last_result = false;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_scan != std::chrono::steady_clock::time_point::min() &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_scan).count() < 500) {
+        return last_result;
+    }
+
     DIR* d = opendir("/proc");
-    if (!d) return false;
+    if (!d) { last_scan = now; last_result = false; return false; }
     bool found = false;
     struct dirent* e;
     while (!found && (e = readdir(d)) != nullptr) {
@@ -357,6 +418,8 @@ static bool retroArchRunning() {
         fclose(f);
     }
     closedir(d);
+    last_scan = now;
+    last_result = found;
     return found;
 }
 
@@ -472,10 +535,12 @@ static std::string formatTrackNotification(MpvPlayer& mpv,
     // Author + current-time / duration on one line.  Mirrors the
     // overlay's author + "00:00 / 00:00" row.
     {
-        const double pos = mpv.getPlaybackTime();
-        const double dur = mpv.getDuration() > 0.0
-                              ? mpv.getDuration()
-                              : (double)v.duration_seconds;
+        // Same one-read-and-reuse pattern as renderCard — getDuration
+        // is a property fetch across the mpv C-API boundary.
+        const double pos     = mpv.getPlaybackTime();
+        const double dur_mpv = mpv.getDuration();
+        const double dur     = dur_mpv > 0.0 ? dur_mpv
+                                             : (double)v.duration_seconds;
         auto fmtTime = [](double s) {
             if (s < 0) s = 0;
             int tot = (int)s;
@@ -1048,9 +1113,12 @@ static void renderCard(MpvPlayer& mpv) {
     drawText(truncateText(video.author, 40), ML, 27, 11,
              C_AU_R, C_AU_G, C_AU_B, fade(230));
 
-    double pos  = mpv.getPlaybackTime();
-    double dur  = mpv.getDuration() > 0.0 ? mpv.getDuration()
-                                           : (double)video.duration_seconds;
+    // mpv property reads cross the C-API boundary and copy through a
+    // shared state lock — read each once and reuse, rather than calling
+    // getDuration() twice in the ternary.
+    double pos      = mpv.getPlaybackTime();
+    double dur_mpv  = mpv.getDuration();
+    double dur      = dur_mpv > 0.0 ? dur_mpv : (double)video.duration_seconds;
     double frac = (dur > 0.0) ? std::max(0.0, std::min(1.0, pos / dur)) : 0.0;
 
     std::string timeStr = formatTime(pos) + " / " +

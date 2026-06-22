@@ -37,10 +37,19 @@ static std::string getAppDataPath(const std::string& filename) {
 #ifdef _WIN32
     return filename;
 #else
-    if (std::filesystem::exists("/roms/tools/tubelite")) {
-        return "/roms/tools/tubelite/" + filename;
-    }
-    return filename;
+    // Resolve the install-dir prefix once — std::filesystem::exists is
+    // a stat() under the hood and this function is called from every
+    // saveBrowseState / loadBrowseState / saveDaemonQueue / saveHistory
+    // / saveHomeCache call site (now firing on every screen transition,
+    // so on the order of several Hz when the user is navigating).  The
+    // base dir doesn't move during a session, so cache the prefix on
+    // first call and short-circuit thereafter.
+    static const std::string base = []() {
+        if (std::filesystem::exists("/roms/tools/tubelite"))
+            return std::string("/roms/tools/tubelite/");
+        return std::string();
+    }();
+    return base + filename;
 #endif
 }
 
@@ -235,9 +244,13 @@ bool App::initialize() {
     browse_state_ready_ = true;
     SDL_StartTextInput();
 
-    int width = 0, height = 0;
-    SDL_GetWindowSize(window_, &width, &height);
-    keyboard_.preload(renderer_, state_, width, height);
+    // Prime the cached window dimensions now that the window exists.
+    // All subsequent reads (renderFrame, input handlers) use the
+    // cached values; refresh hook lives in handleEvent for
+    // SDL_WINDOWEVENT_SIZE_CHANGED — defensive, the fullscreen window
+    // on this device never actually resizes.
+    SDL_GetWindowSize(window_, &cached_window_w_, &cached_window_h_);
+    keyboard_.preload(renderer_, state_, cached_window_w_, cached_window_h_);
 
     return true;
 }
@@ -889,9 +902,9 @@ void App::activateKeyboardGo() {
 
 void App::activateSelectedKey() {
     if (state_.inputMode != TubeState::InputMode::SearchText) return;
-    int w = 0, h = 0;
-    SDL_GetWindowSize(window_, &w, &h);
-    const auto* key = keyboard_.getSelectedKey(state_, w, h);
+    const auto* key = keyboard_.getSelectedKey(state_,
+                                              cached_window_w_,
+                                              cached_window_h_);
     if (key == nullptr) return;
     
     std::string value = key->value;
@@ -1077,8 +1090,8 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
 
 void App::updateSticks(float dt) {
     if (state_.inputMode == TubeState::InputMode::SearchText) {
-        int w = 0, h = 0;
-        SDL_GetWindowSize(window_, &w, &h);
+        const int w = cached_window_w_;
+        const int h = cached_window_h_;
         if (keyboard_.updateSelectionFromDpad(state_, w, h, uiDirty_)) return;
         if (keyboard_.updateSelectionFromStick(state_, w, h, uiDirty_)) return;
         keyboard_.updateCursorFromTriggers(state_, uiDirty_, [this](int delta) {
@@ -1215,8 +1228,11 @@ void App::renderFrame() {
     PROFILE_SCOPE("renderFrame");
     auto render_start = std::chrono::steady_clock::now();
 
-    int width = 0, height = 0;
-    SDL_GetWindowSize(window_, &width, &height);
+    // Use cached dimensions — window is fixed 640x480 fullscreen and
+    // SDL_GetWindowSize traverses through SDL's display state for what
+    // amounts to two reads against a never-changing pair of ints.
+    const int width  = cached_window_w_;
+    const int height = cached_window_h_;
     bool shouldPresent = uiDirty_ || state_.isLoadingVideo || state_.isScrubbing || state_.isSearching || (state_.miniplayerActive && mpv_player_.isPlaying());
     if (!shouldPresent) {
         PROFILE_COUNT("frame_skipped");
@@ -1253,6 +1269,15 @@ void App::handleEvent(SDL_Event& event) {
             wake = std::abs(event.jaxis.value) > 8000;
         }
         if (wake) showPlaybackUi();
+    }
+
+    // Refresh the cached window size on resize (defensive — the
+    // fullscreen KMSDRM window doesn't actually resize, but if the
+    // build is ever run on desktop the cache must not go stale).
+    if (event.type == SDL_WINDOWEVENT &&
+        (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+         event.window.event == SDL_WINDOWEVENT_RESIZED)) {
+        SDL_GetWindowSize(window_, &cached_window_w_, &cached_window_h_);
     }
 
     switch (event.type) {
@@ -1399,8 +1424,8 @@ void App::handleKey(SDL_Keycode key) {
         else if (key == SDLK_BACKSPACE) KeyboardOverlay::eraseActiveBufferChar(state_);
         else if (key == SDLK_LEFT)      KeyboardOverlay::moveActiveCursor(state_, -1);
         else if (key == SDLK_RIGHT)     KeyboardOverlay::moveActiveCursor(state_, 1);
-        else if (key == SDLK_UP)        { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, -1, w, h, uiDirty_); }
-        else if (key == SDLK_DOWN)      { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, 1, w, h, uiDirty_); }
+        else if (key == SDLK_UP)        { keyboard_.moveSelection(state_, 0, -1, cached_window_w_, cached_window_h_, uiDirty_); }
+        else if (key == SDLK_DOWN)      { keyboard_.moveSelection(state_, 0, 1, cached_window_w_, cached_window_h_, uiDirty_); }
         else if (key == SDLK_ESCAPE)    closeKeyboard(false);
         return;
     }
@@ -1817,10 +1842,10 @@ void App::handleJoyHat(Uint8 value) {
     state_.dpadRightPressed = (value & SDL_HAT_RIGHT) != 0;
 
     if (state_.inputMode == TubeState::InputMode::SearchText) {
-        if (value & SDL_HAT_UP)    { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, -1, w, h, uiDirty_); }
-        if (value & SDL_HAT_DOWN)  { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 0, 1, w, h, uiDirty_); }
-        if (value & SDL_HAT_LEFT)  { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, -1, 0, w, h, uiDirty_); }
-        if (value & SDL_HAT_RIGHT) { int w=0,h=0; SDL_GetWindowSize(window_,&w,&h); keyboard_.moveSelection(state_, 1, 0, w, h, uiDirty_); }
+        if (value & SDL_HAT_UP)    { keyboard_.moveSelection(state_, 0, -1, cached_window_w_, cached_window_h_, uiDirty_); }
+        if (value & SDL_HAT_DOWN)  { keyboard_.moveSelection(state_, 0, 1, cached_window_w_, cached_window_h_, uiDirty_); }
+        if (value & SDL_HAT_LEFT)  { keyboard_.moveSelection(state_, -1, 0, cached_window_w_, cached_window_h_, uiDirty_); }
+        if (value & SDL_HAT_RIGHT) { keyboard_.moveSelection(state_, 1, 0, cached_window_w_, cached_window_h_, uiDirty_); }
     }
 }
 
