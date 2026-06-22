@@ -1944,7 +1944,7 @@ void App::loadHomeFeeds() {
     // entries (live detection, view-count handling) are processed
     // identically.  The previous "ytsearch15:trending" path was a text
     // search for the word "trending", not the actual Trending tab.
-    const char* kind = useSubs ? "subscriptions" : "trending";
+    // `kind` is the std::string declared near the top of this function.
     std::cout << "[App] loadHomeFeeds: dispatching fetchFeed(" << kind
               << ") page=" << reqPage << std::endl;
     youtube_api_.fetchFeed(kind, reqPage, cb);

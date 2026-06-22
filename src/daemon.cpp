@@ -61,6 +61,16 @@ static std::string daemon_subtitle_url;
 static std::string daemon_audio_url;
 static std::mutex daemon_resolved_mutex;
 
+// Predictive prefetch state.  When the current track has < 90 s left,
+// we kick off a background resolve for the NEXT-in-queue and write the
+// result into its playlist slot.  On track end / skip, playCurrentTrack
+// sees the pre-resolved stream_url and starts mpv instantly with no
+// audible gap.  Only one prefetch can be in flight at a time —
+// gate is the slot index we're currently prefetching (-1 = none).
+// Slot index is captured by the lambda; this gate just prevents
+// stacking duplicate resolves for the same target.
+static std::atomic<int> daemon_prefetch_inflight_idx{-1};
+
 static float overlay_alpha = 0.0f;
 static bool  overlay_active = false;
 static float daemon_overlay_timer = 0.0f;
@@ -524,18 +534,35 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
     if (daemon_current_index < 0 ||
         daemon_current_index >= (int)daemon_playlist.size()) return;
 
-    auto& video = daemon_playlist[daemon_current_index];
+    // Snapshot URLs + id under the mutex.  The prefetch callback writes
+    // to playlist[next_idx] fields from a worker thread; without this
+    // lock we could read a half-written std::string and crash or play
+    // garbage.  Local copies decouple the (potentially blocking) mpv
+    // calls from the mutex hold.
+    std::string vid_id, stream_url, subtitle_url, audio_url;
+    {
+        std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
+        const auto& video = daemon_playlist[daemon_current_index];
+        vid_id       = video.id;
+        stream_url   = video.stream_url;
+        subtitle_url = video.subtitle_url;
+        audio_url    = video.audio_url;
+    }
+
     const uint64_t request_serial = ++daemon_request_serial;
     daemon_overlay_timer = 5.0f;
     overlay_active = true;
     std::cerr << "[daemon] playCurrentTrack idx=" << daemon_current_index
-              << " id=" << video.id
-              << " cached=" << (!video.stream_url.empty() ? "yes" : "no") << "\n";
+              << " id=" << vid_id
+              << " cached=" << (!stream_url.empty() ? "yes" : "no") << "\n";
     mpv.stop();
 
-    if (!video.stream_url.empty()) {
-        std::cerr << "[daemon] Using pre-resolved URL for " << video.id << "\n";
-        mpv.play(video.stream_url, video.subtitle_url, video.audio_url);
+    if (!stream_url.empty()) {
+        // Pre-resolved path — either the queue was loaded with cached
+        // URLs from the app, or the previous track's prefetch wrote
+        // here.  Either way: instant transition, no extractor call.
+        std::cerr << "[daemon] Using pre-resolved URL for " << vid_id << "\n";
+        mpv.play(stream_url, subtitle_url, audio_url);
         if (daemon_start_position > 0.0) {
             mpv.setPendingSeekPosition(daemon_start_position);
             daemon_start_position = 0.0;
@@ -554,7 +581,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         daemon_audio_url         = "";
     }
 
-    yt.getStreamUrl(video.id, 360,
+    yt.getStreamUrl(vid_id, 360,
         [request_serial](bool ok, const std::string& url, const std::string& sub,
            const std::string& audio_url,
            const VideoPlaybackMetadata&) {
@@ -568,6 +595,86 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
             daemon_audio_url        = audio_url;
             daemon_request_success  = ok;
             daemon_request_finished = true;
+        });
+}
+
+// Predictive prefetch: when the current track has < 90 s remaining, kick
+// off a background resolve for the NEXT-in-queue.  Caches the URL into
+// the next playlist slot so the eventual track change is gap-free.
+//
+// Strategy notes (matches the user's spec):
+//   * Triggered on remaining-time, not percent — short clips don't waste
+//     a prefetch on 5-second windows, long clips don't sit idle.
+//   * Skips when:
+//       - playlist <= 1 entry (no "next")
+//       - next slot already resolved (cache hit from a previous play)
+//       - a prefetch is already in flight (avoids stacking)
+//       - resolve work is already in flight for the CURRENT track
+//         (don't compete with our own foreground call)
+//   * The resolve runs on a worker thread (YouTubeAPI::getStreamUrl
+//     dispatches one).  The callback writes back under daemon_resolved_mutex
+//     so the main thread can read it safely.
+//   * Caller (the main loop) checks remaining_time via mpv.getPlaybackTime/
+//     getDuration — this helper does everything else.
+static void maybePrefetchNext(YouTubeAPI& yt, double remaining_seconds) {
+    if (remaining_seconds <= 0.0 || remaining_seconds >= 90.0) return;
+    if (daemon_status != DaemonStatus::Playing) return;
+    if (daemon_request_serial.load(std::memory_order_relaxed) > 0 &&
+        !daemon_request_finished.load(std::memory_order_relaxed)) {
+        // A foreground resolve is in flight (current track) — don't add
+        // network/CPU contention on top.
+        return;
+    }
+    const int n = static_cast<int>(daemon_playlist.size());
+    if (n <= 1) return;
+    if (daemon_current_index < 0 || daemon_current_index >= n) return;
+
+    const int next_idx = (daemon_current_index + 1) % n;
+
+    std::string next_id;
+    bool already_resolved = false;
+    {
+        std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
+        already_resolved = !daemon_playlist[next_idx].stream_url.empty();
+        next_id          = daemon_playlist[next_idx].id;
+    }
+    if (already_resolved || next_id.empty()) return;
+
+    // Try to claim the prefetch slot.  CAS so two callers racing into
+    // this function can't both kick the same resolve.
+    int expected = -1;
+    if (!daemon_prefetch_inflight_idx.compare_exchange_strong(
+            expected, next_idx, std::memory_order_acq_rel)) {
+        return; // already prefetching something
+    }
+
+    std::cerr << "[daemon] prefetch: resolving next track idx=" << next_idx
+              << " id=" << next_id
+              << " (current has " << remaining_seconds << "s left)\n";
+
+    yt.getStreamUrl(next_id, 360,
+        [next_idx, next_id](bool ok, const std::string& url, const std::string& sub,
+                            const std::string& audio,
+                            const VideoPlaybackMetadata&) {
+            // Always clear the inflight gate, even on failure (so the
+            // next opportunity isn't blocked forever).
+            daemon_prefetch_inflight_idx.store(-1, std::memory_order_release);
+            if (!ok || url.empty()) {
+                std::cerr << "[daemon] prefetch: failed for " << next_id << "\n";
+                return;
+            }
+            // Verify the playlist hasn't been mutated under us — the
+            // user might have skipped, paused, or replaced the queue
+            // in the interim.  Writing to a stale index would corrupt
+            // an unrelated entry.
+            std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
+            if (next_idx < 0 || next_idx >= (int)daemon_playlist.size()) return;
+            if (daemon_playlist[next_idx].id != next_id) return;
+            daemon_playlist[next_idx].stream_url   = url;
+            daemon_playlist[next_idx].subtitle_url = sub;
+            daemon_playlist[next_idx].audio_url    = audio;
+            std::cerr << "[daemon] prefetch: cached for idx=" << next_idx
+                      << " id=" << next_id << "\n";
         });
 }
 
@@ -879,6 +986,21 @@ void runDaemon() {
             last_state_write = now;
         }
 
+        // Predictive prefetch of the next track.  Cheap to call every
+        // loop iteration: the helper bails immediately when remaining
+        // time is high, a prefetch is already in flight, the queue
+        // has one entry, etc.  When all conditions align, it dispatches
+        // a single async resolve and the callback writes the URL back
+        // into the next playlist slot — so the next playCurrentTrack()
+        // is gap-free instead of waiting on yt-dlp.
+        {
+            const double dur = mpv.getDuration();
+            const double pos = mpv.getPlaybackTime();
+            if (dur > 0.0 && pos > 0.0) {
+                maybePrefetchNext(yt, dur - pos);
+            }
+        }
+
         // Reabsorption fade-out trigger.  When the app re-launches it
         // creates this flag file, then begins fading its own mpv UP
         // from volume 0.  We respond by fading our mpv DOWN over the
@@ -912,12 +1034,18 @@ void runDaemon() {
                     std::cerr << "[daemon] Resolve success idx=" << daemon_current_index
                               << " id=" << vid
                               << " audio=" << (!audio.empty() ? "yes" : "no") << "\n";
-                    if (daemon_current_index >= 0 &&
-                        daemon_current_index < (int)daemon_playlist.size()) {
-                        auto& video = daemon_playlist[daemon_current_index];
-                        video.stream_url   = url;
-                        video.subtitle_url = sub;
-                        video.audio_url    = audio;
+                    // Cache the resolved URL into the playlist slot under
+                    // the same mutex the prefetch path uses — these can
+                    // race on adjacent slots in the playlist vector.
+                    {
+                        std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
+                        if (daemon_current_index >= 0 &&
+                            daemon_current_index < (int)daemon_playlist.size()) {
+                            auto& video = daemon_playlist[daemon_current_index];
+                            video.stream_url   = url;
+                            video.subtitle_url = sub;
+                            video.audio_url    = audio;
+                        }
                     }
                     mpv.play(url, sub, audio);
                     if (daemon_start_position > 0.0) {
