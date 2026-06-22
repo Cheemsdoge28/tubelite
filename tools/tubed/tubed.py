@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.10.3-feed-timeout"   # bump on every meaningful edit so the
+TUBED_VERSION = "0.10.4-streaming"      # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -635,6 +635,85 @@ def _run_ytdlp_simple(args, timeout):
         return ""
 
 
+def _run_ytdlp_streaming(args, timeout):
+    """Run yt-dlp via Popen and yield stdout lines as they arrive.
+
+    Unlike _run_ytdlp_simple (which waits for the full run before returning),
+    this generator yields each stdout line the instant yt-dlp writes it.  For
+    --flat-playlist --dump-json runs yt-dlp writes one JSON object per video
+    as it's fetched, so callers see the first result in ~3-5 s instead of
+    waiting for the entire batch.
+
+    The process is killed on timeout, breaker-open, or generator close.
+    Stderr is captured and logged line-by-line so diagnostics still appear."""
+    if _breaker_open():
+        return
+    _cleanup_mei_dirs()
+    env = _ytdlp_env()
+    try:
+        log("stream-spawn argv:", " ".join(args))
+        p = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+        log(f"stream-spawn ok: pid={p.pid}")
+    except Exception as ex:
+        log("yt-dlp streaming launch failed:", ex)
+        return
+    with _active_lock:
+        _active_procs.add(p)
+
+    def _drain_stderr():
+        try:
+            for raw in iter(p.stderr.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line:
+                    if ("create temporary directory" in line
+                            or "No space left" in line
+                            or "Failed to extract" in line):
+                        log("yt-dlp:", line)
+                        _trip_breaker()
+                    else:
+                        log("yt-dlp:", line)
+        except Exception as ex:
+            log(f"streaming stderr drain crashed: {ex}")
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    try:
+        deadline = time.time() + timeout
+        while True:
+            if time.time() >= deadline:
+                log("yt-dlp streaming timed out; killing process group")
+                _kill_proc_group(p)
+                break
+            if not _client_is_alive():
+                log("client disconnected; killing streaming yt-dlp")
+                _kill_proc_group(p)
+                break
+            line = p.stdout.readline()
+            if not line:
+                break
+            yield line.decode("utf-8", "replace").strip()
+    finally:
+        try:
+            p.stdout.close()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=2)
+        except Exception:
+            pass
+        stderr_thread.join(timeout=1)
+        with _active_lock:
+            _active_procs.discard(p)
+        _forget_kill(p)
+
+
 def _run_ytdlp(args, timeout, is_preview=False):
     """Run yt-dlp and return stdout text (empty on failure). The child runs in
     its own process group and is force-killed (group-wide) on timeout/error, so
@@ -887,21 +966,13 @@ def _video_from_entry(e):
     }
 
 
-def op_search(req):
-    """Mirrors op_feed's pipeline so the UI sees identical data shape and
-    behaviour regardless of which surface the user came in through:
+def op_search(req, writer=None):
+    """Search YouTube for videos, streaming results as they arrive.
 
-      * page_size defaulted to _FEED_PAGE_DEFAULT (50) — same as feeds, so
-        each search round-trip mass-fetches 50 entries instead of the old
-        15.  The virtualized grid only materializes visible rows, so
-        bigger pages cost essentially nothing in RAM.
-      * Retry-twice on empty result with a 0.5 s settle pause between
-        attempts — same transient-failure rescue as op_feed (yt-dlp's
-        first Innertube call after a cold start sometimes returns 0
-        items).
-      * Cookies passed when available — even text search benefits from
-        being signed in (region-localised + age-gated results shown,
-        no "verify you're human" interstitial)."""
+    When called with a `writer` callback (streaming mode), each parsed video
+    is sent immediately via writer({"ok":True,"result":{...}}) and the
+    function returns None.  When called without writer (legacy mode, e.g. from
+    op_trending's internal call) it collects and returns all results as before."""
     query = (req.get("query") or "").strip()
     if not query:
         return {"ok": False, "error": "empty query"}
@@ -912,65 +983,78 @@ def op_search(req):
     ck = f"search:{query}:{page}:{page_size}"
     cached = CACHE.get(ck)
     if cached is not None:
+        if writer:
+            for v in cached:
+                writer({"ok": True, "result": v})
+            return None
         return {"ok": True, "results": cached, "finished": True}
 
     start = (page - 1) * page_size + 1
     end   = page * page_size
-    # `ytsearch{end}:` is yt-dlp's virtual-playlist syntax — it tells the
-    # search extractor to enumerate AT LEAST `end` matches, which we then
-    # slice client-side via --playlist-start/--playlist-end.  Same shape
-    # as a feed URL from the extractor's point of view.
     spec = f"ytsearch{end}:{query}"
 
-    def _try(attempt):
-        out_items = []
-        args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
-            "--flat-playlist", "--dump-json",
-            "--extractor-args", "youtubetab:approximate_date",
-            "--playlist-start", str(start), "--playlist-end", str(end),
-            spec,
-        ]
-        with _work_sem:
-            raw = _run_ytdlp(args, timeout=30)
-        for ln in raw.splitlines():
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                v = _video_from_entry(json.loads(ln))
-                if v:
-                    out_items.append(v)
-            except (ValueError, TypeError):
-                continue
-        log(f"search: attempt {attempt} for {query!r} page {page} → {len(out_items)} items")
-        return out_items
+    args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
+        "--flat-playlist", "--dump-json",
+        "--extractor-args", "youtubetab:approximate_date",
+        "--playlist-start", str(start), "--playlist-end", str(end),
+        spec,
+    ]
 
     results = []
-    for attempt in (1, 2):
-        results = _try(attempt)
-        if results:
-            break
+    with _work_sem:
+        for raw_line in _run_ytdlp_streaming(args, timeout=30):
+            if not raw_line:
+                continue
+            try:
+                v = _video_from_entry(json.loads(raw_line))
+            except (ValueError, TypeError):
+                continue
+            if not v:
+                continue
+            results.append(v)
+            if writer:
+                writer({"ok": True, "result": v})
+
+    log(f"search: {query!r} page {page} → {len(results)} items")
+
+    if not results:
+        # Retry once on empty (cold tubed start / Innertube partial response).
+        log(f"search: retrying {query!r} (empty first attempt)")
         time.sleep(0.5)
+        with _work_sem:
+            for raw_line in _run_ytdlp_streaming(args, timeout=30):
+                if not raw_line:
+                    continue
+                try:
+                    v = _video_from_entry(json.loads(raw_line))
+                except (ValueError, TypeError):
+                    continue
+                if not v:
+                    continue
+                results.append(v)
+                if writer:
+                    writer({"ok": True, "result": v})
+        log(f"search: retry {query!r} → {len(results)} items")
 
     if not results:
         return {"ok": False, "error": "no results"}
     CACHE.set(ck, results, TTL_SEARCH)
+    if writer:
+        return None
     return {"ok": True, "results": results, "finished": True}
 
 
 def op_trending(req):
     # Route trending through op_feed(kind="trending") which uses the
-    # actual https://www.youtube.com/feed/trending URL extractor —
-    # the same flat-playlist + dump-json pipeline as subscriptions.
-    # This returns YouTube's regionally-curated Trending tab content.
-    # The C++ fetchFeed() timeout was bumped to 35 s to accommodate
-    # op_feed's 25 s yt-dlp budget + response serialization overhead.
+    # actual https://www.youtube.com/feed/trending URL extractor.
+    # op_feed now streams — first cards appear within ~3-5 s.
     feed_req = {
         "kind":      "trending",
         "page":      req.get("page", 1),
         "page_size": req.get("page_size", _FEED_PAGE_DEFAULT),
     }
-    return op_feed(feed_req)
+    return op_feed(feed_req, req.get("_writer"))
+
 
 
 # URLs for feeds, exposed by `op_feed` with kind=<key>.  For subscriptions
@@ -1044,14 +1128,14 @@ def _cookie_summary():
         return f"cookies.txt: unreadable ({ex})"
 
 
-def op_feed(req):
-    """Fetch a personalized YouTube feed for the signed-in user.
+def op_feed(req, writer=None):
+    """Fetch a YouTube feed, streaming results as they arrive.
 
-    Returns the same {results: [...]} shape as op_search.  Tries each URL
-    variant in _FEED_URLS[kind] in order; the first one that yields any
-    entries wins.  If all variants return zero entries we surface a clear
-    error including a cookie-summary diagnostic so the user can tell
-    whether yt-dlp just couldn't authenticate."""
+    When `writer` is set (streaming mode from Handler), each parsed video
+    is written immediately to the socket as {"ok":True,"result":{...}}.  The
+    function still caches the full result list for subsequent cache-hits.
+    Without `writer` (legacy / internal call) it falls back to collecting
+    everything and returning the old {results:[...]} shape."""
     kind = (req.get("kind") or "subscriptions").strip()
     page = max(1, int(req.get("page") or 1))
     page_size = max(1, min(int(req.get("page_size") or _FEED_PAGE_DEFAULT), 100))
@@ -1064,6 +1148,10 @@ def op_feed(req):
     ck = f"feed:{kind}:{page}:{page_size}"
     cached = CACHE.get(ck)
     if cached is not None:
+        if writer:
+            for v in cached:
+                writer({"ok": True, "result": v})
+            return None
         return {"ok": True, "results": cached, "finished": True}
 
     start = (page - 1) * page_size + 1
@@ -1072,60 +1160,39 @@ def op_feed(req):
     results = []
     last_url = ""
 
-    def _try(url, attempt):
-        out_items = []
-        # Pass cookies whenever we have them — even public feeds (trending)
-        # benefit from being signed in (region-localised results, age-gated
-        # entries unhidden, no "are you human" interstitial).  Cookies are
-        # only REQUIRED for the personal feeds though.
-        #
-        # Timeout budget: 25 s yt-dlp run + serialization must fit inside
-        # the C++ socket SO_RCVTIMEO of 35 s.  Auth feeds allow a second
-        # retry attempt (25 s × 2 = 50 s > 35 s, so each attempt of an
-        # auth feed runs with a shorter 15 s budget; only one attempt for
-        # public feeds to stay within the 35 s window).
-        ytdlp_timeout = 15 if needs_auth else 25
-        args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
-            "--flat-playlist", "--dump-json",
-            "--extractor-args", "youtubetab:approximate_date",
-            "--playlist-start", str(start), "--playlist-end", str(end),
-            url,
-        ]
-        with _work_sem:
-            raw = _run_ytdlp(args, timeout=ytdlp_timeout)
-        for ln in raw.splitlines():
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                v = _video_from_entry(json.loads(ln))
-                if v:
-                    out_items.append(v)
-            except (ValueError, TypeError):
-                continue
-        log(f"feed {kind}: attempt {attempt} via {url} → {len(out_items)} items")
-        return out_items
-
-    # Retry logic is budget-aware:
-    #   Public feeds  (trending): 1 attempt only — the single 25 s yt-dlp
-    #     run fits inside the 35 s C++ socket window; a second attempt
-    #     would push past it and the socket would drop the connection.
-    #   Auth-required feeds (subs etc.): 2 attempts × 15 s each = 30 s,
-    #     which also fits within 35 s.
-    #
-    # First call after a cold tubed start sometimes returns 0 even with
-    # valid cookies (yt-dlp negotiates Innertube client params on the
-    # first /youtubei call).  Auth feeds get the retry for that case;
-    # public feeds rely on the cache TTL and a user-triggered refresh.
+    # Timeout budget (must fit within the C++ socket SO_RCVTIMEO of 35 s):
+    #   Public feeds (trending): single 25 s yt-dlp run.
+    #   Auth feeds (subs etc.):  up to 2 attempts × 15 s = 30 s.
+    ytdlp_timeout = 15 if needs_auth else 25
     attempts = (1,) if not needs_auth else (1, 2)
+
     for url in _FEED_URLS[kind]:
         last_url = url
         for attempt in attempts:
-            results = _try(url, attempt)
-            if results:
+            attempt_results = []
+            args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
+                "--flat-playlist", "--dump-json",
+                "--extractor-args", "youtubetab:approximate_date",
+                "--playlist-start", str(start), "--playlist-end", str(end),
+                url,
+            ]
+            with _work_sem:
+                for raw_line in _run_ytdlp_streaming(args, timeout=ytdlp_timeout):
+                    if not raw_line:
+                        continue
+                    try:
+                        v = _video_from_entry(json.loads(raw_line))
+                    except (ValueError, TypeError):
+                        continue
+                    if not v:
+                        continue
+                    attempt_results.append(v)
+                    if writer:
+                        writer({"ok": True, "result": v})
+            log(f"feed {kind}: attempt {attempt} via {url} → {len(attempt_results)} items")
+            if attempt_results:
+                results = attempt_results
                 break
-            # Brief pause before the retry lets any half-built InnerTube
-            # client state stabilize.
             if attempt == 1 and len(attempts) > 1:
                 time.sleep(0.5)
         if results:
@@ -1133,10 +1200,6 @@ def op_feed(req):
         log(f"feed {kind}: variant {url} exhausted; trying next")
 
     if not results:
-        # Cookie diagnostic only makes sense for auth-required feeds.  For
-        # trending (a public feed) an empty result is more likely a
-        # transient yt-dlp/Innertube hiccup or a regional content blackout
-        # than a cookies problem.
         if needs_auth:
             summary = _cookie_summary()
             log(f"feed {kind}: ALL variants returned 0 items — {summary}")
@@ -1151,6 +1214,8 @@ def op_feed(req):
                 f"feed empty (last url: {last_url}; cookies may not be "
                 f"authenticated — see tubed.log)"}
     CACHE.set(ck, results, TTL_FEED)
+    if writer:
+        return None
     return {"ok": True, "results": results, "finished": True}
 
 
@@ -1444,17 +1509,36 @@ class Handler(socketserver.StreamRequestHandler):
             if not fn:
                 self._send({"ok": False, "error": f"unknown op: {op}"})
                 return
-            # Expose client liveness to the op (and the yt-dlp it runs) so long
-            # resolves can bail when the app disconnects. Scoped to this thread.
             _req_ctx.is_alive = self._client_alive
             try:
-                resp = fn(req)
+                # Streaming ops (search, feed, trending): the op accepts a
+                # writer= callback and emits items one-by-one.  We detect
+                # streaming support by checking the function signature.
+                import inspect
+                supports_writer = "writer" in inspect.signature(fn).parameters
+
+                if supports_writer:
+                    # Pass a writer that sends one JSON line per result.
+                    # On error the op returns a dict (not None); we forward that.
+                    err_resp = [None]
+                    def _writer(obj):
+                        self._send(obj)
+                    req["_writer"] = _writer   # not used by op, plumbed via kwarg
+                    resp = fn(req, writer=_writer)
+                    if resp is not None:
+                        # Op returned an error dict instead of streaming.
+                        self._send(resp)
+                    else:
+                        # All items sent; emit the finished sentinel.
+                        self._send({"ok": True, "finished": True})
+                else:
+                    resp = fn(req)
+                    self._send(resp)
             except Exception as ex:
                 log("op", op, "crashed:", ex)
-                resp = {"ok": False, "error": str(ex)}
+                self._send({"ok": False, "error": str(ex)})
             finally:
                 _req_ctx.is_alive = None
-            self._send(resp)
             _last_activity = time.time()
         except Exception as ex:
             log("handler error:", ex)

@@ -154,9 +154,78 @@ bool tubedRequest(const json& req, json& resp, int timeout_ms) {
     }
     return true;
 }
-#else  // _WIN32 — desktop dev stub (no Unix socket / fork).
-bool tubedRequest(const nlohmann::json&, nlohmann::json&, int) { return false; }
-#endif
+
+// ── Streaming request ─────────────────────────────────────────────────────────
+// Used by search and feed: tubed emits one JSON line per result
+// ({"ok":true,"result":{...}}) then a final {"ok":true,"finished":true}.
+// `item_cb` is called for each result line; returns false if the op returned
+// an error ("ok":false).
+bool tubedStreamRequest(const json& req,
+                        std::function<void(const json&)> item_cb,
+                        int timeout_ms) {
+    if (!ensureTubedRunning()) return false;
+    int fd = connectTubed(timeout_ms);
+    if (fd < 0) return false;
+
+    std::string payload = req.dump();
+    payload.push_back('\n');
+    size_t off = 0;
+    while (off < payload.size()) {
+        ssize_t w = ::write(fd, payload.data() + off, payload.size() - off);
+        if (w <= 0) { ::close(fd); return false; }
+        off += static_cast<size_t>(w);
+    }
+
+    // Read newline-delimited JSON lines until finished or error.
+    std::string buf_accum;
+    char buf[8192];
+    bool got_ok = false;
+    while (true) {
+        ssize_t r = ::read(fd, buf, sizeof(buf));
+        if (r <= 0) break;  // EOF or timeout
+        buf_accum.append(buf, static_cast<size_t>(r));
+        // Process all complete lines in the buffer.
+        size_t pos = 0;
+        while (true) {
+            size_t nl = buf_accum.find('\n', pos);
+            if (nl == std::string::npos) break;
+            std::string line = buf_accum.substr(pos, nl - pos);
+            pos = nl + 1;
+            if (line.empty()) continue;
+            try {
+                json j = json::parse(line);
+                if (!j.value("ok", false)) {
+                    // Error response — stop reading.
+                    ::close(fd);
+                    return false;
+                }
+                if (j.value("finished", false)) {
+                    // Sentinel — stream complete.
+                    got_ok = true;
+                    goto done;
+                }
+                // Individual result item.
+                if (j.contains("result")) {
+                    item_cb(j["result"]);
+                    got_ok = true;
+                } else if (j.contains("results")) {
+                    // Legacy batch fallback (cache-hit path sends old format).
+                    for (const auto& item : j["results"]) {
+                        item_cb(item);
+                    }
+                    got_ok = true;
+                }
+            } catch (...) {
+                continue;  // skip malformed line
+            }
+        }
+        buf_accum.erase(0, pos);  // discard processed bytes
+    }
+done:
+    ::close(fd);
+    return got_ok;
+}
+
 
 template <typename T>
 T jget(const json& j, const char* key, const T& dflt) {
@@ -237,28 +306,20 @@ void YouTubeAPI::search(const std::string& query, int page,
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 
-        // page_size=20 (chunked).  Smaller chunks finish well under the
-        // C++ socket timeout (~6-10 s vs 18-22 s for 50), and the UI
-        // streams cards in as they arrive — first result visible in
-        // ~3 s instead of waiting for the full batch.  Subsequent pages
-        // load on scroll-bottom via loadMoreSearchResults().
+        // Streaming search: tubed emits one result per line, so the first
+        // card arrives within ~3-5 s without waiting for the full batch.
+        // tubedStreamRequest reads until {"finished":true}; each item_cb
+        // call immediately forwards to the UI via callback.
         json req = {{"op", "search"}, {"query", query}, {"page", page}, {"page_size", 20}};
-        json resp;
-        // Bumped from 20 s → 30 s to match fetchFeed's tubed-side timeout:
-        // op_search now retries twice on empty (same as op_feed), so a
-        // legitimately-slow YouTube response can still complete inside
-        // the C++ budget.
-        bool ok = tubedRequest(req, resp, 30000);
+        bool got_any = false;
+        bool ok = tubedStreamRequest(req,
+            [&](const json& item) {
+                if (req_id != current_search_request_id_) return;
+                YouTubeVideo v = videoFromJson(item);
+                if (!v.id.empty()) { callback({v}, false); got_any = true; }
+            }, 35000);
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
-
-        if (ok && resp.value("ok", false) && resp.contains("results")) {
-            for (const auto& item : resp["results"]) {
-                if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
-                YouTubeVideo v = videoFromJson(item);
-                if (!v.id.empty()) callback({v}, false);
-            }
-        }
         callback({}, true);
         finish();
     }).detach();
