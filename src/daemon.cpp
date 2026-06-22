@@ -322,15 +322,36 @@ static bool foregroundGameActive() {
     return found;
 }
 
+// Tracks DRM state transitions so callers can spot "we just came back
+// from an emulator session" and force a fresh overlay frame.  Without
+// this signal, the cached `last_render_pos` keeps the render block
+// dormant after reacquisition until the audio position drifts by ≥1 s
+// — meaning the now-playing card stays invisible for up to a second
+// even though we're fully ready to draw.
+static std::atomic<bool> g_drm_just_reacquired{false};
+
 // Lazily (re)acquire the overlay only when it is safe to do so. Returns false
 // — and ensures DRM is fully released — whenever a game is in the foreground.
 static bool ensureDrmReady() {
     if (foregroundGameActive()) {
-        if (drm_fd >= 0) closeDrmOverlay();
+        if (drm_fd >= 0) {
+            closeDrmOverlay();
+            std::cerr << "[daemon] DRM released (foreground game active)\n";
+        }
         return false;
     }
     if (drm_fd >= 0) return true;
-    return initDrmOverlay();
+    // (Re)initialise.  Flag the transition so the main loop's render
+    // path knows to push a fresh frame immediately and re-arm the
+    // 5 s auto-fade — emulator-exit users expect to see the card
+    // confirming the daemon is still alive, not wait for the next
+    // second-boundary or input event.
+    if (initDrmOverlay()) {
+        std::cerr << "[daemon] DRM reacquired after foreground-game release\n";
+        g_drm_just_reacquired.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
 }
 #else
 static bool initDrmOverlay() { return true; }
@@ -1207,6 +1228,18 @@ void runDaemon() {
             daemon_overlay_timer -= dt;
             if (daemon_overlay_timer <= 0.0f)
                 overlay_active = false;
+        }
+
+        // ── Post-emulator overlay recovery ────────────────────────────────
+        // When ensureDrmReady() reopens the overlay after a game exited,
+        // re-arm the auto-show timer + invalidate the render cache so
+        // the card appears immediately instead of staying dark until
+        // the next track change.  Without this the daemon was alive
+        // but invisible until the user hit a button.
+        if (g_drm_just_reacquired.exchange(false, std::memory_order_acq_rel)) {
+            daemon_overlay_timer = 5.0f;
+            overlay_active = true;
+            last_render_pos = -1.0;
         }
 
         // ── Render ────────────────────────────────────────────────────────

@@ -125,6 +125,22 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "hwdec",                  "rkmpp,auto");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
+    // Use the dmix software-mixing device instead of the raw codec.
+    // Without this, mpv opens /dev/snd/pcmC0D0p exclusively — meaning
+    // tubelite holds the audio device with `F...m` (mmap) and any
+    // other process (retroarch, daemon, speaker-test) gets EBUSY when
+    // it tries to play.  `dmix` is ALSA's built-in mixer that lets
+    // multiple writers share one card; the codec name comes straight
+    // from `aplay -L` on the device.  The `plug:` prefix interposes
+    // any needed sample-rate / format conversion so we don't have to
+    // match dmix's native parameters.  Failure to open dmix falls back
+    // to default (legacy behaviour) — set after the `ao` option so the
+    // option-already-applied chain doesn't reject it.
+    mpv_set_option_string(mpv_, "audio-device",
+                          "alsa/plug:dmix:CARD=rockchiprk817co,DEV=0");
+    // Also opt out of mpv's exclusive-mode hint, which on some ALSA
+    // builds promotes the open to O_EXCL.  We WANT shared access.
+    mpv_set_option_string(mpv_, "alsa-no-resume",         "no");
     // Color-correctness fix for the rkmpp → GL pipeline on RK3326.
     //
     // YouTube videos are encoded with BT.709 primaries and a LIMITED
@@ -199,34 +215,47 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     std::cerr << "[mpv] mpv_initialize...\n";
     if (mpv_initialize(mpv_) < 0) { std::cerr << "[mpv] mpv_initialize failed\n"; return false; }
 
-    // Now query the audio device list and find the best mixing device.
-    // This allows us to dynamically support ArkOS custom 'dmixer', Rockchip default dmix, or fall back to standard alsa default.
+    // Pick the best SHARING-capable ALSA device.
+    //
+    // Raw `hw:CARD=...` or bare `dmix:CARD=...` opens the codec in a way
+    // that any second opener (retroarch, daemon, speaker-test) sees as
+    // EBUSY — confirmed via `fuser -v /dev/snd/*` showing tubelite with
+    // an `F...m` (mmap) lock on /dev/snd/pcmC0D0p.  `plug:dmix:...` wraps
+    // dmix with the `plug` plugin which interposes rate/format conversion
+    // AND lets multiple processes write simultaneously.
+    //
+    // We only probe `audio-device-list` to discover the card name so the
+    // device string isn't hard-coded to one chip, then fall back through:
+    //   1. alsa/plug:dmix:CARD=<discovered>,DEV=0   ← best (true sharing)
+    //   2. alsa/dmixer                              ← ArkOS custom alias
+    //   3. alsa/default                             ← last resort (may be hw)
     char* device_list_str = nullptr;
+    std::string best_device = "alsa/default";
     if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
         std::string list(device_list_str);
-        std::string best_device = "alsa/default";
-        
-        if (list.find("alsa/dmixer") != std::string::npos) {
-            best_device = "alsa/dmixer";
-        } else {
-            size_t dmix_pos = list.find("alsa/dmix:");
-            if (dmix_pos != std::string::npos) {
-                size_t end_pos = list.find("\"", dmix_pos);
-                if (end_pos != std::string::npos) {
-                    best_device = list.substr(dmix_pos, end_pos - dmix_pos);
-                }
-            } else if (list.find("alsa/dmix") != std::string::npos) {
-                best_device = "alsa/dmix";
+        std::string card;
+        size_t card_kw = list.find("CARD=");
+        if (card_kw != std::string::npos) {
+            const size_t start = card_kw + 5;
+            size_t end = start;
+            while (end < list.size()) {
+                char c = list[end];
+                if (c == ',' || c == '"' || c == ' ' || c == '\\') break;
+                ++end;
             }
+            card = list.substr(start, end - start);
         }
-        
-        std::cerr << "[mpv] Dynamic ALSA device selection: " << best_device << "\n";
-        mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
-        
+        if (!card.empty()) {
+            best_device = "alsa/plug:dmix:CARD=" + card + ",DEV=0";
+        } else if (list.find("alsa/dmixer") != std::string::npos) {
+            best_device = "alsa/dmixer";
+        }
         mpv_free(device_list_str);
-    } else {
-        std::cerr << "[mpv] Failed to query audio-device-list, using default ALSA device\n";
     }
+    std::cerr << "[mpv] ALSA device (mixing-capable): " << best_device << "\n";
+    mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
+    // Belt-and-braces: never grab the device exclusively.
+    mpv_set_property_string(mpv_, "audio-exclusive", "no");
 
     // ── Create GLES render context ────────────────────────────────────────────
     // Use eglGetProcAddress via dlopen — NOT SDL_GL_GetProcAddress.
@@ -288,34 +317,47 @@ bool MpvPlayer::initializeAudioOnly() {
         return false;
     }
 
-    // Now query the audio device list and find the best mixing device.
-    // This allows us to dynamically support ArkOS custom 'dmixer', Rockchip default dmix, or fall back to standard alsa default.
+    // Pick the best SHARING-capable ALSA device.
+    //
+    // Raw `hw:CARD=...` or bare `dmix:CARD=...` opens the codec in a way
+    // that any second opener (retroarch, daemon, speaker-test) sees as
+    // EBUSY — confirmed via `fuser -v /dev/snd/*` showing tubelite with
+    // an `F...m` (mmap) lock on /dev/snd/pcmC0D0p.  `plug:dmix:...` wraps
+    // dmix with the `plug` plugin which interposes rate/format conversion
+    // AND lets multiple processes write simultaneously.
+    //
+    // We only probe `audio-device-list` to discover the card name so the
+    // device string isn't hard-coded to one chip, then fall back through:
+    //   1. alsa/plug:dmix:CARD=<discovered>,DEV=0   ← best (true sharing)
+    //   2. alsa/dmixer                              ← ArkOS custom alias
+    //   3. alsa/default                             ← last resort (may be hw)
     char* device_list_str = nullptr;
+    std::string best_device = "alsa/default";
     if (mpv_get_property(mpv_, "audio-device-list", MPV_FORMAT_STRING, &device_list_str) >= 0 && device_list_str) {
         std::string list(device_list_str);
-        std::string best_device = "alsa/default";
-        
-        if (list.find("alsa/dmixer") != std::string::npos) {
-            best_device = "alsa/dmixer";
-        } else {
-            size_t dmix_pos = list.find("alsa/dmix:");
-            if (dmix_pos != std::string::npos) {
-                size_t end_pos = list.find("\"", dmix_pos);
-                if (end_pos != std::string::npos) {
-                    best_device = list.substr(dmix_pos, end_pos - dmix_pos);
-                }
-            } else if (list.find("alsa/dmix") != std::string::npos) {
-                best_device = "alsa/dmix";
+        std::string card;
+        size_t card_kw = list.find("CARD=");
+        if (card_kw != std::string::npos) {
+            const size_t start = card_kw + 5;
+            size_t end = start;
+            while (end < list.size()) {
+                char c = list[end];
+                if (c == ',' || c == '"' || c == ' ' || c == '\\') break;
+                ++end;
             }
+            card = list.substr(start, end - start);
         }
-        
-        std::cerr << "[mpv] Dynamic ALSA device selection: " << best_device << "\n";
-        mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
-        
+        if (!card.empty()) {
+            best_device = "alsa/plug:dmix:CARD=" + card + ",DEV=0";
+        } else if (list.find("alsa/dmixer") != std::string::npos) {
+            best_device = "alsa/dmixer";
+        }
         mpv_free(device_list_str);
-    } else {
-        std::cerr << "[mpv] Failed to query audio-device-list, using default ALSA device\n";
     }
+    std::cerr << "[mpv] ALSA device (mixing-capable): " << best_device << "\n";
+    mpv_set_property_string(mpv_, "audio-device", best_device.c_str());
+    // Belt-and-braces: never grab the device exclusively.
+    mpv_set_property_string(mpv_, "audio-exclusive", "no");
 
     mpv_observe_property(mpv_, 0, "time-pos",  MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv_, 0, "duration",  MPV_FORMAT_DOUBLE);
