@@ -592,6 +592,16 @@ if [ "$DO_ES" -eq 1 ]; then
             echo 'audio_device = "plug:dmix"' >> "$cfg"
         fi
 
+        # OSD message duration: bump from RA's default (~2 frames-as-
+        # seconds = quick blip) to 4 s so multi-line SHOW_MSG toasts
+        # ("♪ Now Playing\n<title>\n<author> · <duration>\n2 / 5")
+        # from the TubeLite daemon stay on screen long enough to read.
+        if grep -q '^osd_message_duration' "$cfg"; then
+            sed -i 's|^osd_message_duration = .*|osd_message_duration = "4"|' "$cfg"
+        else
+            echo 'osd_message_duration = "4"' >> "$cfg"
+        fi
+
         # UDP command socket for SHOW_MSG
         if grep -q '^network_cmd_enable' "$cfg"; then
             sed -i 's|^network_cmd_enable = .*|network_cmd_enable = "true"|' "$cfg"

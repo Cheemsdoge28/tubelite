@@ -410,6 +410,124 @@ static void dispatchNotification(const std::string& text) {
     }
     std::cerr << "[daemon] notify (log-only): " << text << "\n";
 }
+
+// Build a multi-line, glyph-prefixed notification for the current
+// track — mirrors the DRM now-playing card's information layout so
+// the in-game RA toast carries the same data the user would see on
+// the overlay.  RA's `SHOW_MSG` renders `\n` as a hard line break
+// and its default font handles the BMP glyphs below; worst case a
+// glyph shows as a box but the text underneath is still readable.
+//
+// Layout (DRM card → equivalent text line):
+//   [accent bar + glyph]        →  "♪ Now Playing                [STATUS]"
+//   <title>                     →  "<title>"
+//   <author>            <time>  →  "<author>  ·  0:42 / 3:14"
+//   ━━━━●─────  progress bar    →  "▰▰▰▰▱▱▱▱▱▱  35%"
+//   FN+A Pause … 2 / 5  hints   →  "FN+A Pause · L/R Skip · B Exit       2 / 5"
+//
+// `verb_override` lets callers pin the verb to a transition word
+// ("Paused", "Resumed", "Daemon stopped") that differs from the
+// underlying status badge.
+static std::string formatTrackNotification(MpvPlayer& mpv,
+                                           const char* glyph,
+                                           const char* verb_override) {
+    auto statusBadge = []() -> const char* {
+        switch ((DaemonStatus)daemon_status) {
+            case DaemonStatus::Resolving: return "[LOADING]";
+            case DaemonStatus::Paused:    return "[PAUSED]";
+            case DaemonStatus::Error:     return "[ERROR]";
+            case DaemonStatus::Playing:   return "[PLAYING]";
+            default:                      return "";
+        }
+    };
+
+    // Header line: "<glyph> <verb>     <badge>"
+    // Use the override verb when provided (transitions like "Paused"
+    // already carry the state).
+    std::string out;
+    if (glyph) { out += glyph; out += " "; }
+    out += (verb_override ? verb_override : "Now Playing");
+    {
+        const char* badge = statusBadge();
+        // Only append a badge when it adds info beyond the verb.
+        if (badge[0] != '\0') {
+            if (!verb_override ||
+                std::string(verb_override).find(badge + 1) == std::string::npos) {
+                out += "   ";
+                out += badge;
+            }
+        }
+    }
+
+    if (daemon_current_index < 0 ||
+        daemon_current_index >= (int)daemon_playlist.size()) {
+        return out;
+    }
+    const auto& v = daemon_playlist[daemon_current_index];
+
+    // Title
+    out += "\n";
+    out += v.title;
+
+    // Author + current-time / duration on one line.  Mirrors the
+    // overlay's author + "00:00 / 00:00" row.
+    {
+        const double pos = mpv.getPlaybackTime();
+        const double dur = mpv.getDuration() > 0.0
+                              ? mpv.getDuration()
+                              : (double)v.duration_seconds;
+        auto fmtTime = [](double s) {
+            if (s < 0) s = 0;
+            int tot = (int)s;
+            int h = tot / 3600, m = (tot % 3600) / 60, sec = tot % 60;
+            char buf[16];
+            if (h > 0) snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, sec);
+            else        snprintf(buf, sizeof(buf), "%d:%02d", m, sec);
+            return std::string(buf);
+        };
+
+        if (!v.author.empty() || dur > 0.0) {
+            out += "\n";
+            if (!v.author.empty()) out += v.author;
+            if (!v.author.empty() && dur > 0.0) out += "  ·  ";
+            if (dur > 0.0) {
+                out += fmtTime(pos);
+                out += " / ";
+                out += (!v.duration_string.empty() ? v.duration_string
+                                                  : fmtTime(dur));
+            }
+        }
+
+        // Text progress bar — replaces the overlay's pill+thumb.
+        // 10 segments, filled with U+25B0 (▰) / empty U+25B1 (▱) —
+        // both are BMP and present in RA's font.  Percentage at end
+        // gives a numeric anchor even if the glyphs render as boxes.
+        if (dur > 0.0) {
+            const int kSegs = 10;
+            const double frac = std::max(0.0, std::min(1.0, pos / dur));
+            const int filled = (int)(frac * kSegs + 0.5);
+            out += "\n";
+            for (int i = 0; i < kSegs; ++i) {
+                out += (i < filled) ? "\xE2\x96\xB0" : "\xE2\x96\xB1";
+            }
+            char pctBuf[8];
+            snprintf(pctBuf, sizeof(pctBuf), "  %d%%", (int)(frac * 100));
+            out += pctBuf;
+        }
+    }
+
+    // Bottom row: hints (left) + track index (right, when applicable).
+    // We can't right-align in a SHOW_MSG line (no monospace assumption
+    // and no width info), so just append " · N / M" inline.
+    out += "\nFN+A Pause \xC2\xB7 L/R Skip \xC2\xB7 B Exit";
+    if ((int)daemon_playlist.size() > 1) {
+        out += "   ";
+        out += std::to_string(daemon_current_index + 1);
+        out += " / ";
+        out += std::to_string(daemon_playlist.size());
+    }
+    return out;
+}
 #else
 static void dispatchNotification(const std::string&) {}
 #endif
@@ -701,10 +819,8 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         // Notify the user (DRM overlay if visible, else SHOW_MSG to
         // retroarch, else log).  Track change is a real transition,
         // safe to send without further debouncing.
-        {
-            const auto& v = daemon_playlist[daemon_current_index];
-            dispatchNotification("Now Playing: " + v.title);
-        }
+        dispatchNotification(formatTrackNotification(mpv, "\xE2\x99\xAA",
+                                                    "Now Playing"));
 #endif
         return;
     }
@@ -1057,8 +1173,29 @@ void runDaemon() {
 
     auto last_tick    = std::chrono::steady_clock::now();
     bool fn_held      = false;
-    bool dpad_up_held = false;
     double last_render_pos = -1.0;
+
+    // Left-stick volume control state.  ABS_Y events stream continuously
+    // (~hundreds per second when the stick is moved); we want one volume
+    // step per push, not per event.  Track the discretised direction
+    // (-1 = up, 0 = center, +1 = down) and only fire on transitions
+    // from center.  Thresholds chosen for ~half-deflection so a casual
+    // touch counts but stick drift doesn't.
+    int  lstick_y_dir = 0;
+
+    // Two-tap arming for destructive / mode-switching FN combos.
+    // First tap arms + shows a confirmation toast; second tap within
+    // kConfirmWindowMs commits.  Arming expires after the window so a
+    // stray press doesn't pair up with a much later one.
+    //   * FN+Y → quick-launch TubeLite
+    //   * FN+B → stop daemon
+    using namespace std::chrono;
+    auto last_quick_launch_arm = steady_clock::time_point::min();
+    auto last_quit_confirm_arm = steady_clock::time_point::min();
+    constexpr int kConfirmWindowMs = 2000;
+    // Keep the old name as an alias for the quick-launch path so the
+    // existing call site reads cleanly.
+    constexpr int kQuickLaunchWindowMs = kConfirmWindowMs;
 
     // Seamless-handoff signal: the app keeps its own audio playing (fading out)
     // until this flag appears, so playback never goes silent. Clear any stale
@@ -1073,7 +1210,29 @@ void runDaemon() {
     // BOTH exit paths produce a smooth audible fade instead of an
     // abrupt audio cut.  Called from the main loop's own thread, so it
     // shares the same mpv pointer without a synchronization concern.
-    auto fadeOutAndExit = [&](int dur_ms = 800) {
+    //
+    // `notify_quit`: send a goodbye toast on the way out.  Set to false
+    // for the reabsorption path — the user is about to see the
+    // foreground app come back, a "Daemon stopped" message there would
+    // be noise.  Set to true for FN+B (the user explicitly asked the
+    // daemon to stop and a confirmation toast is welcome) and for
+    // signal-driven exits (we want a trace, even if the user didn't see
+    // it themselves).
+    // Tracks whether the loop exited via the audio-fade path (FN+B,
+    // reabsorption, or quick-launch) versus an external signal
+    // (SIGTERM/SIGINT, OOM, etc.).  Post-loop we use this to emit a
+    // goodbye toast for the signal case — fadeOutAndExit handles its
+    // own notification for the cases it covers.
+    bool fade_exit_taken = false;
+    auto fadeOutAndExit = [&](int dur_ms = 800, bool notify_quit = true) {
+        fade_exit_taken = true;
+        if (notify_quit) {
+            // Goodbye toast — uses formatTrackNotification so RA shows
+            // which track was playing when we stopped.  "■" (U+25A0,
+            // BMP) is in every font.
+            dispatchNotification(formatTrackNotification(mpv, "\xE2\x96\xA0",
+                                                        "Daemon stopped"));
+        }
         // Snapshot current effective volume (mpv exposes "volume" 0-100).
         const int64_t cur = mpv.getPropertyInt("volume");
         if (cur <= 0) { daemon_running = false; return; }
@@ -1200,7 +1359,10 @@ void runDaemon() {
         // happens on exit (unlink at the bottom of main()).
         if (access("/dev/shm/tubelite_daemon_fadeout", F_OK) == 0) {
             ::unlink("/dev/shm/tubelite_daemon_fadeout");
-            fadeOutAndExit(800);
+            // Reabsorption — foreground app is taking over.  Skip the
+            // "Daemon stopped" toast; the user is about to see TubeLite's
+            // own UI, a goodbye message would just be noise.
+            fadeOutAndExit(800, /*notify_quit=*/false);
             continue;   // fall through to the loop-exit on next iter
         }
 
@@ -1245,12 +1407,8 @@ void runDaemon() {
                     }
                     daemon_status = DaemonStatus::Playing;
 #ifndef _WIN32
-                    if (daemon_current_index >= 0 &&
-                        daemon_current_index < (int)daemon_playlist.size()) {
-                        dispatchNotification(
-                            "Now Playing: " +
-                            daemon_playlist[daemon_current_index].title);
-                    }
+                    dispatchNotification(formatTrackNotification(
+                        mpv, "\xE2\x99\xAA", "Now Playing"));
 #endif
                 } else {
                     std::string vid = (daemon_current_index >= 0 &&
@@ -1316,35 +1474,165 @@ void runDaemon() {
                             if (daemon_status == DaemonStatus::Playing) {
                                 mpv.pause();
                                 daemon_status = DaemonStatus::Paused;
-                                dispatchNotification("Paused");
+                                dispatchNotification(formatTrackNotification(
+                                    mpv, "\xE2\x8F\xB8", "Paused"));
                             } else if (daemon_status == DaemonStatus::Paused) {
                                 mpv.resume();
                                 daemon_status = DaemonStatus::Playing;
-                                dispatchNotification("Resumed");
+                                dispatchNotification(formatTrackNotification(
+                                    mpv, "\xE2\x96\xB6", "Resumed"));
                             }
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
                             last_render_pos = -1.0;
-                        } else if (ev.code == 304) { // B → exit (with fade)
-                            // Fade audio out over 800 ms before exiting
-                            // so the speaker doesn't pop or cut mid-track.
-                            // Drains the input queue first — we don't want
-                            // late events queueing while we're mid-fade.
-                            fadeOutAndExit(800);
-                        } else if (ev.code == 103 || ev.code == 544) { // UP → show
+                        } else if (ev.code == 304) { // B → two-tap exit (with fade + goodbye toast)
+                            const auto now_tp = steady_clock::now();
+                            const auto since_arm_ms =
+                                duration_cast<milliseconds>(
+                                    now_tp - last_quit_confirm_arm).count();
+                            if (last_quit_confirm_arm !=
+                                    steady_clock::time_point::min() &&
+                                since_arm_ms <= kConfirmWindowMs) {
+                                // Confirmed — fade audio out over 800 ms
+                                // before exiting so the speaker doesn't pop
+                                // or cut mid-track.  Default
+                                // notify_quit=true sends the "Daemon
+                                // stopped" toast.
+                                last_quit_confirm_arm =
+                                    steady_clock::time_point::min();
+                                fadeOutAndExit(800);
+                            } else {
+                                // First tap — arm + prompt.  Same pattern
+                                // as FN+Y quick-launch so the muscle
+                                // memory is consistent across destructive
+                                // FN combos.
+                                last_quit_confirm_arm = now_tp;
+                                dispatchNotification(
+                                    "\xE2\x96\xA0 Tap B again\nto stop daemon");
+                                daemon_overlay_timer = 5.0f;
+                                overlay_active = true;
+                                last_render_pos = -1.0;
+                            }
+                        } else if (ev.code == 314) { // SELECT → force-show overlay / re-toast
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
+                            last_render_pos = -1.0;
+                            // Also fire a notification on demand so
+                            // the user gets RA toast confirmation even
+                            // when nothing transitioned.
+                            dispatchNotification(formatTrackNotification(
+                                mpv, "\xE2\x99\xAA", "Now Playing"));
+                        } else if (ev.code == 307) { // X → mute toggle
+                            const bool wasMuted = (mpv.getPropertyInt("mute") != 0);
+                            mpv.setMute(!wasMuted);
+                            // "×" = U+00D7 (BMP, every font has it);
+                            // "♪" matches the play-time glyph for
+                            // visual consistency on unmute.
+                            dispatchNotification(formatTrackNotification(
+                                mpv,
+                                wasMuted ? "\xE2\x99\xAA" : "\xC3\x97",
+                                wasMuted ? "Unmuted"      : "Muted"));
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
+                            last_render_pos = -1.0;
+                        } else if (ev.code == 308) { // Y → two-tap quick-launch TubeLite
+                            const auto now_tp = steady_clock::now();
+                            const auto since_arm_ms =
+                                duration_cast<milliseconds>(
+                                    now_tp - last_quick_launch_arm).count();
+                            if (last_quick_launch_arm !=
+                                    steady_clock::time_point::min() &&
+                                since_arm_ms <= kQuickLaunchWindowMs) {
+                                // Second tap within the window → launch.
+                                // Reabsorption flag suppresses the
+                                // "Daemon stopped" toast on exit so the
+                                // user only sees the launching message.
+                                dispatchNotification(formatTrackNotification(
+                                    mpv, "\xE2\x96\xB6", "Launching TubeLite\xE2\x80\xA6"));
+                                // Fork + exec the installed ES launcher
+                                // (`[install_dir]/TubeLite.tbl`) via bash
+                                // — NOT the bare binary or the
+                                // /usr/local/bin/tubelite symlink — so the
+                                // child inherits the SAME environment
+                                // EmulationStation would set up:
+                                // cpu governor flips, LD_LIBRARY_PATH for
+                                // side-loaded libssl3, vendor/deno on
+                                // PATH, log redirection, etc.  Without
+                                // this the quick-launched session can
+                                // diverge from a normal ES launch (e.g.
+                                // yt-dlp fails because libssl.so.3 isn't
+                                // on its loader path).  getAppDataPath()
+                                // resolves to /roms/tools/tubelite on
+                                // ArkOS and the file basename in dev.
+                                const std::string launcher =
+                                    getAppDataPath("TubeLite.tbl");
+                                pid_t cpid = fork();
+                                if (cpid == 0) {
+                                    // Child: detach from daemon's session
+                                    // so the parent can exit cleanly.
+                                    setsid();
+                                    // Use bash explicitly so the .tbl
+                                    // shebang and +x bit don't matter —
+                                    // works on a freshly-copied install
+                                    // where chmod hasn't been re-run.
+                                    execl("/bin/bash", "bash",
+                                          launcher.c_str(), (char*)nullptr);
+                                    // Fall back to the symlinked wrapper
+                                    // if bash exec failed (very unlikely;
+                                    // /bin/bash is on every ArkOS image).
+                                    execl("/usr/local/bin/tubelite",
+                                          "tubelite", (char*)nullptr);
+                                    _exit(127);
+                                }
+                                last_quick_launch_arm =
+                                    steady_clock::time_point::min();
+                                // Skip the goodbye toast — reabsorption
+                                // takes over and the launching toast
+                                // already covers user feedback.
+                                fadeOutAndExit(800, /*notify_quit=*/false);
+                            } else {
+                                // First tap — arm + prompt.
+                                last_quick_launch_arm = now_tp;
+                                dispatchNotification(
+                                    "\xE2\x96\xB6 Tap Y again\nto launch TubeLite");
+                                daemon_overlay_timer = 5.0f;
+                                overlay_active = true;
+                                last_render_pos = -1.0;
+                            }
+                        }
+                    }
+                } else if (ev.type == EV_ABS && ev.code == 1 && fn_held) {
+                    // Left-stick Y → volume.  Discretise to {-1,0,+1}
+                    // and fire only on transitions away from center so
+                    // a single push = one volume step, and stick drift
+                    // doesn't spam.
+                    int new_dir = 0;
+                    if (ev.value < -16000) new_dir = -1;       // up   → louder
+                    else if (ev.value > 16000) new_dir = +1;   // down → quieter
+                    if (new_dir != lstick_y_dir) {
+                        if (new_dir == -1) {  // first crossing UP
+                            int v = (int)mpv.getPropertyInt("volume");
+                            v = std::min(100, v + 5);
+                            mpv.setVolume(v);
+                            // "▲" = U+25B2 (BMP, present in every font).
+                            dispatchNotification(
+                                "\xE2\x96\xB2 Volume: " + std::to_string(v));
+                            daemon_overlay_timer = 5.0f;
+                            overlay_active = true;
+                            last_render_pos = -1.0;
+                        } else if (new_dir == +1) {  // first crossing DOWN
+                            int v = (int)mpv.getPropertyInt("volume");
+                            v = std::max(0, v - 5);
+                            mpv.setVolume(v);
+                            // "▼" = U+25BC.
+                            dispatchNotification(
+                                "\xE2\x96\xBC Volume: " + std::to_string(v));
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;
                             last_render_pos = -1.0;
                         }
+                        lstick_y_dir = new_dir;
                     }
-                } else if (ev.type == EV_ABS && ev.code == 17) {
-                    bool new_dpad_up = (ev.value < 0);
-                    if (new_dpad_up && !dpad_up_held && fn_held) {
-                        daemon_overlay_timer = 5.0f;
-                        overlay_active = true;
-                        last_render_pos = -1.0;
-                    }
-                    dpad_up_held = new_dpad_up;
                 }
             }
         }
@@ -1420,6 +1708,15 @@ void runDaemon() {
     }
 
     std::cerr << "[daemon] Stopping...\n";
+    // Signal-driven exit (SIGTERM/SIGINT/OOM): no fade path ran, so no
+    // notification has been emitted yet.  Send the goodbye toast here
+    // so a system-initiated shutdown is still visible to the user.
+    // The reabsorption path goes through fadeOutAndExit with
+    // notify_quit=false, so it correctly stays silent.
+    if (!fade_exit_taken) {
+        dispatchNotification(formatTrackNotification(mpv, "\xE2\x96\xA0",
+                                                    "Daemon stopped"));
+    }
     mpv.shutdown();
     closeDrmOverlay();
 #ifndef _WIN32

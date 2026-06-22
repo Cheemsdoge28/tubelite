@@ -188,7 +188,23 @@ bool App::initialize() {
         } else if (newScreen == TubeState::Screen::Home) {
             focus_manager_.setGrid(home_grid_);
         }
-        
+
+        // Persist browse state on every screen transition so kills /
+        // crashes / OOM during a session don't lose where the user
+        // was.  Previously saveBrowseState() only ran on clean exit
+        // (App::run end), so anything that killed the process before
+        // that — sigkill from ES, OOM, daemon-spawn race — discarded
+        // the entire search/home state.  This write is ~2 KB to
+        // /roms/tools/tubelite/browse_state.json; cheap on transitions
+        // that happen at most a few times a minute.
+        //
+        // Gated on browse_state_ready_ so that the reabsorb path's
+        // transitionTo(Home) during App::initialize (which runs BEFORE
+        // loadBrowseState) doesn't snapshot a still-empty in-memory
+        // state and overwrite the on-disk file the user actually left
+        // behind.
+        if (browse_state_ready_) saveBrowseState();
+
         uiDirty_ = true;
     });
 
@@ -214,6 +230,9 @@ bool App::initialize() {
     if (!restored) {
         loadHomeFeeds();
     }
+    // Now safe for transition-driven saves to fire — the in-memory
+    // state matches (or super-sedes) the on-disk file.
+    browse_state_ready_ = true;
     SDL_StartTextInput();
 
     int width = 0, height = 0;
@@ -910,10 +929,13 @@ void App::doSearch(const std::string& query) {
             
             if (finished) {
                 state_.isSearching = false;
+                // Whole search completed — persist so a crash before
+                // exit doesn't lose this set of results.
+                if (browse_state_ready_) saveBrowseState();
                 uiDirty_ = true;
                 return;
             }
-            
+
             if (!results.empty()) {
                 bool isFirst = search_grid_->videos.empty();
                 for (const auto& v : results) {
@@ -921,6 +943,13 @@ void App::doSearch(const std::string& query) {
                 }
                 if (isFirst) {
                     focus_manager_.setGrid(search_grid_);
+                    // Snapshot as soon as the first page lands.  Each
+                    // subsequent page is appended; the "finished" branch
+                    // above re-saves at the end for the full set.  This
+                    // first-page save covers the common case of a user
+                    // glancing at results and getting interrupted mid-
+                    // scroll.
+                    if (browse_state_ready_) saveBrowseState();
                 }
                 uiDirty_ = true;
             }

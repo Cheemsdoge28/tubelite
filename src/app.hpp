@@ -208,6 +208,13 @@ private:
     // skip the cold-fetch loadHomeFeeds(), whose async callback would
     // otherwise clear and replace the just-restored grid contents).
     bool loadBrowseState();
+    // Gates per-transition saveBrowseState() calls during App::initialize.
+    // Without this gate, the reabsorb path's transitionTo(Home) would
+    // fire saveBrowseState BEFORE loadBrowseState ran, snapshotting an
+    // empty in-memory state (screen=home, no search videos) and
+    // clobbering the on-disk file.  Flipped to true once loadBrowseState
+    // has completed.
+    bool browse_state_ready_{false};
 
     // Daemon reabsorption — on launch, check whether the background
     // daemon is currently playing.  If yes, transfer the playback into
