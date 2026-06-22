@@ -23,7 +23,13 @@ enum class Sound {
 
 // Initialise SDL audio + synthesize all waveforms.  Returns false if SDL
 // failed to open an audio device — caller should treat sounds as no-op.
+// Safe to call repeatedly: short-circuits when already initialised, and
+// after a previous failure can be retried (useful when another audio
+// client was temporarily holding the codec at our first attempt).
 bool init();
+
+// Cheap query: did init() ever succeed?
+bool isInitialized();
 
 // Close audio device.  Safe to call even if init() failed.
 void shutdown();

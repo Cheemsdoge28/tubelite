@@ -238,6 +238,10 @@ void shutdown() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
+bool isInitialized() {
+    return g_initialized.load(std::memory_order_acquire);
+}
+
 void play(Sound s, float volume) {
     if (!g_initialized.load() || !g_enabled.load()) return;
     const int sIdx = static_cast<int>(s);

@@ -351,6 +351,28 @@ void App::run() {
         { PROFILE_SCOPE("sticks");          updateSticks(dt); }
         { PROFILE_SCOPE("kbd_blink");       updateKeyboardCursorBlinkState(); }
         { PROFILE_SCOPE("hover_previews");  updateHoverPreviews(); }
+
+        // Lazy retry of SDL audio init: on devices where
+        // EmulationStation (or whatever spawned us) is holding the
+        // codec exclusively at our startup moment, the eager
+        // ui_sounds::init() at App::initialize hits EBUSY through
+        // dmix's slave open and disables itself.  Once another
+        // dmix-using client (mpv on first playback, or retroarch
+        // backgrounded) has created the shared dmix region, SDL can
+        // JOIN it without re-acquiring hw — so retry periodically
+        // until it sticks.  Throttled to 1 s so we don't pound
+        // SDL_InitSubSystem / SDL_OpenAudioDevice every frame; once
+        // it succeeds the early-out in ui_sounds::init() makes the
+        // call effectively free.
+        if (!ui_sounds::isInitialized()) {
+            static Uint32 last_ui_sounds_retry_ms = 0;
+            const Uint32 now_ms = SDL_GetTicks();
+            if (now_ms - last_ui_sounds_retry_ms >= 1000) {
+                last_ui_sounds_retry_ms = now_ms;
+                ui_sounds::init();
+            }
+        }
+
         {
             PROFILE_SCOPE("mpv_update");
             if (mpv_player_.update()) {
