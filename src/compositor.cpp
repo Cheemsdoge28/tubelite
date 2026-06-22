@@ -137,7 +137,11 @@ void Compositor::render(App* app, int width, int height) {
                 };
                 SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
                 if (previewTex) {
-                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
+                    // Crop the letterbox bars before stretching into the
+                    // 16:9 thumbnail destination — otherwise the bars get
+                    // scaled into the dst and the video looks compressed.
+                    SDL_Rect srcRect = app->mpv_player_.getVideoRect();
+                    SDL_RenderCopy(renderer_, previewTex, &srcRect, &thumbDst);
                     maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
                     drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
@@ -170,7 +174,8 @@ void Compositor::render(App* app, int width, int height) {
                 };
                 SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
                 if (previewTex) {
-                    SDL_RenderCopy(renderer_, previewTex, nullptr, &thumbDst);
+                    SDL_Rect srcRect = app->mpv_player_.getVideoRect();
+                    SDL_RenderCopy(renderer_, previewTex, &srcRect, &thumbDst);
                     maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
                     drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
@@ -319,15 +324,16 @@ void Compositor::render(App* app, int width, int height) {
 
         // ── Pass 2: live video frame (every frame, directly to screen) ────────
         // Fetch BEFORE any SDL render-target change to avoid the FBO conflict.
-        // mpv now renders directly at our 16:9 target (240x135) so no source
-        // crop / aspect adjustment is needed — the texture matches the dst.
-        // If preview already rendered this frame at a different size, the
-        // shared texture is whatever preview produced; both are 16:9 so the
-        // SDL_RenderCopy scale is a clean uniform stretch with no distortion.
+        // mpv renders at the full window size (640×480, 4:3) so the texture
+        // contains the video letterboxed within the FBO.  Pass getVideoRect()
+        // as the source so the 16:9 miniplayer destination only receives the
+        // actual video pixels — without this the letterbox bars get stretched
+        // INTO the miniplayer too, leaving the video visibly squished.
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mVH);
         if (previewTex) {
             SDL_Rect videoDst{mX + 2, mY + 2, mW, mVH};
-            SDL_RenderCopy(renderer_, previewTex, nullptr, &videoDst);
+            SDL_Rect srcRect = app->mpv_player_.getVideoRect();
+            SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
             maskRoundedCornersTop(renderer_, videoDst, theme::RADIUS_PANEL, theme::BG);
             drawVideoFade(app, videoDst, theme::RADIUS_PANEL);
         }

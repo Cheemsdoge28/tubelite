@@ -1912,13 +1912,15 @@ void App::loadHomeFeeds() {
             }
         });
     };
-    std::cout << "[App] loadHomeFeeds: dispatching " << (useSubs ? "fetchFeed(subscriptions)" : "search(trending)")
-              << " page=" << reqPage << std::endl;
-    if (useSubs) {
-        youtube_api_.fetchFeed("subscriptions", reqPage, cb);
-    } else {
-        youtube_api_.search("trending", reqPage, cb);
-    }
+    // Trending and subscriptions BOTH go through fetchFeed now — they
+    // share the same flat-playlist + dump-json + retry pipeline so feed
+    // entries (live detection, view-count handling) are processed
+    // identically.  The previous "ytsearch15:trending" path was a text
+    // search for the word "trending", not the actual Trending tab.
+    const char* kind = useSubs ? "subscriptions" : "trending";
+    std::cout << "[App] loadHomeFeeds: dispatching fetchFeed(" << kind
+              << ") page=" << reqPage << std::endl;
+    youtube_api_.fetchFeed(kind, reqPage, cb);
 }
 
 void App::loadMoreHomeFeeds() {
@@ -1969,11 +1971,9 @@ void App::loadMoreHomeFeeds() {
             }
         });
     };
-    if (useSubs) {
-        youtube_api_.fetchFeed("subscriptions", reqPage, cb);
-    } else {
-        youtube_api_.search("trending", reqPage, cb);
-    }
+    // Same dispatch as loadHomeFeeds — trending and subscriptions both
+    // go through fetchFeed for a uniform pipeline.
+    youtube_api_.fetchFeed(useSubs ? "subscriptions" : "trending", reqPage, cb);
 }
 
 void App::loadMoreSearchResults() {

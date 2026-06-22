@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.9.8-android-itag18" # bump on every meaningful edit so the
+TUBED_VERSION = "0.9.9-trending-tab" # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -934,28 +934,47 @@ def op_search(req):
 
 
 def op_trending(req):
-    req = dict(req)
-    req["_trending"] = True
-    return op_search(req)
+    # Trending used to dispatch through op_search ("ytsearch15:trending"),
+    # which actually performed a TEXT SEARCH for videos containing the word
+    # "trending" — not YouTube's curated Trending feed.  That's why
+    # results looked random and unrelated to the real Trending tab.
+    #
+    # Now routed through op_feed("trending") so we use the same
+    # flat-playlist + dump-json pipeline as the subscriptions feed,
+    # against the actual https://www.youtube.com/feed/trending URL.
+    # No cookies required — the trending feed is public.
+    feed_req = {
+        "kind": "trending",
+        "page": req.get("page", 1),
+        "page_size": req.get("page_size", _FEED_PAGE_DEFAULT),
+    }
+    return op_feed(feed_req)
 
 
-# URLs for personalized feeds, exposed by `op_feed` with kind=<key>.
-# For subscriptions we prefer yt-dlp's `:ytsubs` shortcut which the on-device
-# manual test confirmed working — it goes through yt-dlp's dedicated
-# subscriptions extractor that paginates correctly (the plain
-# /feed/subscriptions URL returns 0 items in some auth states because the
-# guest version of the page has nothing to enumerate).  The full URL is
-# kept as a second variant in case `:ytsubs` ever breaks.
+# URLs for feeds, exposed by `op_feed` with kind=<key>.  For subscriptions
+# we prefer yt-dlp's `:ytsubs` shortcut which the on-device manual test
+# confirmed working — it goes through yt-dlp's dedicated subscriptions
+# extractor that paginates correctly (the plain /feed/subscriptions URL
+# returns 0 items in some auth states because the guest version of the
+# page has nothing to enumerate).  The full URL is kept as a second
+# variant in case `:ytsubs` ever breaks.
 _FEED_URLS = {
     "subscriptions": [
         ":ytsubs",
         "https://www.youtube.com/feed/subscriptions",
     ],
+    "trending":    ["https://www.youtube.com/feed/trending"],
     "home":        ["https://www.youtube.com/"],
     "history":     ["https://www.youtube.com/feed/history"],
     "liked":       ["https://www.youtube.com/playlist?list=LL"],
     "watch_later": ["https://www.youtube.com/playlist?list=WL"],
 }
+
+# Kinds that require sign-in.  Public feeds (trending) skip the cookie
+# check and resolve fine for guests; personal feeds (subscriptions,
+# history, liked, watch_later, the home recommendations) need cookies
+# to return anything.
+_FEED_AUTH_REQUIRED = {"subscriptions", "home", "history", "liked", "watch_later"}
 
 # Default per-page size for op_feed.  Larger than search (15) because the
 # subscriptions feed is metadata-only — yt-dlp returns lightweight
@@ -1013,7 +1032,8 @@ def op_feed(req):
     page_size = max(1, min(int(req.get("page_size") or _FEED_PAGE_DEFAULT), 100))
     if kind not in _FEED_URLS:
         return {"ok": False, "error": f"unknown feed kind: {kind}"}
-    if not _have_cookies():
+    needs_auth = kind in _FEED_AUTH_REQUIRED
+    if needs_auth and not _have_cookies():
         return {"ok": False, "error": "not signed in"}
 
     ck = f"feed:{kind}:{page}:{page_size}"
@@ -1029,7 +1049,11 @@ def op_feed(req):
 
     def _try(url, attempt):
         out_items = []
-        args = _ytdlp_base_args(use_cookies=True) + [
+        # Pass cookies whenever we have them — even public feeds (trending)
+        # benefit from being signed in (region-localised results, age-gated
+        # entries unhidden, no "are you human" interstitial).  Cookies are
+        # only REQUIRED for the personal feeds though.
+        args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
             "--flat-playlist", "--dump-json",
             "--extractor-args", "youtubetab:approximate_date",
             "--playlist-start", str(start), "--playlist-end", str(end),
@@ -1069,14 +1093,20 @@ def op_feed(req):
         log(f"feed {kind}: variant {url} exhausted; trying next")
 
     if not results:
-        summary = _cookie_summary()
-        log(f"feed {kind}: ALL variants returned 0 items — {summary}")
-        # Surface the SAPISID-missing case as a specific UI-friendly error
-        # the C++ side can render verbatim in the empty-grid hint area.
-        if "MISSING SAPISID" in summary:
-            return {"ok": False, "error":
-                    "cookies.txt is missing SAPISID — re-export with full "
-                    "cookie set (see tubed.log for the wiki link)"}
+        # Cookie diagnostic only makes sense for auth-required feeds.  For
+        # trending (a public feed) an empty result is more likely a
+        # transient yt-dlp/Innertube hiccup or a regional content blackout
+        # than a cookies problem.
+        if needs_auth:
+            summary = _cookie_summary()
+            log(f"feed {kind}: ALL variants returned 0 items — {summary}")
+            if "MISSING SAPISID" in summary:
+                return {"ok": False, "error":
+                        "cookies.txt is missing SAPISID — re-export with full "
+                        "cookie set (see tubed.log for the wiki link)"}
+        else:
+            log(f"feed {kind}: ALL variants returned 0 items (public feed; "
+                f"likely a transient yt-dlp/Innertube issue)")
         return {"ok": False, "error":
                 f"feed empty (last url: {last_url}; cookies may not be "
                 f"authenticated — see tubed.log)"}

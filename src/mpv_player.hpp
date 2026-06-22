@@ -49,6 +49,16 @@ public:
     SDL_Texture* renderToTexture(SDL_Renderer* renderer, int w, int h);
     void destroyPreviewTexture();
 
+    // The video FBO is rendered at full window size (4:3 on RG351MP) with
+    // mpv's `keepaspect=yes`, which letterboxes/pillarboxes the actual
+    // video inside the texture.  When a UI element (miniplayer, preview)
+    // needs to RenderCopy that texture into a destination of a different
+    // aspect ratio, it MUST pass this rect as the source — otherwise the
+    // black bars get stretched into the destination too.  Returns the
+    // full texture rect when the video aspect matches the FBO (or when
+    // unknown) so it's always safe to pass through.
+    SDL_Rect getVideoRect() const;
+
     // Call once at the start of every frame on the rendering thread.
     // Lets renderToTexture skip an extra mpv_render pass if multiple UI elements
     // (preview card + miniplayer) consume the video in the same frame.

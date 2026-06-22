@@ -125,6 +125,21 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "hwdec",                  "rkmpp,auto");
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
+    // Color-correctness fix for the rkmpp → GL pipeline on RK3326.
+    //
+    // YouTube videos are encoded with BT.709 primaries and a LIMITED
+    // (16-235) range.  Without `video-output-levels=full`, mpv ships
+    // limited-range RGB to the GL_RGBA FBO; SDL's RenderCopy sampler
+    // then treats those bytes as full-range and the result is the
+    // classic "washed out / low-contrast / wrong skin tones" YouTube
+    // look.  Forcing full-range output makes mpv apply the 16→0, 235→255
+    // remap before writing, so the texture is colorimetrically correct
+    // by the time SDL stretches it to the display.
+    mpv_set_option_string(mpv_, "video-output-levels",    "full");
+    // Dither would normally cover the small precision loss from the
+    // range conversion, but profile=fast already disabled it.  At 360p
+    // on an LCD handheld the banding is not visible — keep it off for
+    // perf.
     mpv_set_option_string(mpv_, "audio-pitch-correction", "no");
     mpv_set_option_string(mpv_, "video-sync",             "audio");
     mpv_set_option_string(mpv_, "keepaspect",             "yes");
@@ -402,7 +417,50 @@ void MpvPlayer::render(int winWidth, int winHeight) {
 
     SDL_Texture* tex = renderToTexture(renderer_, winWidth, winHeight);
     if (tex) {
+        // For fullscreen playback the destination matches the FBO aspect
+        // (both 4:3 on this device), so passing the whole texture and
+        // letting SDL stretch to whole render target is correct — the
+        // letterbox bars from mpv land exactly on the screen's bars.
         SDL_RenderCopy(renderer_, tex, nullptr, nullptr);
+    }
+}
+
+SDL_Rect MpvPlayer::getVideoRect() const {
+    // Default: whole texture, conservatively safe (no cropping).  Used
+    // when mpv isn't loaded or we can't read the video params.
+    int winW = 0, winH = 0;
+    if (window_) SDL_GetWindowSize(window_, &winW, &winH);
+    if (winW <= 0 || winH <= 0) return SDL_Rect{0, 0, 1, 1};
+    SDL_Rect full{0, 0, winW, winH};
+    if (!mpv_) return full;
+
+    // mpv exposes the on-screen video dimensions via dwidth/dheight
+    // (display width after SAR/PAR correction).  When keepaspect=yes and
+    // the FBO doesn't match the video aspect, mpv centers the video and
+    // pads with black on the two opposite sides.  Compute that inner
+    // rect so callers can pass it as the source to RenderCopy.
+    int64_t dw = 0, dh = 0;
+    if (mpv_get_property(const_cast<mpv_handle*>(mpv_), "dwidth",
+                         MPV_FORMAT_INT64, &dw) < 0 || dw <= 0) return full;
+    if (mpv_get_property(const_cast<mpv_handle*>(mpv_), "dheight",
+                         MPV_FORMAT_INT64, &dh) < 0 || dh <= 0) return full;
+
+    const double videoAspect = static_cast<double>(dw) / static_cast<double>(dh);
+    const double fboAspect   = static_cast<double>(winW) / static_cast<double>(winH);
+
+    // Within ~1% just use the whole texture — avoids 1-px rounding cracks.
+    if (std::abs(videoAspect - fboAspect) / fboAspect < 0.01) return full;
+
+    if (videoAspect > fboAspect) {
+        // Video wider than FBO — letterboxed (black bars top + bottom).
+        const int innerH = static_cast<int>(winW / videoAspect + 0.5);
+        const int innerY = (winH - innerH) / 2;
+        return SDL_Rect{0, innerY, winW, innerH};
+    } else {
+        // Video taller than FBO — pillarboxed (black bars left + right).
+        const int innerW = static_cast<int>(winH * videoAspect + 0.5);
+        const int innerX = (winW - innerW) / 2;
+        return SDL_Rect{innerX, 0, innerW, winH};
     }
 }
 
