@@ -299,7 +299,12 @@ void YouTubeAPI::fetchFeed(const std::string& kind, int page,
         // we're not at the mercy of a tubed version change.
         json req = {{"op", "feed"}, {"kind", kind}, {"page", page}, {"page_size", 20}};
         json resp;
-        bool ok = tubedRequest(req, resp, 20000);
+        // Bumped from 20s → 35s: op_feed runs yt-dlp with a 30s internal
+        // timeout, so the 20s C++ ceiling was timing out the socket before
+        // tubed could reply — trending always appeared broken even when
+        // yt-dlp was working fine.  35s gives a comfortable margin above
+        // the 30s yt-dlp budget while still bounding the user-visible wait.
+        bool ok = tubedRequest(req, resp, 35000);
 
         if (req_id != current_search_request_id_) { callback({}, true); finish(); return; }
 

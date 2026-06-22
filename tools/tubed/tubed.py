@@ -45,7 +45,7 @@ def _base_dir():
     parent = os.path.dirname(here)
     return parent if os.path.isdir(parent) else here
 
-TUBED_VERSION = "0.10.2-trending-feed"  # bump on every meaningful edit so the
+TUBED_VERSION = "0.10.3-feed-timeout"   # bump on every meaningful edit so the
                                       # startup log proves which build is live
 
 BASE_DIR    = _base_dir()
@@ -959,17 +959,18 @@ def op_search(req):
 
 
 def op_trending(req):
-    # Reverted to op_search("trending") dispatch — the dedicated
-    # /feed/trending tab proved unreliable in production (frequent empty
-    # responses, slow extractor, regional differences).  A plain text
-    # search for "trending" goes through the much-better-tested
-    # ytsearchN:query path that already handles cookies, retry, page
-    # streaming, etc.  Result quality is "videos popular right now"
-    # which matches user expectations for the Home tab without the tab
-    # extractor's flakiness.
-    req = dict(req)
-    req["query"] = req.get("query") or "trending"
-    return op_search(req)
+    # Route trending through op_feed(kind="trending") which uses the
+    # actual https://www.youtube.com/feed/trending URL extractor —
+    # the same flat-playlist + dump-json pipeline as subscriptions.
+    # This returns YouTube's regionally-curated Trending tab content.
+    # The C++ fetchFeed() timeout was bumped to 35 s to accommodate
+    # op_feed's 25 s yt-dlp budget + response serialization overhead.
+    feed_req = {
+        "kind":      "trending",
+        "page":      req.get("page", 1),
+        "page_size": req.get("page_size", _FEED_PAGE_DEFAULT),
+    }
+    return op_feed(feed_req)
 
 
 # URLs for feeds, exposed by `op_feed` with kind=<key>.  For subscriptions
@@ -1077,6 +1078,13 @@ def op_feed(req):
         # benefit from being signed in (region-localised results, age-gated
         # entries unhidden, no "are you human" interstitial).  Cookies are
         # only REQUIRED for the personal feeds though.
+        #
+        # Timeout budget: 25 s yt-dlp run + serialization must fit inside
+        # the C++ socket SO_RCVTIMEO of 35 s.  Auth feeds allow a second
+        # retry attempt (25 s × 2 = 50 s > 35 s, so each attempt of an
+        # auth feed runs with a shorter 15 s budget; only one attempt for
+        # public feeds to stay within the 35 s window).
+        ytdlp_timeout = 15 if needs_auth else 25
         args = _ytdlp_base_args(use_cookies=_have_cookies()) + [
             "--flat-playlist", "--dump-json",
             "--extractor-args", "youtubetab:approximate_date",
@@ -1084,7 +1092,7 @@ def op_feed(req):
             url,
         ]
         with _work_sem:
-            raw = _run_ytdlp(args, timeout=30)
+            raw = _run_ytdlp(args, timeout=ytdlp_timeout)
         for ln in raw.splitlines():
             ln = ln.strip()
             if not ln:
@@ -1098,20 +1106,28 @@ def op_feed(req):
         log(f"feed {kind}: attempt {attempt} via {url} → {len(out_items)} items")
         return out_items
 
-    # Try each URL variant; retry each variant ONCE on empty because the
-    # first call after a cold tubed start often returns 0 even with valid
-    # cookies (yt-dlp's first /youtubei call gets a partial Innertube
-    # response while it negotiates client params).  The 2nd call usually
-    # succeeds.  Total worst case: 2 attempts × N variants.
+    # Retry logic is budget-aware:
+    #   Public feeds  (trending): 1 attempt only — the single 25 s yt-dlp
+    #     run fits inside the 35 s C++ socket window; a second attempt
+    #     would push past it and the socket would drop the connection.
+    #   Auth-required feeds (subs etc.): 2 attempts × 15 s each = 30 s,
+    #     which also fits within 35 s.
+    #
+    # First call after a cold tubed start sometimes returns 0 even with
+    # valid cookies (yt-dlp negotiates Innertube client params on the
+    # first /youtubei call).  Auth feeds get the retry for that case;
+    # public feeds rely on the cache TTL and a user-triggered refresh.
+    attempts = (1,) if not needs_auth else (1, 2)
     for url in _FEED_URLS[kind]:
         last_url = url
-        for attempt in (1, 2):
+        for attempt in attempts:
             results = _try(url, attempt)
             if results:
                 break
             # Brief pause before the retry lets any half-built InnerTube
             # client state stabilize.
-            time.sleep(0.5)
+            if attempt == 1 and len(attempts) > 1:
+                time.sleep(0.5)
         if results:
             break
         log(f"feed {kind}: variant {url} exhausted; trying next")
