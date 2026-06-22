@@ -29,6 +29,9 @@
 #include <poll.h>
 #include <linux/input.h>
 #include <dirent.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #endif
 
 #include <ft2build.h>
@@ -328,6 +331,90 @@ static bool foregroundGameActive() {
     return found;
 }
 
+// True iff a retroarch process is currently running.  We special-case
+// retroarch (vs the generic foregroundGameActive() list) because it's
+// the one emulator that exposes a UDP command socket we can talk to.
+// /proc scan is cheap (~ms) and only invoked on transitions, not per
+// frame.
+#ifndef _WIN32
+static bool retroArchRunning() {
+    DIR* d = opendir("/proc");
+    if (!d) return false;
+    bool found = false;
+    struct dirent* e;
+    while (!found && (e = readdir(d)) != nullptr) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        char path[300];
+        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        FILE* f = fopen(path, "r");
+        if (!f) continue;
+        char comm[128] = {0};
+        if (fgets(comm, sizeof(comm), f)) {
+            size_t n = strlen(comm);
+            if (n && comm[n - 1] == '\n') comm[n - 1] = '\0';
+            if (strstr(comm, "retroarch") != nullptr) found = true;
+        }
+        fclose(f);
+    }
+    closedir(d);
+    return found;
+}
+
+// Send a one-shot SHOW_MSG over RetroArch's UDP command interface.
+// RetroArch must have `network_cmd_enable = "true"` in its config
+// (the installer sets this).  We don't care whether the packet is
+// received — UDP is connectionless and we have no fallback for "RA is
+// up but its socket is closed".  Logs the attempt for debugging but
+// is otherwise silent on failure.
+//
+// Format note (ArkOS RetroArch builds): the command is space-
+// delimited `SHOW_MSG <text>`, NOT semicolon-delimited.  This was
+// verified against the device's actual RA — `MSG;...` is silently
+// dropped.
+static void retroArchNotify(const std::string& text) {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        std::cerr << "[daemon] retroArchNotify: socket() failed\n";
+        return;
+    }
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(55355);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    const std::string msg = "SHOW_MSG " + text;
+    (void)sendto(sock, msg.c_str(), msg.size(), 0,
+                 reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    close(sock);
+}
+
+// Dispatch a notification through the best available path:
+//   1. DRM overlay  — already handled by renderCard() when the
+//                     overlay is up; this function does nothing in
+//                     that case to avoid double-notifying.
+//   2. RetroArch    — UDP SHOW_MSG if retroarch is running.
+//   3. Console log  — last resort, useful for debugging headless.
+// Caller invokes this on STATE transitions (track change, pause/
+// resume), not per frame, so there's no UDP/log spam.
+static void dispatchNotification(const std::string& text) {
+    // If the DRM overlay is in active foreground (no game blocking
+    // it) the user will see the now-playing card anyway — don't
+    // double-notify via UDP.
+    if (!foregroundGameActive()) {
+        std::cerr << "[daemon] notify (drm-card-path): " << text << "\n";
+        return;
+    }
+    if (retroArchRunning()) {
+        std::cerr << "[daemon] notify (retroarch): " << text << "\n";
+        retroArchNotify(text);
+        return;
+    }
+    std::cerr << "[daemon] notify (log-only): " << text << "\n";
+}
+#else
+static void dispatchNotification(const std::string&) {}
+#endif
+
+
 // Tracks DRM state transitions so callers can spot "we just came back
 // from an emulator session" and force a fresh overlay frame.  Without
 // this signal, the cached `last_render_pos` keeps the render block
@@ -610,6 +697,15 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
             daemon_start_position = 0.0;
         }
         daemon_status = DaemonStatus::Playing;
+#ifndef _WIN32
+        // Notify the user (DRM overlay if visible, else SHOW_MSG to
+        // retroarch, else log).  Track change is a real transition,
+        // safe to send without further debouncing.
+        {
+            const auto& v = daemon_playlist[daemon_current_index];
+            dispatchNotification("Now Playing: " + v.title);
+        }
+#endif
         return;
     }
 
@@ -1148,6 +1244,14 @@ void runDaemon() {
                         daemon_start_position = 0.0;
                     }
                     daemon_status = DaemonStatus::Playing;
+#ifndef _WIN32
+                    if (daemon_current_index >= 0 &&
+                        daemon_current_index < (int)daemon_playlist.size()) {
+                        dispatchNotification(
+                            "Now Playing: " +
+                            daemon_playlist[daemon_current_index].title);
+                    }
+#endif
                 } else {
                     std::string vid = (daemon_current_index >= 0 &&
                                        daemon_current_index < (int)daemon_playlist.size())
@@ -1212,9 +1316,11 @@ void runDaemon() {
                             if (daemon_status == DaemonStatus::Playing) {
                                 mpv.pause();
                                 daemon_status = DaemonStatus::Paused;
+                                dispatchNotification("Paused");
                             } else if (daemon_status == DaemonStatus::Paused) {
                                 mpv.resume();
                                 daemon_status = DaemonStatus::Playing;
+                                dispatchNotification("Resumed");
                             }
                             daemon_overlay_timer = 5.0f;
                             overlay_active = true;

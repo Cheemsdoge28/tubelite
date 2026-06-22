@@ -556,6 +556,77 @@ if [ "$DO_ES" -eq 1 ]; then
     log_ok "ES registration check complete"
 fi
 
+if [ "$DO_ES" -eq 1 ]; then
+    log_step "6.5/7" "Patching RetroArch for audio mixing + UDP notifications..."
+    # Why both edits:
+    #   audio_device = "plug:dmix"     → makes RA share the codec via
+    #     ALSA's dmix (same path TubeLite uses), so background music
+    #     from the daemon coexists with game audio.  Without this, RA
+    #     opens the codec exclusively and TubeLite goes silent (or
+    #     vice-versa).
+    #   network_cmd_enable = "true"    → exposes RA's UDP command
+    #     socket on 55355.  The daemon sends `SHOW_MSG <title>` to
+    #     this socket on track changes, so the user sees a now-playing
+    #     toast inside the game even though the DRM overlay can't
+    #     draw on top of an active emulator.
+    #
+    # Patch idempotently in every retroarch.cfg we can find — ArkOS
+    # has both system and per-user copies, sometimes layered.  sed
+    # replaces existing keys if present, appends otherwise.
+    patch_retroarch_cfg() {
+        local cfg="$1"
+        [ -f "$cfg" ] || return 0
+
+        # Audio driver
+        if grep -q '^audio_driver' "$cfg"; then
+            sed -i 's|^audio_driver = .*|audio_driver = "alsa"|' "$cfg"
+        else
+            echo 'audio_driver = "alsa"' >> "$cfg"
+        fi
+
+        # Audio device → plug:dmix (the ONLY ALSA name we've verified
+        # mixes reliably with TubeLite + speaker-test on this hardware)
+        if grep -q '^audio_device' "$cfg"; then
+            sed -i 's|^audio_device = .*|audio_device = "plug:dmix"|' "$cfg"
+        else
+            echo 'audio_device = "plug:dmix"' >> "$cfg"
+        fi
+
+        # UDP command socket for SHOW_MSG
+        if grep -q '^network_cmd_enable' "$cfg"; then
+            sed -i 's|^network_cmd_enable = .*|network_cmd_enable = "true"|' "$cfg"
+        else
+            echo 'network_cmd_enable = "true"' >> "$cfg"
+        fi
+        if grep -q '^network_cmd_port' "$cfg"; then
+            sed -i 's|^network_cmd_port = .*|network_cmd_port = "55355"|' "$cfg"
+        else
+            echo 'network_cmd_port = "55355"' >> "$cfg"
+        fi
+
+        log_ok "Patched $cfg"
+    }
+
+    # Candidates: ArkOS user-level configs (ark + root + any other
+    # home), plus the system fallback.  The list is generous on
+    # purpose — patching a non-existent file is a fast no-op.
+    RA_CFG_CANDIDATES=(
+        "/home/ark/.config/retroarch/retroarch.cfg"
+        "/root/.config/retroarch/retroarch.cfg"
+        "/etc/retroarch.cfg"
+        "/opt/retroarch/retroarch.cfg"
+    )
+    for cfg in "${RA_CFG_CANDIDATES[@]}"; do
+        patch_retroarch_cfg "$cfg"
+    done
+
+    # Also catch any other user homes (e.g. multi-user images).
+    for home in /home/*; do
+        [ -d "$home" ] || continue
+        patch_retroarch_cfg "$home/.config/retroarch/retroarch.cfg"
+    done
+fi
+
 if [ "$DO_VERIFY" -eq 1 ]; then
     log_step "7/7" "Final display-manager safety check..."
     # One last sweep — ensures nothing snuck in during ES/theme steps.
