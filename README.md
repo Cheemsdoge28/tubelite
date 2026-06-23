@@ -4,6 +4,7 @@ A high-performance, hardware-accelerated native YouTube client for ArkOS handhel
 
 ![Downloads](https://img.shields.io/github/downloads/Cheemsdoge28/r36tube/total?style=for-the-badge&color=green)
 ![Release](https://img.shields.io/github/v/release/Cheemsdoge28/r36tube?style=for-the-badge&color=blue)
+[![Sponsor](https://img.shields.io/badge/Sponsor-Cheemsdoge28-ea4aaa?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/Cheemsdoge28)
 
 Unlike web-based wrappers, **TubeLite** is written natively in C++ using SDL2, OpenGL ES 2.0 (via KMSDRM/EGL), and `libmpv` to achieve smooth, hardware-accelerated video/audio rendering directly on the Linux framebuffer without windowing overhead.
 
@@ -119,4 +120,7 @@ For release packaging:
 ```
 
 ## 🤝 Support & Contribution
+
+If you find TubeLite useful, please consider [sponsoring the project on GitHub](https://github.com/sponsors/Cheemsdoge28) to support its development!
+
 Feel free to open an issue or pull request if you find bugs or want to improve performance!
