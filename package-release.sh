@@ -50,6 +50,16 @@ if [ -d "$SCRIPT_DIR/vendor" ]; then
     mkdir -p "$APP_DIR/vendor"
     cp -r "$SCRIPT_DIR/vendor/"* "$APP_DIR/vendor/" 2>/dev/null || true
     chmod +x "$APP_DIR/vendor/"* 2>/dev/null || true
+    # Prune redundant build/download artifacts: the runtimes ship as their
+    # extracted binaries, so the original archives (e.g. vendor/deno.zip) are
+    # dead weight that would otherwise inflate every release by tens of MB.
+    find "$APP_DIR/vendor" -type f \
+        \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' -o -name '*.tar.xz' \) \
+        -delete 2>/dev/null || true
+    # The JS runtime used for DASH unlock is deno (the installer looks for
+    # vendor/deno and adds it to PATH). The vendored node distribution is not
+    # used at runtime, so keep it out of the release (~150 MB saved).
+    rm -rf "$APP_DIR/vendor/node" 2>/dev/null || true
 fi
 
 
@@ -97,13 +107,21 @@ if [ -f "$SCRIPT_DIR/VERSION" ]; then
 fi
 
 cat > "$APP_DIR/RELEASE_NOTES.txt" <<'EOF'
-TubeLite YouTube Client (2026-06-16)
+TubeLite YouTube Client (v1.6.0 - 2026-06-23)
 
 Major Features & Improvements:
 - Native audio and video playback using hardware acceleration (rk3326-optimized GLESv2/EGL/MPV layers).
-- Background audio player daemon supporting controller-based controls (Play/Pause, Next/Prev, Exit).
+- Background audio player daemon supporting controller-based controls (Play/Pause, Next/Prev, Speed, Exit).
 - Seamless continuation of playback as a background audio daemon when exiting the main app.
+- Background playback speed control (FN+SELECT) and screen-sleep power saving (X / FN+X).
+- ALSA dmix audio mixing so TubeLite, MPV and RetroArch share the audio device.
 - Unified installer and controller-friendly setup menu.
+
+Fixes in this build:
+- Cross-card input determinism: the gamepad is now read through SDL's raw
+  joystick layer with a fixed button map and never as an SDL game controller.
+  This fixes A/B being swapped, Select/Start being dead, and X screen-sleep
+  instantly re-waking on SD-card images whose gamecontrollerdb matched the pad.
 
 Contents:
 - Install-TubeLite.sh
