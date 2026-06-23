@@ -759,13 +759,23 @@ bool App::createWindow() {
 
 
 void App::openController() {
-    if (controller_ != nullptr) return;
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-        if (SDL_IsGameController(i)) {
-            controller_ = SDL_GameControllerOpen(i);
-            if (controller_ != nullptr) return;
-        }
-    }
+    if (joystick_ != nullptr) return;
+    // IMPORTANT: deliberately do NOT use SDL_GameControllerOpen here.
+    //
+    // The RK3326 pad is exposed to SDL as a plain joystick.  On *some* ArkOS
+    // SD-card images SDL also ships a gamecontrollerdb entry that matches it
+    // and re-labels the physical buttons in Xbox convention — which swaps A/B
+    // and drops Select/Start relative to the raw evdev order.  On other images
+    // there's no such entry and the device falls through to the raw joystick
+    // layout.  That divergence is exactly why a fresh card showed A/B swapped,
+    // Select/Start dead, and screen-off instantly re-waking (a single press
+    // emitted BOTH a controller event and a joystick event — one committed
+    // screen-off, the duplicate immediately woke it).
+    //
+    // We pin input to the raw joystick layer (handleJoyButton: 0=B 1=A …
+    // 12=Select 13=Start 16=FN) so the mapping is byte-for-byte identical on
+    // every card regardless of whatever gamecontrollerdb SDL happens to bundle,
+    // and each physical press produces exactly one event.
     if (SDL_NumJoysticks() > 0) joystick_ = SDL_JoystickOpen(0);
 }
 
@@ -1485,8 +1495,14 @@ void App::handleEvent(SDL_Event& event) {
     case SDL_QUIT: state_.running = false; break;
     case SDL_KEYDOWN: handleKey(event.key.keysym.sym); break;
     case SDL_KEYUP: handleKeyUp(event.key.keysym.sym); break;
-    case SDL_CONTROLLERDEVICEADDED: openController(); break;
-    case SDL_CONTROLLERDEVICEREMOVED: closeController(); openController(); break;
+    // Both controller- and joystick-level hotplug events route to the same
+    // joystick-only open path (see App::openController).  We never open an SDL
+    // game controller, so CONTROLLERBUTTON* events never arrive — every press
+    // comes through the raw JOYBUTTON path below.
+    case SDL_CONTROLLERDEVICEADDED:
+    case SDL_JOYDEVICEADDED: openController(); break;
+    case SDL_CONTROLLERDEVICEREMOVED:
+    case SDL_JOYDEVICEREMOVED: closeController(); openController(); break;
     case SDL_CONTROLLERBUTTONDOWN: handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), true); break;
     case SDL_CONTROLLERBUTTONUP: handleControllerButton(static_cast<SDL_GameControllerButton>(event.cbutton.button), false); break;
     case SDL_JOYHATMOTION:

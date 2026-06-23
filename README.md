@@ -60,11 +60,20 @@ A new system named **"TubeLite"** will now appear in your main frontend carousel
 | **D-Pad / Left Stick** | Navigate home grid / search results / virtual keyboard |
 | **A** | Click/Play video / Play & Pause during playback |
 | **B** | Back / Close Virtual Keyboard / Exit Playback screen |
+| **X** | Open Sign-in Help (in grid) / **Screen Sleep** light toggle (during playback, double-tap to confirm) |
 | **Y** | Open Virtual Keyboard (in grid) / Toggle Subtitles (during playback) |
 | **L2 / R2** | Volume Decrease / Increase (during playback) |
 | **D-Pad Left / Right** | Seek/Scrub backward/forward (during playback) |
-| **Select** | Toggle miniplayer mode |
+| **L3** | Toggle debug/stats overlay (anywhere, including playback) |
+| **R3** | Reload current feed / re-run search |
+| **Select** (tap) | Toggle miniplayer mode |
+| **Select + Y** | Open Settings |
+| **Select + A** | Toggle description drawer (playback) / Play & Pause (miniplayer) |
+| **Select + L1 / R1** | Previous / Next track in queue (playback or miniplayer) |
+| **Select + B** | Leave playback (miniplayer) |
 | **Start + Select** | Exit Main Application (Handover to Background Daemon) |
+
+> **Note on input:** TubeLite reads the gamepad through SDL's raw joystick layer with a fixed button map (`B A X Y L1 R1 L2 R2 … Select Start … FN`), and never opens it as an SDL *game controller*. This guarantees the **exact same mapping on every SD card / OS image** — some ArkOS images ship a `gamecontrollerdb` entry that would otherwise swap A/B and break Select/Start.
 
 ### Background Daemon Controls (FN Combination)
 
@@ -76,8 +85,8 @@ Hold the **FN** button (Select on some configurations) and press one of the foll
 | **FN + B** | Exit background daemon completely (requires double-tap confirmation) |
 | **FN + X** | Screen Sleep / Power-save mode (requires double-tap confirmation; wakes on any key) |
 | **FN + SELECT** | Cycle playback speed (1.0x -> 1.25x -> 1.5x -> 1.75x -> 2.0x -> 0.25x -> 0.5x -> 0.75x -> 1.0x) |
-| **FN + R1 / D-Pad Right** | Skip to next track in queue |
-| **FN + L1 / D-Pad Left** | Go back to previous track |
+| **FN + R1** | Skip to next track in queue |
+| **FN + L1** | Go back to previous track |
 | **FN + L2 / R2** | Volume Decrease / Increase |
 | **FN + D-Pad Up / START** | Show on-screen daemon overlay card (shows track status & position) |
 

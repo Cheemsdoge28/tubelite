@@ -2,6 +2,11 @@
 
 This major release introduces background playback speed controls, screen sleep power saving, offline installation enhancements, and ALSA Audio Compatibility safeguards.
 
+### Input & Controller (Cross-Card Determinism)
+- **Fixed A/B swap on fresh installs**: TubeLite now reads the gamepad exclusively through SDL's raw joystick layer with a fixed button map and never opens it as an SDL *game controller*. Previously, ArkOS SD-card images that shipped a matching `gamecontrollerdb` entry would re-label the pad in Xbox convention — swapping A/B and dropping Select/Start — while images without that entry worked. Input is now byte-for-byte identical on every card with the same DTB.
+- **Fixed Select / Start being dead** on those same images (they were lost in the controller-mapping layer; the raw `Select`/`Start` indices are now always honoured).
+- **Fixed `X` screen-sleep instantly re-waking**: with a controller open, a single press emitted *both* a controller event and a joystick event — one committed screen-off and the duplicate immediately woke it. With the single raw-joystick path, each press now produces exactly one event, so screen sleep commits and stays off until the next press.
+
 ### Background Daemon & Controls
 - **Playback Speed Control**: Holding `FN + SELECT` (or key code 704) in the background daemon cycles playback speed (`1.0x -> 1.25x -> 1.5x -> 1.75x -> 2.0x -> 0.25x -> 0.5x -> 0.75x -> 1.0x`) with on-screen toast feedback and in-game RetroArch notification. Speed state is seamlessly preserved and reabsorbed between the main application and the background daemon.
 - **Speed Badge Pill**: The background card overlay displays a clean speed badge next to the status badge when the speed is non-standard, automatically adjusting title clipping to prevent collisions.
