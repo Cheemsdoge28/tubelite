@@ -1,3 +1,20 @@
+# Release Notes - 2026-06-23 (v1.6.0)
+
+This major release introduces background playback speed controls, screen sleep power saving, offline installation enhancements, and ALSA Audio Compatibility safeguards.
+
+### Background Daemon & Controls
+- **Playback Speed Control**: Holding `FN + SELECT` (or key code 704) in the background daemon cycles playback speed (`1.0x -> 1.25x -> 1.5x -> 1.75x -> 2.0x -> 0.25x -> 0.5x -> 0.75x -> 1.0x`) with on-screen toast feedback and in-game RetroArch notification. Speed state is seamlessly preserved and reabsorbed between the main application and the background daemon.
+- **Speed Badge Pill**: The background card overlay displays a clean speed badge next to the status badge when the speed is non-standard, automatically adjusting title clipping to prevent collisions.
+- **Screen Sleep (Light Toggle)**: Holding `FN + X` (labeled `Light` in footer hints) arms a sleep screen prompt. Confirming it turns off the backlight and drops the CPU governor to `conservative` for maximum battery and thermal optimization during background audio. Pressing any controller button wakes the screen back up immediately.
+- **Clean Footer Hints**: Removed the buggy and redundant `FN + Y` mute toggle shortcut (Play/Pause `FN + A` handles this naturally), resolving the card footer layout with a balanced, gap-free, centered hint list.
+- **RetroArch Toast Truncation**: Truncates long video titles to 34 characters and appends a Unicode ellipsis (`…`) in RetroArch overlay notifications to match the now-playing DRM card layout.
+
+### Installer & Audio Compatibility
+- **ALSA Audio Compatibility Checker**: Added an intelligent step (`scripts/alsa_compat.py`) to the EmulationStation installer. It safely checks existing ALSA dmix configurations and prompts to optimize the dmix rate from `44100` to `48000` Hz (after taking a timestamped backup). Formatting, comments, and other parameters are strictly preserved.
+- **Offline Font Bundling**: Pre-bundles required Noto fallback symbol and emoji fonts directly in the `res/` repository, ensuring the client works completely offline without needing CDN downloads.
+
+---
+
 # Release Notes - 2026-05-07 (v1.5.33)
 
 This update resolves the long-standing menu focus issue and improves overall stability.

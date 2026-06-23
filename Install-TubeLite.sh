@@ -753,6 +753,15 @@ if [ "$DO_ES" -eq 1 ]; then
     done
 fi
 
+if [ "$DO_ES" -eq 1 ]; then
+    log_step "6.7/7" "Running ALSA audio compatibility checks..."
+    if [ -f "$SCRIPT_DIR/scripts/alsa_compat.py" ]; then
+        python3 "$SCRIPT_DIR/scripts/alsa_compat.py" || log_warn "ALSA audio compatibility checks failed or were interrupted."
+    else
+        log_warn "ALSA audio compatibility helper scripts/alsa_compat.py not found, skipping."
+    fi
+fi
+
 if [ "$DO_VERIFY" -eq 1 ]; then
     log_step "7/7" "Final display-manager safety check..."
     # One last sweep — ensures nothing snuck in during ES/theme steps.

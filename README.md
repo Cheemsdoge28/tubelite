@@ -41,10 +41,10 @@ TubeLite is optimized specifically for **RK3326** based handhelds running **ArkO
 - Path: `EASYROMS/tools/TubeLite/`
 
 ### 3. Setup via EmulationStation
-- Insert the SD card back into your device and boot ArkOS.
 - Navigate to the **Options** (or Tools) section in EmulationStation.
 - Select and run **Install-TubeLite.sh**.
 - Choose **Full Install** in the controller-friendly menu.
+  - *Note*: The installer includes an **Audio Compatibility** check which scans your ALSA configuration (`~/.asoundrc` or `/etc/asound.conf`). If a `dmix` mixer running at `44100 Hz` is detected, it will safely offer to update it to `48000 Hz` (making a backup first) to ensure TubeLite, MPV, and RetroArch co-exist and play audio perfectly without locking the audio device.
 - Once finished, **Restart EmulationStation** (Start Menu → Quit → Restart EmulationStation).
 
 A new system named **"TubeLite"** will now appear in your main frontend carousel!
@@ -66,17 +66,34 @@ A new system named **"TubeLite"** will now appear in your main frontend carousel
 | **Select** | Toggle miniplayer mode |
 | **Start + Select** | Exit Main Application (Handover to Background Daemon) |
 
-### Background Daemon Controls (Select Combination)
+### Background Daemon Controls (FN Combination)
 
-Hold the **Select** button and press one of the following:
+Hold the **FN** button (Select on some configurations) and press one of the following:
 
 | Combination | Action |
 |-------------|--------|
-| **Select + A** | Play / Pause audio |
-| **Select + B** | Exit background daemon completely |
-| **Select + R1 / D-Pad Right** | Skip to next track in queue |
-| **Select + L1 / D-Pad Left** | Go back to previous track |
-| **Select + D-Pad Up** | Show on-screen daemon overlay card (shows track status & position) |
+| **FN + A** | Play / Pause audio |
+| **FN + B** | Exit background daemon completely (requires double-tap confirmation) |
+| **FN + X** | Screen Sleep / Power-save mode (requires double-tap confirmation; wakes on any key) |
+| **FN + SELECT** | Cycle playback speed (1.0x -> 1.25x -> 1.5x -> 1.75x -> 2.0x -> 0.25x -> 0.5x -> 0.75x -> 1.0x) |
+| **FN + R1 / D-Pad Right** | Skip to next track in queue |
+| **FN + L1 / D-Pad Left** | Go back to previous track |
+| **FN + L2 / R2** | Volume Decrease / Increase |
+| **FN + D-Pad Up / START** | Show on-screen daemon overlay card (shows track status & position) |
+
+---
+
+## 🎮 RetroArch Integration & Audio Mixing
+
+To guarantee smooth co-existence between gameplay and background music, the TubeLite installer includes an automated **RetroArch Config Editor** step that dynamically patches all `retroarch.cfg` configurations on the system:
+
+1. **Audio Sharing via ALSA dmix**:
+   - Sets `audio_driver = "alsa"`
+   - Sets `audio_device = "plug:dmix"`
+   - **Why**: This instructs RetroArch to use the ALSA `dmix` mixer plugin instead of opening the audio hardware exclusively. This allows gameplay sounds to mix seamlessly with background audio from the TubeLite daemon, rather than one silencing the other.
+2. **In-Game Now-Playing Notifications**:
+   - Sets `network_cmd_enable = "true"`
+   - **Why**: This opens RetroArch's UDP network socket (port 55355). When you change tracks in the background daemon (e.g. via `FN + D-Pad Right`), the daemon pushes a text payload to this socket, prompting RetroArch to render a native "Now Playing" OSD notification overlay inside the game.
 
 ---
 

@@ -25,6 +25,10 @@ Connect your handheld's **EASYROMS** SD card to your computer.
 2. Navigate to the **Options** (or **Tools**) system in the main menu.
 3. Select **Install-TubeLite.sh** and press **A**.
 4. The installer will present a controller-friendly menu. Select **Full Install** to install dependencies, copy the system theme, and register TubeLite.
+   - **Audio Compatibility Check**: During this step, the installer automatically runs an audio check on your ALSA config files (`~/.asoundrc` or `/etc/asound.conf`). If a `dmix` device running at `44100 Hz` is found, it will prompt you:
+     `Would you like to update the dmix mixer rate to 48000 Hz? [Y/n]`
+     Selecting **Yes** (or pressing Enter) will update it to 48000 Hz, making a timestamped backup first. This resolves conflicts where different emulators/apps lock the audio card at mismatching rates.
+   - **RetroArch Config Patcher**: The installer will scan and configure any `retroarch.cfg` files to enable ALSA `dmix` audio sharing and the UDP command socket, ensuring background playback coexists with games and outputs now-playing toasts on screen.
 5. Once it finishes, it will return to the menu.
 
 ### 4. Restart EmulationStation
