@@ -2671,9 +2671,11 @@ bool App::reabsorbDaemonPlayback() {
     if (v.id.empty()) return false;
     const double position  = std::max(0.0, j.value("position", 0.0));
     const bool   wasPlaying = j.value("playing", true);
+    const double speed      = std::max(0.25, std::min(2.0, j.value("speed", 1.0)));
 
     std::cerr << "[App] reabsorbing daemon playback: id=" << v.id
-              << " pos=" << position << "s playing=" << wasPlaying << "\n";
+              << " pos=" << position << "s playing=" << wasPlaying
+              << " speed=" << speed << "x\n";
 
     // ── Retrieve stream URLs ──
     // Read stream_url / subtitle_url / audio_url directly from the daemon state.
@@ -2751,6 +2753,7 @@ bool App::reabsorbDaemonPlayback() {
 
     mpv_player_.setVolume(0);
     mpv_player_.setMute(state_.muted);
+    state_.speed = speed;
     mpv_player_.setSpeed(state_.speed);
     mpv_player_.play(streamUrl, subUrl, audioUrl);
     if (position > 0.1) mpv_player_.setPendingSeekPosition(position);
@@ -2867,6 +2870,7 @@ void App::saveDaemonQueue() {
             j["current_index"] = current_idx;
         }
         j["current_position"] = mpv_player_.getPlaybackTime();
+        j["speed"]            = state_.speed;
         
         std::ofstream ofs(getAppDataPath("daemon_queue.json"));
         if (ofs) {

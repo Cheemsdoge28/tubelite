@@ -53,6 +53,7 @@ struct DaemonVideo {
 static std::vector<DaemonVideo> daemon_playlist;
 static int daemon_current_index = 0;
 static double daemon_start_position = 0.0;
+static double daemon_speed = 1.0;
 static std::atomic<bool> daemon_running{true};
 
 static std::atomic<DaemonStatus> daemon_status{DaemonStatus::Idle};
@@ -267,6 +268,7 @@ static bool loadDaemonQueue() {
         }
         daemon_current_index  = j.value("current_index", 0);
         daemon_start_position = j.value("current_position", 0.0);
+        daemon_speed          = j.value("speed", 1.0);
         return !daemon_playlist.empty();
     } catch (...) {
         return false;
@@ -971,6 +973,7 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         // URLs from the app, or the previous track's prefetch wrote
         // here.  Either way: instant transition, no extractor call.
         std::cerr << "[daemon] Using pre-resolved URL for " << vid_id << "\n";
+        mpv.setSpeed(daemon_speed);
         mpv.play(stream_url, subtitle_url, audio_url);
         if (daemon_start_position > 0.0) {
             mpv.setPendingSeekPosition(daemon_start_position);
@@ -1225,6 +1228,19 @@ static void renderCard(MpvPlayer& mpv) {
     fillRoundedRect(bx, 7, bw, 14, 4, sr, sg, sb, fade(30));
     drawText(statStr, bx + 5, 9, 9, sr, sg, sb, fade(220));
 
+    // Draw speed badge next to status badge if speed is not 1.0x
+    double speedVal = mpv.getSpeed();
+    int limit_title_x = bx - 6;
+    if (speedVal != 1.0) {
+        char spdStr[16];
+        snprintf(spdStr, sizeof(spdStr), "%.2fx", speedVal);
+        int spw = measureText(spdStr, 9) + 10;
+        int spx = bx - 6 - spw;
+        fillRoundedRect(spx, 7, spw, 14, 4, C_SF_R, C_SF_G, C_SF_B, fade(180));
+        drawText(spdStr, spx + 5, 9, 9, C_TT_R, C_TT_G, C_TT_B, fade(220));
+        limit_title_x = spx - 6;
+    }
+
     // ── 6. Title (14px, clipped before badge) ────────────────────────────────
     // When a toast is active (confirmation prompt, volume readout,
     // mute change) it takes over the title slot so the user gets
@@ -1237,14 +1253,14 @@ static void renderCard(MpvPlayer& mpv) {
         const std::string line1 = (nl == std::string::npos) ? t : t.substr(0, nl);
         const std::string line2 = (nl == std::string::npos) ? "" : t.substr(nl + 1);
         drawText(truncateText(line1, 34), ML, 10, 14,
-                 C_AC_R, C_AC_G, C_AC_B, fa, bx - 6);
+                 C_AC_R, C_AC_G, C_AC_B, fa, limit_title_x);
         if (!line2.empty()) {
             drawText(truncateText(line2, 40), ML, 27, 11,
-                     C_TT_R, C_TT_G, C_TT_B, fade(230), bx - 6);
+                     C_TT_R, C_TT_G, C_TT_B, fade(230), limit_title_x);
         }
     } else {
         drawText(truncateText(video.title, 34), ML, 10, 14,
-                 C_TT_R, C_TT_G, C_TT_B, fa, bx - 6);
+                 C_TT_R, C_TT_G, C_TT_B, fa, limit_title_x);
     }
 
     // ── 7. Author (11px) + timestamp right-aligned (same baseline) ───────────
@@ -1329,7 +1345,7 @@ static void renderCard(MpvPlayer& mpv) {
     const std::string hints_row1 =
         "FN +  A Play   L/R Skip   L2/R2 Vol";
     const std::string hints_row2 =
-        "FN +  X Mute   Y Launch   B Exit   Up Show";
+        "FN +  X Mute   Y Launch   B Exit   Up Show   SEL Spd";
     drawText(hints_row1, ML, 54, 9, C_HN_R, C_HN_G, C_HN_B, fade(220));
     // Clip the bottom row against the track-index's left edge so the
     // two never collide visually on long playlists.
@@ -1436,6 +1452,7 @@ void runDaemon() {
     using namespace std::chrono;
     auto last_quick_launch_arm = steady_clock::time_point::min();
     auto last_quit_confirm_arm = steady_clock::time_point::min();
+    auto last_speed_arm        = steady_clock::time_point::min();
     constexpr int kConfirmWindowMs = 2000;
     // Keep the old name as an alias for the quick-launch path so the
     // existing call site reads cleanly.
@@ -1557,6 +1574,7 @@ void runDaemon() {
         j["position"]     = mpv.getPlaybackTime();
         j["duration"]     = mpv.getDuration();
         j["playing"]      = (daemon_status == DaemonStatus::Playing);
+        j["speed"]        = mpv.getSpeed();
         j["stream_url"]   = stream_url;
         j["subtitle_url"] = subtitle_url;
         j["audio_url"]    = audio_url;
@@ -1662,6 +1680,7 @@ void runDaemon() {
                             video.audio_url    = audio;
                         }
                     }
+                    mpv.setSpeed(daemon_speed);
                     mpv.play(url, sub, audio);
                     if (daemon_start_position > 0.0) {
                         mpv.setPendingSeekPosition(daemon_start_position);
@@ -1823,14 +1842,47 @@ void runDaemon() {
                                     "\xE2\x96\xA0 Tap B again\nto stop daemon");
                                 last_render_pos = -1.0;
                             }
-                        } else if (ev.code == btn::SELECT ||
-                                   ev.code == btn::START ||
+                        } else if (ev.code == btn::SELECT || ev.code == 704) {
+                            const auto now_tp = steady_clock::now();
+                            const auto since_arm_ms =
+                                duration_cast<milliseconds>(
+                                    now_tp - last_speed_arm).count();
+                            if (last_speed_arm !=
+                                    steady_clock::time_point::min() &&
+                                since_arm_ms <= kConfirmWindowMs) {
+                                // Confirmed — cycle speed
+                                double s = mpv.getSpeed();
+                                double rounded = std::round(s * 4.0) / 4.0;
+                                double next_speed = rounded + 0.25;
+                                if (next_speed > 2.01) {
+                                    next_speed = 0.25;
+                                }
+                                daemon_speed = next_speed;
+                                mpv.setSpeed(daemon_speed);
+
+                                char spdBuf[32];
+                                snprintf(spdBuf, sizeof(spdBuf), "Speed: %.2fx", daemon_speed);
+                                setDaemonToast(spdBuf, 1.5f);
+                                dispatchNotification(formatTrackNotification(
+                                    mpv, "\xE2\x99\xAA", spdBuf));
+                                last_speed_arm = now_tp; // keep window open for consecutive cycles
+                            } else {
+                                // First tap — arm + prompt
+                                last_speed_arm = now_tp;
+                                double s = mpv.getSpeed();
+                                char promptBuf[64];
+                                snprintf(promptBuf, sizeof(promptBuf), "Tap SELECT to\ncycle speed (%.2fx)", s);
+                                setDaemonToast(promptBuf, kConfirmWindowMs / 1000.0f);
+                                dispatchNotification(promptBuf);
+                            }
+                            last_render_pos = -1.0;
+                            continue;
+                        } else if (ev.code == btn::START ||
+                                   ev.code == 705 ||
                                    ev.code == btn::DPAD_UP_KEY ||
                                    ev.code == btn::DPAD_UP_BTN) {
                             // Force-show overlay + re-toast.  Bound to
-                            // SEL, START, and D-pad-Up (key + btn
-                            // variants) so at least one works on this
-                            // device — see showOverlayNow comment.
+                            // START, D-pad-Up, etc.
                             showOverlayNow();
                         } else if (ev.code == btn::X) { // mute toggle
                             const bool wasMuted = (mpv.getPropertyInt("mute") != 0);
