@@ -1,6 +1,5 @@
 # Build artifacts
 dist/
-bin/
 obj/
 *.o
 *.d
@@ -23,9 +22,14 @@ __pycache__/
 *.swp
 *.swo
 
+#Agents
+.claude
+
+.vscode
 # Dependencies
 node_modules/
-
+package.json
+package-lock.json
 # OS files
 .DS_Store
 Thumbs.db
