@@ -34,7 +34,7 @@
             <origin>0.5 0.5</origin>
             <size>0.5 0.08</size>
             <fontSize>0.035</fontSize>
-            <color>CCCCCCFF</color>
+            <color>A5ACBAFF</color>
             <zIndex>4</zIndex>
         </text>
     </view>
@@ -55,7 +55,7 @@
             <path>./blank.png</path>
             <pos>0 0</pos>
             <size>1 1</size>
-            <color>000000DD</color>
+            <color>0C0D12DD</color>
             <zIndex>2</zIndex>
         </image>
 
@@ -75,11 +75,11 @@
             <alignment>center</alignment>
             <fontSize>0.045</fontSize>
             
-            <primaryColor>DDDDDDFF</primaryColor>
-            <secondaryColor>BBBBBBFF</secondaryColor>
+            <primaryColor>F0F2F5FF</primaryColor>
+            <secondaryColor>A5ACBAFF</secondaryColor>
             <selectedColor>FFFFFFFF</selectedColor>
-            <selectorColor>FF7700AA</selectorColor>
-            <folderColor>DDDDDDFF</folderColor>
+            <selectorColor>FF3030AA</selectorColor>
+            <folderColor>F0F2F5FF</folderColor>
             
             <zIndex>4</zIndex>
         </textlist>
@@ -94,7 +94,7 @@
             <pos>0.5 0.94</pos>
             <origin>0.5 0.5</origin>
             <fontSize>0.03</fontSize>
-            <color>AAAAAAFF</color>
+            <color>787E8CFF</color>
         </help>
     </view>
 </theme>
