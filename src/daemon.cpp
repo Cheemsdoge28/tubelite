@@ -548,53 +548,38 @@ static void dispatchNotification(const std::string& text) {
     std::cerr << "[daemon] notify (log-only): " << text << "\n";
 }
 
-// Build a multi-line, glyph-prefixed notification for the current
-// track — mirrors the DRM now-playing card's information layout so
-// the in-game RA toast carries the same data the user would see on
-// the overlay.  RA's `SHOW_MSG` renders `\n` as a hard line break
-// and its default font handles the BMP glyphs below; worst case a
-// glyph shows as a box but the text underneath is still readable.
+// Build the in-game RetroArch toast for the current track.
 //
-// Layout (DRM card → equivalent text line):
-//   [accent bar + glyph]        →  "♪ Now Playing                [STATUS]"
-//   <title>                     →  "<title>"
-//   <author>            <time>  →  "<author>  ·  0:42 / 3:14"
-//   ━━━━●─────  progress bar    →  "▰▰▰▰▱▱▱▱▱▱  35%"
-//   FN+A Pause … 2 / 5  hints   →  "FN+A Pause · L/R Skip · B Exit       2 / 5"
+// IMPORTANT: RetroArch's network `SHOW_MSG` renders as a SINGLE-LINE
+// transient OSD message — embedded `\n` do not produce clean line
+// breaks (they garble or truncate), and there's no monospace / width
+// guarantee for ASCII progress bars.  The previous multi-line "card
+// as text" layout is exactly why the in-game toast looked broken.
 //
-// `verb_override` lets callers pin the verb to a transition word
-// ("Paused", "Resumed", "Daemon stopped") that differs from the
-// underlying status badge.
+// So this builds ONE line, with " · " (U+00B7) field separators, that
+// carries the same essential info the DRM card shows — glyph, verb,
+// state, title, author, position, queue index — minus the things that
+// only make sense in a persistent on-screen card (the progress bar and
+// the button-hint row).  Example:
+//
+//   ♪ Now Playing · Never Gonna Give You Up · Rick Astley · 0:42/3:33 · 2/5
+//   ⏸ Paused · Never Gonna Give You Up
+//   ▲ Volume 75
+//
+// `verb_override` pins the leading verb to a transition word
+// ("Paused", "Resumed", "Volume 75", "Daemon stopped"); when it's a
+// self-contained status (anything other than the default "Now
+// Playing") we skip the title/author tail so momentary toasts stay
+// short and readable.
 static std::string formatTrackNotification(MpvPlayer& mpv,
                                            const char* glyph,
                                            const char* verb_override) {
-    auto statusBadge = []() -> const char* {
-        switch ((DaemonStatus)daemon_status) {
-            case DaemonStatus::Resolving: return "[LOADING]";
-            case DaemonStatus::Paused:    return "[PAUSED]";
-            case DaemonStatus::Error:     return "[ERROR]";
-            case DaemonStatus::Playing:   return "[PLAYING]";
-            default:                      return "";
-        }
-    };
+    const std::string sep = "  \xC2\xB7  ";   // "  ·  "
 
-    // Header line: "<glyph> <verb>     <badge>"
-    // Use the override verb when provided (transitions like "Paused"
-    // already carry the state).
     std::string out;
     if (glyph) { out += glyph; out += " "; }
-    out += (verb_override ? verb_override : "Now Playing");
-    {
-        const char* badge = statusBadge();
-        // Only append a badge when it adds info beyond the verb.
-        if (badge[0] != '\0') {
-            if (!verb_override ||
-                std::string(verb_override).find(badge + 1) == std::string::npos) {
-                out += "   ";
-                out += badge;
-            }
-        }
-    }
+    const std::string verb = verb_override ? verb_override : "Now Playing";
+    out += verb;
 
     if (daemon_current_index < 0 ||
         daemon_current_index >= (int)daemon_playlist.size()) {
@@ -602,15 +587,26 @@ static std::string formatTrackNotification(MpvPlayer& mpv,
     }
     const auto& v = daemon_playlist[daemon_current_index];
 
-    // Title
-    out += "\n";
-    out += v.title;
+    // Momentary status toasts (Volume N, Muted, Tap-again prompts, etc.)
+    // are self-contained — appending the whole track tail would just
+    // make them long and noisy.  Only the track-change / show-overlay
+    // path ("Now Playing") carries the full metadata line.
+    const bool fullDetail = (verb == "Now Playing");
+    if (!fullDetail) {
+        // For pause/resume/mute we still append the title so the user
+        // knows WHICH track the action applied to — but nothing else.
+        if (!v.title.empty()) { out += sep; out += v.title; }
+        return out;
+    }
 
-    // Author + current-time / duration on one line.  Mirrors the
-    // overlay's author + "00:00 / 00:00" row.
+    // Title.
+    if (!v.title.empty()) { out += sep; out += v.title; }
+
+    // Author.
+    if (!v.author.empty()) { out += sep; out += v.author; }
+
+    // Position / duration — single read of each mpv property.
     {
-        // Same one-read-and-reuse pattern as renderCard — getDuration
-        // is a property fetch across the mpv C-API boundary.
         const double pos     = mpv.getPlaybackTime();
         const double dur_mpv = mpv.getDuration();
         const double dur     = dur_mpv > 0.0 ? dur_mpv
@@ -624,45 +620,20 @@ static std::string formatTrackNotification(MpvPlayer& mpv,
             else        snprintf(buf, sizeof(buf), "%d:%02d", m, sec);
             return std::string(buf);
         };
-
-        if (!v.author.empty() || dur > 0.0) {
-            out += "\n";
-            if (!v.author.empty()) out += v.author;
-            if (!v.author.empty() && dur > 0.0) out += "  ·  ";
-            if (dur > 0.0) {
-                out += fmtTime(pos);
-                out += " / ";
-                out += (!v.duration_string.empty() ? v.duration_string
-                                                  : fmtTime(dur));
-            }
-        }
-
-        // Text progress bar — replaces the overlay's pill+thumb.
-        // 10 segments, filled with U+25B0 (▰) / empty U+25B1 (▱) —
-        // both are BMP and present in RA's font.  Percentage at end
-        // gives a numeric anchor even if the glyphs render as boxes.
         if (dur > 0.0) {
-            const int kSegs = 10;
-            const double frac = std::max(0.0, std::min(1.0, pos / dur));
-            const int filled = (int)(frac * kSegs + 0.5);
-            out += "\n";
-            for (int i = 0; i < kSegs; ++i) {
-                out += (i < filled) ? "\xE2\x96\xB0" : "\xE2\x96\xB1";
-            }
-            char pctBuf[8];
-            snprintf(pctBuf, sizeof(pctBuf), "  %d%%", (int)(frac * 100));
-            out += pctBuf;
+            out += sep;
+            out += fmtTime(pos);
+            out += "/";
+            out += (!v.duration_string.empty() ? v.duration_string
+                                              : fmtTime(dur));
         }
     }
 
-    // Bottom row: hints (left) + track index (right, when applicable).
-    // We can't right-align in a SHOW_MSG line (no monospace assumption
-    // and no width info), so just append " · N / M" inline.
-    out += "\nFN+A Pause \xC2\xB7 L/R Skip \xC2\xB7 B Exit";
+    // Queue index.
     if ((int)daemon_playlist.size() > 1) {
-        out += "   ";
+        out += sep;
         out += std::to_string(daemon_current_index + 1);
-        out += " / ";
+        out += "/";
         out += std::to_string(daemon_playlist.size());
     }
     return out;
