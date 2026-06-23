@@ -471,6 +471,54 @@ if [ "$DO_FILES" -eq 1 ]; then
     chmod +x "$INSTALL_DIR"/*.tbl 2>/dev/null || true
     chmod +x "$INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
     chmod +x "$INSTALL_DIR"/scripts/*.py 2>/dev/null || true
+
+    # ── Fallback fonts for the daemon's now-playing overlay ──────────────
+    # The overlay's confirm / volume / mute toasts use symbol + media-
+    # control glyphs (▲ ▼ ■ ▶ × ♪ ⏸) that Atkinson Hyperlegible lacks —
+    # without a covering font they render as tofu boxes.  The daemon
+    # loads a per-glyph fallback chain (Noto Sans / Noto Sans Symbols2 /
+    # Noto Emoji / DejaVu); make sure at least one is available in
+    # res/fonts so coverage doesn't depend on what the OS image ships.
+    FONTS_DIR="$INSTALL_DIR/res/fonts"
+    mkdir -p "$FONTS_DIR"
+    # 1) Copy any matching system fonts we can find (cheap, offline).
+    for fname in NotoSans-Regular NotoSansSymbols2-Regular NotoEmoji-Regular DejaVuSans; do
+        if [ ! -f "$FONTS_DIR/$fname.ttf" ]; then
+            found="$(find /usr/share/fonts -name "$fname.ttf" 2>/dev/null | head -1)"
+            if [ -n "$found" ]; then
+                cp -f "$found" "$FONTS_DIR/$fname.ttf" && \
+                    log_ok "Provisioned font: $fname.ttf (from system)"
+            fi
+        fi
+    done
+    # 2) If the symbol-bearing Noto faces are still missing, fetch the
+    #    specific TTFs from the notofonts CDN (best-effort; the daemon
+    #    falls back to DejaVu for the common glyphs if this fails).
+    declare -A NOTO_URLS=(
+        [NotoSans-Regular]="https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf"
+        [NotoSansSymbols2-Regular]="https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansSymbols2/hinted/ttf/NotoSansSymbols2-Regular.ttf"
+        [NotoEmoji-Regular]="https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoEmoji/unhinted/ttf/NotoEmoji-Regular.ttf"
+    )
+    for fname in "${!NOTO_URLS[@]}"; do
+        if [ ! -f "$FONTS_DIR/$fname.ttf" ]; then
+            url="${NOTO_URLS[$fname]}"
+            if wget -q --timeout=15 "$url" -O "$FONTS_DIR/$fname.ttf" 2>/dev/null || \
+               curl -fsL --connect-timeout 15 "$url" -o "$FONTS_DIR/$fname.ttf" 2>/dev/null; then
+                # Guard against a 0-byte / HTML error page being saved.
+                if [ -s "$FONTS_DIR/$fname.ttf" ] && \
+                   [ "$(wc -c < "$FONTS_DIR/$fname.ttf")" -gt 4096 ]; then
+                    log_ok "Provisioned font: $fname.ttf (downloaded)"
+                else
+                    rm -f "$FONTS_DIR/$fname.ttf"
+                    log_warn "Font download incomplete: $fname.ttf (overlay will use DejaVu fallback)"
+                fi
+            else
+                rm -f "$FONTS_DIR/$fname.ttf" 2>/dev/null || true
+                log_warn "Could not fetch $fname.ttf (offline?); overlay uses DejaVu fallback"
+            fi
+        fi
+    done
+
     log_ok "Files prepared"
 fi
 

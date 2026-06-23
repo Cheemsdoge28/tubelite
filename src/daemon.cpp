@@ -186,7 +186,13 @@ static int       drm_screen_h = 480;
 #endif
 
 static FT_Library ft_lib;
-static FT_Face    ft_face;
+// Face chain: [0] is the primary (Atkinson Hyperlegible, great Latin
+// legibility), followed by fallbacks (Noto Sans / Noto Sans Symbols2 /
+// Noto Emoji / DejaVu) that cover the symbol + media-control glyphs
+// Atkinson lacks (▲ ▼ ■ ▶ × ♪ ⏸ …).  Per glyph the renderer picks the
+// first face that actually has the codepoint, so missing glyphs fall
+// through instead of rendering the tofu box.
+static std::vector<FT_Face> ft_faces;
 static bool       ft_ok = false;
 
 static uint32_t card_backbuffer[card_w * card_h];
@@ -819,35 +825,95 @@ static void initCoverageLut() {
 static void initFreetype() {
     initCoverageLut();
     if (FT_Init_FreeType(&ft_lib) != 0) return;
-    for (const auto& p : {
+
+    auto tryLoad = [&](const char* p) -> bool {
+        if (!std::filesystem::exists(p)) return false;
+        FT_Face f = nullptr;
+        if (FT_New_Face(ft_lib, p, 0, &f) != 0) return false;
+        ft_faces.push_back(f);
+        std::cerr << "[daemon] font loaded: " << p << "\n";
+        return true;
+    };
+
+    // Primary — first Atkinson we can find becomes faces[0].
+    for (const char* p : {
             "res/fonts/AtkinsonHyperlegible-Regular.ttf",
             "../res/fonts/AtkinsonHyperlegible-Regular.ttf",
-            "/roms/tools/tubelite/res/fonts/AtkinsonHyperlegible-Regular.ttf",
+            "/roms/tools/tubelite/res/fonts/AtkinsonHyperlegible-Regular.ttf" }) {
+        if (tryLoad(p)) break;
+    }
+    // If Atkinson is missing entirely, fall back to DejaVu as primary
+    // so SOMETHING renders.
+    if (ft_faces.empty())
+        tryLoad("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+
+    // Fallback chain for symbols / arrows / media-controls / emoji,
+    // tried in order per missing glyph.  Both bundled (res/fonts) and
+    // system locations are probed so the installer can drop them into
+    // res/fonts OR the device can supply system copies.  DejaVu last:
+    // it covers ▲▼■▶×♪ but not the newer media controls, so Noto wins
+    // when present.
+    for (const char* p : {
+            "res/fonts/NotoSans-Regular.ttf",
+            "/roms/tools/tubelite/res/fonts/NotoSans-Regular.ttf",
+            "res/fonts/NotoSansSymbols2-Regular.ttf",
+            "/roms/tools/tubelite/res/fonts/NotoSansSymbols2-Regular.ttf",
+            "res/fonts/NotoEmoji-Regular.ttf",
+            "/roms/tools/tubelite/res/fonts/NotoEmoji-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" }) {
-        if (std::filesystem::exists(p) && FT_New_Face(ft_lib, p, 0, &ft_face) == 0) {
-            ft_ok = true; break;
+        tryLoad(p);
+    }
+
+    ft_ok = !ft_faces.empty();
+}
+
+// Decode one UTF-8 codepoint at text[i]; advances i past consumed
+// continuation bytes (caller's for-loop does the final ++i).
+static uint32_t decodeUtf8(const std::string& text, size_t& i) {
+    uint32_t cp = (uint8_t)text[i];
+    if (cp & 0x80) {
+        if ((cp & 0xE0) == 0xC0 && i+1 < text.size())
+            cp = ((cp & 0x1F) << 6) | ((uint8_t)text[++i] & 0x3F);
+        else if ((cp & 0xF0) == 0xE0 && i+2 < text.size()) {
+            cp = ((cp & 0x0F) << 12)
+               | (((uint8_t)text[i+1] & 0x3F) << 6)
+               |  ((uint8_t)text[i+2] & 0x3F);
+            i += 2;
+        }
+        else if ((cp & 0xF8) == 0xF0 && i+3 < text.size()) {
+            cp = ((cp & 0x07) << 18)
+               | (((uint8_t)text[i+1] & 0x3F) << 12)
+               | (((uint8_t)text[i+2] & 0x3F) << 6)
+               |  ((uint8_t)text[i+3] & 0x3F);
+            i += 3;
         }
     }
+    return cp;
+}
+
+// Return the first loaded face that actually contains `cp`.  Falls
+// back to the primary face so a truly-uncovered glyph still renders
+// (as tofu) rather than vanishing — with the Noto/DejaVu chain that's
+// rare.
+static FT_Face glyphFace(uint32_t cp) {
+    for (FT_Face f : ft_faces)
+        if (FT_Get_Char_Index(f, cp) != 0) return f;
+    return ft_faces.empty() ? nullptr : ft_faces[0];
 }
 
 static int measureText(const std::string& text, int fontSize) {
     if (!ft_ok) return 0;
-    FT_Set_Pixel_Sizes(ft_face, 0, fontSize);
     int w = 0;
     for (size_t i = 0; i < text.size(); ++i) {
-        uint32_t cp = (uint8_t)text[i];
-        if (cp & 0x80) {
-            if ((cp & 0xE0) == 0xC0 && i+1 < text.size())
-                cp = ((cp & 0x1F) << 6) | ((uint8_t)text[++i] & 0x3F);
-            else if ((cp & 0xF0) == 0xE0 && i+2 < text.size()) {
-                cp = ((cp & 0x0F) << 12)
-                   | (((uint8_t)text[i+1] & 0x3F) << 6)
-                   |  ((uint8_t)text[i+2] & 0x3F);
-                i += 2;
-            }
-        }
-        if (FT_Load_Char(ft_face, cp, FT_LOAD_ADVANCE_ONLY) != 0) continue;
-        w += ft_face->glyph->advance.x >> 6;
+        uint32_t cp = decodeUtf8(text, i);
+        FT_Face f = glyphFace(cp);
+        if (!f) continue;
+        FT_Set_Pixel_Sizes(f, 0, fontSize);
+        if (FT_Load_Char(f, cp, FT_LOAD_ADVANCE_ONLY) != 0) continue;
+        w += f->glyph->advance.x >> 6;
     }
     return w;
 }
@@ -856,24 +922,16 @@ static void drawText(const std::string& text, int x, int y, int fontSize,
                      uint8_t r, uint8_t g, uint8_t b, uint8_t a,
                      int clip_x2 = card_w) {
     if (!ft_ok) return;
-    FT_Set_Pixel_Sizes(ft_face, 0, fontSize);
     int pen_x = x, pen_y = y + fontSize;
 
     for (size_t i = 0; i < text.size(); ++i) {
-        uint32_t cp = (uint8_t)text[i];
-        if (cp & 0x80) {
-            if ((cp & 0xE0) == 0xC0 && i+1 < text.size())
-                cp = ((cp & 0x1F) << 6) | ((uint8_t)text[++i] & 0x3F);
-            else if ((cp & 0xF0) == 0xE0 && i+2 < text.size()) {
-                cp = ((cp & 0x0F) << 12)
-                   | (((uint8_t)text[i+1] & 0x3F) << 6)
-                   |  ((uint8_t)text[i+2] & 0x3F);
-                i += 2;
-            }
-        }
+        uint32_t cp = decodeUtf8(text, i);
+        FT_Face f = glyphFace(cp);
+        if (!f) continue;
+        FT_Set_Pixel_Sizes(f, 0, fontSize);
         // Light autohint target keeps small glyphs crisp without over-snapping.
-        if (FT_Load_Char(ft_face, cp, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) continue;
-        FT_GlyphSlot gl = ft_face->glyph;
+        if (FT_Load_Char(f, cp, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) continue;
+        FT_GlyphSlot gl = f->glyph;
         int gx = pen_x + gl->bitmap_left;
         int gy = pen_y - gl->bitmap_top;
         for (unsigned row = 0; row < gl->bitmap.rows; ++row)
@@ -1670,10 +1728,18 @@ void runDaemon() {
             struct input_event ev;
             while (read(js_fd, &ev, sizeof(ev)) > 0) {
                 if (ev.type == EV_KEY) {
-                    bool down = (ev.value != 0);
+                    // value: 0 = release, 1 = initial press, 2 = autorepeat.
+                    bool down    = (ev.value != 0);   // for modifier hold state
+                    bool pressed = (ev.value == 1);   // discrete action trigger
                     if (ev.code == btn::FN) { fn_held = down; }
 
-                    if (down && fn_held) {
+                    // Gate actions on the INITIAL press only.  Using
+                    // `down` (value != 0) let key autorepeat (value 2)
+                    // re-fire every action while a button was held —
+                    // for the mute TOGGLE that meant an even number of
+                    // repeats cancelled out and "mute didn't work";
+                    // for skip/launch it caused unintended repeats.
+                    if (pressed && fn_held) {
                         // Diagnostic — lets the user read off the actual
                         // ev.code for every FN+<button> press so we can
                         // confirm our `namespace btn` mappings match
