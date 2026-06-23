@@ -96,6 +96,24 @@ private:
     SDL_GameController* controller_{nullptr};
     SDL_Joystick* joystick_{nullptr};
 
+    // ── Screen-off / power-save mode (X double-tap in the player) ────────────
+    // Turns off the panel backlight and switches the CPU to the
+    // conservative governor while audio keeps playing — a "listen with
+    // the screen off" mode for music.  The backlight + governor are
+    // ALWAYS restored on exit (player exit, app shutdown) so the device
+    // never gets left dark.
+    bool        screenOff_{false};            // currently in screen-off mode
+    Uint32      screenOffArmMs_{0};           // first-tap timestamp (0 = not armed)
+    int         savedBacklight_{-1};          // backlight value before we zeroed it (-1 = none saved)
+    std::string savedGovernor_;               // CPU governor before we forced conservative
+    void backlightWrite(int value);           // write /sys/class/backlight brightness
+    int  backlightRead();                     // read current brightness (-1 on failure)
+    void cpuGovernorWrite(const std::string& gov);
+    std::string cpuGovernorRead();
+    void enterScreenOff();                    // save state, blank panel, conservative gov
+    void exitScreenOff();                     // restore backlight + governor (idempotent)
+    void requestScreenOffToggle();            // X-press: arm, confirm, or cancel
+
     TubeState state_;
     MpvPlayer mpv_player_;
     YouTubeAPI youtube_api_;

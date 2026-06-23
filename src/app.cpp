@@ -523,7 +523,126 @@ void App::processMainThreadQueue() {
     }
 }
 
+// ── Screen-off / power-save mode ────────────────────────────────────────────
+//
+// Backlight is controlled via /sys/class/backlight/backlight/brightness
+// (confirmed on this R36S: max_brightness 255, writable).  CPU governor
+// via /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor.  All ops
+// are best-effort and no-op on Windows / missing sysfs.
+
+void App::backlightWrite(int value) {
+#ifndef _WIN32
+    std::ofstream f("/sys/class/backlight/backlight/brightness");
+    if (f) f << value;
+#else
+    (void)value;
+#endif
+}
+
+int App::backlightRead() {
+#ifndef _WIN32
+    std::ifstream f("/sys/class/backlight/backlight/brightness");
+    int v = -1;
+    if (f && (f >> v)) return v;
+#endif
+    return -1;
+}
+
+void App::cpuGovernorWrite(const std::string& gov) {
+#ifndef _WIN32
+    // Write the governor to every CPU's cpufreq node.  Globbing without
+    // <glob.h> for portability: cpu0..cpu7 covers RK3326's 4 cores with
+    // headroom.
+    for (int i = 0; i < 8; ++i) {
+        std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(i) +
+                           "/cpufreq/scaling_governor";
+        if (!std::filesystem::exists(path)) continue;
+        std::ofstream f(path);
+        if (f) f << gov;
+    }
+#else
+    (void)gov;
+#endif
+}
+
+std::string App::cpuGovernorRead() {
+#ifndef _WIN32
+    std::ifstream f("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
+    std::string g;
+    if (f && (f >> g)) return g;
+#endif
+    return "";
+}
+
+void App::enterScreenOff() {
+    if (screenOff_) return;
+    // Snapshot what we're about to change so exit can restore exactly.
+    savedBacklight_ = backlightRead();
+    savedGovernor_  = cpuGovernorRead();
+    // Conservative governor minimises clocks while audio decode keeps
+    // ticking; "powersave" would be even lower but can underrun audio
+    // on RK3326, so conservative is the safe floor.
+    cpuGovernorWrite("conservative");
+    backlightWrite(0);
+    screenOff_ = true;
+    screenOffArmMs_ = 0;
+    std::cerr << "[App] screen-off mode ON (backlight was "
+              << savedBacklight_ << ", governor was '" << savedGovernor_ << "')\n";
+}
+
+void App::exitScreenOff() {
+    // Idempotent + defensive: always restore even if we think we're not
+    // in screen-off, in case a previous run left the panel dark.
+    if (savedBacklight_ >= 0) {
+        backlightWrite(savedBacklight_);
+    } else {
+        // No saved value (e.g. restore-on-exit safety net) — force the
+        // panel back to full so the device is never left dark.
+        backlightWrite(255);
+    }
+    if (!savedGovernor_.empty()) cpuGovernorWrite(savedGovernor_);
+    if (screenOff_)
+        std::cerr << "[App] screen-off mode OFF (backlight restored to "
+                  << (savedBacklight_ >= 0 ? savedBacklight_ : 255) << ")\n";
+    screenOff_ = false;
+    screenOffArmMs_ = 0;
+    savedBacklight_ = -1;
+    savedGovernor_.clear();
+}
+
+void App::requestScreenOffToggle() {
+    // Only meaningful during playback (audio is the point of the mode).
+    if (state_.currentScreen != TubeState::Screen::Playback) return;
+
+    if (screenOff_) {
+        // Any X press while dark turns the screen back on immediately.
+        exitScreenOff();
+        uiDirty_ = true;
+        return;
+    }
+
+    const Uint32 now = SDL_GetTicks();
+    const Uint32 kConfirmWindowMs = 2500;
+    if (screenOffArmMs_ != 0 && (now - screenOffArmMs_) <= kConfirmWindowMs) {
+        // Second tap within the window → commit.
+        screenOffArmMs_ = 0;
+        enterScreenOff();
+        uiDirty_ = true;
+    } else {
+        // First tap → arm + show the big confirmation prompt.  The
+        // prompt is drawn in renderFrame() while screenOffArmMs_ is set.
+        screenOffArmMs_ = now;
+        showPlaybackToast("Press X again to turn the SCREEN OFF "
+                          "(audio keeps playing). Any other button cancels.");
+        uiDirty_ = true;
+    }
+}
+
 void App::shutdown() {
+    // SAFETY: restore the backlight + governor before tearing anything
+    // down, so quitting while in screen-off mode can never leave the
+    // device dark.
+    exitScreenOff();
     SDL_StopTextInput();
     closeController();
     keyboard_.destroyTexture();
@@ -1251,6 +1370,47 @@ void App::renderFrame() {
 
 
 void App::handleEvent(SDL_Event& event) {
+    // ── Screen-off mode intercept ────────────────────────────────────────────
+    // While the panel is blanked, ANY real input wakes the screen and is
+    // consumed (so the wake press doesn't also trigger an action).
+    // Non-input events (quit/window) still pass through below.
+    if (screenOff_) {
+        bool wakeInput = (event.type == SDL_KEYDOWN
+                       || event.type == SDL_CONTROLLERBUTTONDOWN
+                       || event.type == SDL_JOYBUTTONDOWN
+                       || event.type == SDL_JOYHATMOTION);
+        if (!wakeInput && event.type == SDL_CONTROLLERAXISMOTION)
+            wakeInput = std::abs(event.caxis.value) > 12000;
+        if (!wakeInput && event.type == SDL_JOYAXISMOTION)
+            wakeInput = std::abs(event.jaxis.value) > 12000;
+        if (wakeInput) {
+            exitScreenOff();
+            showPlaybackToast("Screen on");
+            uiDirty_ = true;
+            return;
+        }
+        if (event.type == SDL_QUIT) state_.running = false;
+        return;   // suppress all other input while dark
+    }
+
+    // Arm-cancel: while the "press X again" prompt is showing, ANY non-X
+    // button press cancels it (and still performs that button's action).
+    if (screenOffArmMs_ != 0) {
+        const bool anyPress = (event.type == SDL_KEYDOWN
+                            || event.type == SDL_CONTROLLERBUTTONDOWN
+                            || event.type == SDL_JOYBUTTONDOWN);
+        const bool isX =
+            (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_x) ||
+            (event.type == SDL_CONTROLLERBUTTONDOWN &&
+             event.cbutton.button == SDL_CONTROLLER_BUTTON_X) ||
+            (event.type == SDL_JOYBUTTONDOWN && event.jbutton.button == 2);
+        if (anyPress && !isX) {
+            screenOffArmMs_ = 0;
+            showPlaybackToast("Screen-off cancelled");
+            uiDirty_ = true;
+        }
+    }
+
     if (state_.currentScreen == TubeState::Screen::Playback) {
         // Wake the HUD on ACTUAL user input.  Axis motion is filtered to
         // outside-deadzone values only — sticks at rest constantly emit
@@ -1474,10 +1634,8 @@ void App::handleKey(SDL_Keycode key) {
         }
         break;
     case SDLK_s:
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleStatsOverlay();
-            showPlaybackToast("Stats Overlay");
-        }
+        // (mpv stats overlay bind removed — it conflicted with the
+        // debug overlay and audio-track UX.)
         break;
     case SDLK_r:
         if (state_.currentScreen == TubeState::Screen::Home) {
@@ -1493,8 +1651,10 @@ void App::handleKey(SDL_Keycode key) {
         break;
     case SDLK_x:
         if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleStatsOverlay();
-            showPlaybackToast("Stats Overlay");
+            // X in the player toggles screen-off / power-save mode
+            // (double-tap to confirm).  Replaces the removed mpv stats
+            // overlay.
+            requestScreenOffToggle();
         } else if (state_.currentScreen == TubeState::Screen::Home ||
                    state_.currentScreen == TubeState::Screen::Search) {
             // Keyboard parity with the controller X binding: open sign-in
@@ -1507,12 +1667,12 @@ void App::handleKey(SDL_Keycode key) {
         break;
     case SDLK_UP:
         if (state_.currentScreen == TubeState::Screen::Playback) {
+            // D-pad Up only scrolls the description drawer now.  The old
+            // "cycle subtitle track" action was an unwanted double-bind
+            // that fired whenever the user nudged Up during playback.
             if (state_.showDescriptionDrawer) {
                 description_scroll_row_ = std::max(0, description_scroll_row_ - 1);
                 uiDirty_ = true;
-            } else {
-                mpv_player_.cycleSubtitleTrack();
-                showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
             }
         } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(0, -1);
@@ -1520,12 +1680,11 @@ void App::handleKey(SDL_Keycode key) {
         break;
     case SDLK_DOWN:
         if (state_.currentScreen == TubeState::Screen::Playback) {
+            // D-pad Down only scrolls the description drawer now (the
+            // old "cycle audio track" double-bind is removed).
             if (state_.showDescriptionDrawer) {
                 description_scroll_row_++;
                 uiDirty_ = true;
-            } else {
-                mpv_player_.cycleAudioTrack();
-                showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
             }
         } else if ((state_.currentScreen == TubeState::Screen::Home || state_.currentScreen == TubeState::Screen::Search) && !isInputLocked()) {
             focus_manager_.handleInput(0, 1);
@@ -1758,12 +1917,16 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             state_manager_.transitionTo(TubeState::Screen::Home);
         }
     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-        // X opens the sign-in help modal directly (replaced the old SEL+X
-        // chord and the dead resolution cycler).  If SELECT is held we
-        // mark the chord as "consumed" so SELECT release doesn't ALSO
-        // toggle the miniplayer.
-        if (state_.currentScreen == TubeState::Screen::Home ||
-            state_.currentScreen == TubeState::Screen::Search) {
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            // X in the player toggles screen-off / power-save mode
+            // (double-tap to confirm).
+            requestScreenOffToggle();
+        } else if (state_.currentScreen == TubeState::Screen::Home ||
+                   state_.currentScreen == TubeState::Screen::Search) {
+            // X opens the sign-in help modal directly (replaced the old
+            // SEL+X chord and the dead resolution cycler).  If SELECT is
+            // held we mark the chord as "consumed" so SELECT release
+            // doesn't ALSO toggle the miniplayer.
             state_.showSignInHelp = true;
             youtube_api_.refreshAuthStatus();
             ui_sounds::play(ui_sounds::Sound::Select);
@@ -1782,31 +1945,26 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_LEFTSTICK) {
-        if (state_.currentScreen == TubeState::Screen::Playback) {
-            mpv_player_.cycleStatsOverlay();
-            showPlaybackToast("Stats Overlay");
-        } else {
-            state_.showDebugOverlay = !state_.showDebugOverlay;
-            uiDirty_ = true;
-        }
+        // L3 toggles OUR debug overlay everywhere — including during
+        // playback.  It used to call mpv's built-in stats overlay in
+        // the player, which "absorbed" the debug-overlay toggle the
+        // user actually wanted.  The mpv stats overlay is removed.
+        state_.showDebugOverlay = !state_.showDebugOverlay;
+        uiDirty_ = true;
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+        // Description-drawer scroll only (subtitle-track cycle removed).
         if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showDescriptionDrawer) {
                 description_scroll_row_ = std::max(0, description_scroll_row_ - 1);
                 uiDirty_ = true;
-            } else {
-                mpv_player_.cycleSubtitleTrack();
-                showPlaybackToast("Subtitles: " + mpv_player_.getSubtitleTrackName());
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+        // Description-drawer scroll only (audio-track cycle removed).
         if (state_.currentScreen == TubeState::Screen::Playback) {
             if (state_.showDescriptionDrawer) {
                 description_scroll_row_++;
                 uiDirty_ = true;
-            } else {
-                mpv_player_.cycleAudioTrack();
-                showPlaybackToast("Audio: " + mpv_player_.getAudioTrackName());
             }
         }
     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
