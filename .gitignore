@@ -40,3 +40,6 @@ es-theme-colorful-v2-main/
 fire4arkos-ondevice/
 
 fire4arkos
+
+.vendor/
+vendor/
