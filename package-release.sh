@@ -83,6 +83,12 @@ if [ -d "$SCRIPT_DIR/theme" ]; then
     cp -r "$SCRIPT_DIR/theme/"* "$APP_DIR/theme/"
 fi
 
+# Include res folder (fonts, logo, etc)
+if [ -d "$SCRIPT_DIR/res" ]; then
+    mkdir -p "$APP_DIR/res"
+    cp -r "$SCRIPT_DIR/res/"* "$APP_DIR/res/"
+fi
+
 if [ -f "$SCRIPT_DIR/README.md" ]; then
     copy_file "$SCRIPT_DIR/README.md" "$APP_DIR/README.md"
 fi
