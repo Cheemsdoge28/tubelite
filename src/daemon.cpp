@@ -56,6 +56,10 @@ static double daemon_start_position = 0.0;
 static double daemon_speed = 1.0;
 static std::atomic<bool> daemon_running{true};
 
+static int         daemon_saved_backlight = -1;
+static std::string daemon_saved_governor;
+static bool        daemon_screen_off = false;
+
 static std::atomic<DaemonStatus> daemon_status{DaemonStatus::Idle};
 static std::atomic<bool> daemon_request_finished{false};
 static std::atomic<bool> daemon_request_success{false};
@@ -199,6 +203,80 @@ static bool       ft_ok = false;
 static uint32_t card_backbuffer[card_w * card_h];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+static void daemonBacklightWrite(int value) {
+#ifndef _WIN32
+    std::ofstream f("/sys/class/backlight/backlight/brightness");
+    if (f) f << value;
+#else
+    (void)value;
+#endif
+}
+
+static int daemonBacklightRead() {
+#ifndef _WIN32
+    std::ifstream f("/sys/class/backlight/backlight/brightness");
+    int v = -1;
+    if (f && (f >> v)) return v;
+#endif
+    return -1;
+}
+
+static void daemonCpuGovernorWrite(const std::string& gov) {
+#ifndef _WIN32
+    for (int i = 0; i < 8; ++i) {
+        std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(i) +
+                           "/cpufreq/scaling_governor";
+        if (!std::filesystem::exists(path)) continue;
+        std::ofstream f(path);
+        if (f) f << gov;
+    }
+#else
+    (void)gov;
+#endif
+}
+
+static std::string daemonCpuGovernorRead() {
+#ifndef _WIN32
+    std::ifstream f("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
+    std::string g;
+    if (f && (f >> g)) return g;
+#endif
+    return "";
+}
+
+static void daemonExitScreenOff();
+
+static void daemonEnterScreenOff() {
+    if (daemon_screen_off) return;
+    daemon_saved_backlight = daemonBacklightRead();
+    daemon_saved_governor  = daemonCpuGovernorRead();
+    daemonCpuGovernorWrite("conservative");
+    daemonBacklightWrite(0);
+    daemon_screen_off = true;
+    overlay_active = false;
+    overlay_alpha = 0.0f;
+    std::cerr << "[daemon] screen-off mode ON (backlight was "
+              << daemon_saved_backlight << ", governor was '" << daemon_saved_governor << "')\n";
+}
+
+static void daemonExitScreenOff() {
+    if (!daemon_screen_off) return;
+    if (daemon_saved_backlight >= 0) {
+        daemonBacklightWrite(daemon_saved_backlight);
+    } else {
+        daemonBacklightWrite(255);
+    }
+    if (!daemon_saved_governor.empty()) daemonCpuGovernorWrite(daemon_saved_governor);
+    std::cerr << "[daemon] screen-off mode OFF (backlight restored to "
+              << (daemon_saved_backlight >= 0 ? daemon_saved_backlight : 255) << ")\n";
+    daemon_screen_off = false;
+    daemon_saved_backlight = -1;
+    daemon_saved_governor.clear();
+    overlay_active = true;
+    overlay_alpha = 1.0f;
+    daemon_overlay_timer = 5.0f;
+}
 
 static std::string getAppDataPath(const std::string& filename) {
 #ifdef _WIN32
@@ -1345,7 +1423,7 @@ static void renderCard(MpvPlayer& mpv) {
     const std::string hints_row1 =
         "FN +  A Play   L/R Skip   L2/R2 Vol";
     const std::string hints_row2 =
-        "FN +  X Mute   Y Launch   B Exit   Up Show   SEL Spd";
+        "FN +  X Light  Y Mute     B Exit   Up Show   SEL Spd";
     drawText(hints_row1, ML, 54, 9, C_HN_R, C_HN_G, C_HN_B, fade(220));
     // Clip the bottom row against the track-index's left edge so the
     // two never collide visually on long playlists.
@@ -1452,6 +1530,7 @@ void runDaemon() {
     using namespace std::chrono;
     auto last_quick_launch_arm = steady_clock::time_point::min();
     auto last_quit_confirm_arm = steady_clock::time_point::min();
+    auto last_screen_off_arm   = steady_clock::time_point::min();
     constexpr int kConfirmWindowMs = 2000;
     // Keep the old name as an alias for the quick-launch path so the
     // existing call site reads cleanly.
@@ -1485,6 +1564,7 @@ void runDaemon() {
     // own notification for the cases it covers.
     bool fade_exit_taken = false;
     auto fadeOutAndExit = [&](int dur_ms = 800, bool notify_quit = true) {
+        daemonExitScreenOff();
         fade_exit_taken = true;
         if (notify_quit) {
             // Goodbye toast — uses formatTrackNotification so RA shows
@@ -1716,6 +1796,24 @@ void runDaemon() {
         if (js_fd >= 0) {
             struct input_event ev;
             while (read(js_fd, &ev, sizeof(ev)) > 0) {
+                if (daemon_screen_off) {
+                    bool wakeInput = false;
+                    if (ev.type == EV_KEY && ev.value == 1) {
+                        wakeInput = true;
+                    } else if (ev.type == EV_ABS) {
+                        if (ev.code == btn::HAT0_Y || ev.code == btn::LSTICK_Y) {
+                            if (std::abs(ev.value) > 8000) wakeInput = true;
+                        }
+                    }
+                    if (wakeInput) {
+                        daemonExitScreenOff();
+                        setDaemonToast("Screen on", 1.5f);
+                        dispatchNotification("Screen on");
+                        last_render_pos = -1.0;
+                    }
+                    continue; // Consume all events while screen is off
+                }
+
                 if (ev.type == EV_KEY) {
                     // value: 0 = release, 1 = initial press, 2 = autorepeat.
                     bool down    = (ev.value != 0);   // for modifier hold state
@@ -1866,7 +1964,28 @@ void runDaemon() {
                             // Force-show overlay + re-toast.  Bound to
                             // START, D-pad-Up, etc.
                             showOverlayNow();
-                        } else if (ev.code == btn::X) { // mute toggle
+                        } else if (ev.code == btn::X) { // screen sleep toggle (light)
+                            const auto now_tp = steady_clock::now();
+                            const auto since_arm_ms =
+                                duration_cast<milliseconds>(
+                                    now_tp - last_screen_off_arm).count();
+                            if (last_screen_off_arm !=
+                                    steady_clock::time_point::min() &&
+                                since_arm_ms <= kConfirmWindowMs) {
+                                // Confirmed — sleep screen
+                                last_screen_off_arm =
+                                    steady_clock::time_point::min();
+                                daemonEnterScreenOff();
+                            } else {
+                                // First tap — arm + prompt
+                                last_screen_off_arm = now_tp;
+                                setDaemonToast(
+                                    "\xE2\x98\x80 Press FN+X again\nto sleep screen",
+                                    kConfirmWindowMs / 1000.0f);
+                                dispatchNotification("Press FN+X to sleep screen");
+                            }
+                            last_render_pos = -1.0;
+                        } else if (ev.code == btn::Y) { // mute toggle
                             const bool wasMuted = (mpv.getPropertyInt("mute") != 0);
                             mpv.setMute(!wasMuted);
                             // "×" = U+00D7 (BMP, every font has it);
@@ -1881,72 +2000,6 @@ void runDaemon() {
                             dispatchNotification(formatTrackNotification(
                                 mpv, glyph, verb));
                             last_render_pos = -1.0;
-                        } else if (ev.code == btn::Y) { // two-tap quick-launch TubeLite
-                            const auto now_tp = steady_clock::now();
-                            const auto since_arm_ms =
-                                duration_cast<milliseconds>(
-                                    now_tp - last_quick_launch_arm).count();
-                            if (last_quick_launch_arm !=
-                                    steady_clock::time_point::min() &&
-                                since_arm_ms <= kQuickLaunchWindowMs) {
-                                // Second tap within the window → launch.
-                                // Reabsorption flag suppresses the
-                                // "Daemon stopped" toast on exit so the
-                                // user only sees the launching message.
-                                dispatchNotification(formatTrackNotification(
-                                    mpv, "\xE2\x96\xB6", "Launching TubeLite\xE2\x80\xA6"));
-                                // Fork + exec the installed ES launcher
-                                // (`[install_dir]/TubeLite.tbl`) via bash
-                                // — NOT the bare binary or the
-                                // /usr/local/bin/tubelite symlink — so the
-                                // child inherits the SAME environment
-                                // EmulationStation would set up:
-                                // cpu governor flips, LD_LIBRARY_PATH for
-                                // side-loaded libssl3, vendor/deno on
-                                // PATH, log redirection, etc.  Without
-                                // this the quick-launched session can
-                                // diverge from a normal ES launch (e.g.
-                                // yt-dlp fails because libssl.so.3 isn't
-                                // on its loader path).  getAppDataPath()
-                                // resolves to /roms/tools/tubelite on
-                                // ArkOS and the file basename in dev.
-                                const std::string launcher =
-                                    getAppDataPath("TubeLite.tbl");
-                                pid_t cpid = fork();
-                                if (cpid == 0) {
-                                    // Child: detach from daemon's session
-                                    // so the parent can exit cleanly.
-                                    setsid();
-                                    // Use bash explicitly so the .tbl
-                                    // shebang and +x bit don't matter —
-                                    // works on a freshly-copied install
-                                    // where chmod hasn't been re-run.
-                                    execl("/bin/bash", "bash",
-                                          launcher.c_str(), (char*)nullptr);
-                                    // Fall back to the symlinked wrapper
-                                    // if bash exec failed (very unlikely;
-                                    // /bin/bash is on every ArkOS image).
-                                    execl("/usr/local/bin/tubelite",
-                                          "tubelite", (char*)nullptr);
-                                    _exit(127);
-                                }
-                                last_quick_launch_arm =
-                                    steady_clock::time_point::min();
-                                // Skip the goodbye toast — reabsorption
-                                // takes over and the launching toast
-                                // already covers user feedback.
-                                fadeOutAndExit(800, /*notify_quit=*/false);
-                            } else {
-                                // First tap — arm + prompt (toast on
-                                // DRM card AND in RA toast path).
-                                last_quick_launch_arm = now_tp;
-                                setDaemonToast(
-                                    "\xE2\x96\xB6 Press FN+Y again\nto launch TubeLite",
-                                    kQuickLaunchWindowMs / 1000.0f);
-                                dispatchNotification(
-                                    "Press FN+Y to launch TubeLite");
-                                last_render_pos = -1.0;
-                            }
                         }
                     }
                 } else if (ev.type == EV_ABS && fn_held) {
@@ -2065,6 +2118,7 @@ void runDaemon() {
         dispatchNotification(formatTrackNotification(mpv, "\xE2\x96\xA0",
                                                     "Daemon stopped"));
     }
+    daemonExitScreenOff();
     mpv.shutdown();
     closeDrmOverlay();
 #ifndef _WIN32
