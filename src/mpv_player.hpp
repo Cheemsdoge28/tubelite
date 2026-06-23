@@ -75,6 +75,11 @@ public:
     double getPlaybackTime() const { return playback_time_; }
     double getDuration()     const { return duration_; }
     int64_t getPropertyInt(const std::string& name) const;
+    // For properties whose native type is double (e.g. "volume",
+    // "speed").  Calling getPropertyInt on a double-native property
+    // returns 0/garbage depending on mpv version because the format
+    // conversion at the C-API boundary is lossy or rejected.
+    double  getPropertyDouble(const std::string& name) const;
     bool checkAndClearEnded();
     void setPendingSeekPosition(double pos) { pending_seek_position_ = pos; }
 

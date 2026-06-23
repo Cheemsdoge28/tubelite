@@ -78,6 +78,21 @@ static float overlay_alpha = 0.0f;
 static bool  overlay_active = false;
 static float daemon_overlay_timer = 0.0f;
 
+// Transient "toast" text shown ABOVE the normal title row when set —
+// used for confirmation prompts (Tap B again / Tap Y again) and
+// momentary feedback (Volume N, Muted/Unmuted) so the user actually
+// sees the cue on the DRM card, not just in stderr.  Cleared when its
+// timer expires.  Empty string = no toast, render the track title as
+// usual.
+static std::string daemon_toast_text;
+static float       daemon_toast_timer = 0.0f;
+static inline void setDaemonToast(const std::string& text, float seconds = 3.0f) {
+    daemon_toast_text  = text;
+    daemon_toast_timer = seconds;
+    daemon_overlay_timer = std::max(daemon_overlay_timer, seconds);
+    overlay_active = true;
+}
+
 // ── Card dimensions ───────────────────────────────────────────────────────────
 static const int card_w = 380;
 static const int card_h = 88;
@@ -129,6 +144,8 @@ namespace btn {
     // Shoulders.
     constexpr uint16_t L1     = 310;   // standard BTN_TL
     constexpr uint16_t R1     = 311;   // standard BTN_TR
+    constexpr uint16_t L2     = 312;   // standard BTN_TL2
+    constexpr uint16_t R2     = 313;   // standard BTN_TR2
 
     // Menu cluster — accept BOTH for the show-overlay bind because
     // SEL/START may be swapped the same way A/B are.
@@ -1079,10 +1096,19 @@ static void maybePrefetchNext(YouTubeAPI& yt, double remaining_seconds) {
 //  │▌ Author 11px                                   00:00 / 00:00 │ y=27
 //  │  ──────── hairline rule ───────────────────────────────────── │ y=42
 //  │  ████████████░░░░░░░░░░░░░░░░░●░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │ y=48 bar
-//  │  FN: A Pause · L/R Skip · X Mute · Y Launch                  │ y=56
-//  │  FN: B Exit ×2 · SEL Show · Lstick Vol           2 / 5        │ y=68
+//  │  FN +  A Play   L/R Skip   L2/R2 Vol                          │ y=54
+//  │  FN +  X Mute   Y Launch   B Exit   Up Show       2 / 5      │ y=68
+//
+// Show-overlay is bound to FN+Up (D-pad) AND FN+SEL/START — the
+// hint shows "Up" because the D-pad is the reliable one on R36S
+// (Select is often the FN/hotkey itself, making FN+SEL impossible).
 //  └────────────────────────────────────────────────────────────────┘
 //   ↑ 4px accent bar + glow
+//
+// When a transient toast is set (FN+B confirm, FN+Y confirm, mute,
+// volume), it REPLACES the title row (and the author row if the toast
+// has two lines via \n) for the toast's duration — so the confirm
+// prompt is actually visible on the DRM card, not just in stderr.
 //
 // Status badge is MUTED (yellow) when mpv is muted, regardless of
 // play/pause state; otherwise PLAYING / PAUSED / LOADING / ERROR.
@@ -1171,12 +1197,36 @@ static void renderCard(MpvPlayer& mpv) {
     drawText(statStr, bx + 5, 9, 9, sr, sg, sb, fade(220));
 
     // ── 6. Title (14px, clipped before badge) ────────────────────────────────
-    drawText(truncateText(video.title, 34), ML, 10, 14,
-             C_TT_R, C_TT_G, C_TT_B, fa, bx - 6);
+    // When a toast is active (confirmation prompt, volume readout,
+    // mute change) it takes over the title slot so the user gets
+    // immediate visual feedback on the DRM card instead of just the
+    // log/RA-only paths in dispatchNotification.  Toast can be
+    // multi-line (`\n`); render up to two lines, top one larger.
+    if (!daemon_toast_text.empty()) {
+        const std::string& t = daemon_toast_text;
+        const size_t nl = t.find('\n');
+        const std::string line1 = (nl == std::string::npos) ? t : t.substr(0, nl);
+        const std::string line2 = (nl == std::string::npos) ? "" : t.substr(nl + 1);
+        drawText(truncateText(line1, 34), ML, 10, 14,
+                 C_AC_R, C_AC_G, C_AC_B, fa, bx - 6);
+        if (!line2.empty()) {
+            drawText(truncateText(line2, 40), ML, 27, 11,
+                     C_TT_R, C_TT_G, C_TT_B, fade(230), bx - 6);
+        }
+    } else {
+        drawText(truncateText(video.title, 34), ML, 10, 14,
+                 C_TT_R, C_TT_G, C_TT_B, fa, bx - 6);
+    }
 
     // ── 7. Author (11px) + timestamp right-aligned (same baseline) ───────────
-    drawText(truncateText(video.author, 40), ML, 27, 11,
-             C_AU_R, C_AU_G, C_AU_B, fade(230));
+    // Skip the author when a multi-line toast already filled this row.
+    const bool toast_uses_author_row =
+        !daemon_toast_text.empty() &&
+        daemon_toast_text.find('\n') != std::string::npos;
+    if (!toast_uses_author_row) {
+        drawText(truncateText(video.author, 40), ML, 27, 11,
+                 C_AU_R, C_AU_G, C_AU_B, fade(230));
+    }
 
     // mpv property reads cross the C-API boundary and copy through a
     // shared state lock — read each once and reuse, rather than calling
@@ -1228,31 +1278,34 @@ static void renderCard(MpvPlayer& mpv) {
     }
 
     // ── 10. Hint rows + track index ───────────────────────────────────────────
-    // Two lines so all FN bindings fit without scrolling.  Drop the
-    // "FN+" prefix from each entry since the leading "FN:" label
-    // implies it for the whole row.  Middle dot (U+00B7) separator;
-    // arrows would render as tofu in this font, so "L/R" stays ASCII.
+    // Two lines at 9 px (the previous 8 px was illegible at the LCD's
+    // native pixel density).  Each row carries a single "FN +" prefix
+    // and then space-separated `KEY=Action` pairs — no middle dots,
+    // they crowded the eye at small sizes.  Track index right-aligned
+    // on the bottom row, drawn FIRST so the hint text can clip against
+    // its left edge instead of overlapping it.
     //
-    //   y=56: FN: A Pause · L/R Skip · X Mute · Y Launch
-    //   y=68: FN: B Exit (x2) · SEL Show · Lstick Vol           2 / 5
-    //
-    // 8 px font keeps both rows above the bottom hairline (y=87).
-    const std::string hints_row1 =
-        "FN: A Pause  \xC2\xB7  L/R Skip  \xC2\xB7  X Mute  \xC2\xB7  Y Launch";
-    const std::string hints_row2 =
-        "FN: B Exit \xC3\x97""2  \xC2\xB7  SEL Show  \xC2\xB7  Lstick Vol";
-    drawText(hints_row1, ML, 56, 8, C_HN_R, C_HN_G, C_HN_B, fade(205));
-    drawText(hints_row2, ML, 68, 8, C_HN_R, C_HN_G, C_HN_B, fade(175));
-
+    //   y=54: FN +  A Play   L/R Skip   L2/R2 Vol
+    //   y=68: FN +  X Mute   Y Launch   B Exit   SEL Show     2 / 5
+    int idx_left = card_w - MR;
     if ((int)daemon_playlist.size() > 1) {
-        // Plain ASCII slash — the font lacks the U+2044 fraction slash glyph.
         std::string idx = std::to_string(daemon_current_index + 1)
                         + " / "
                         + std::to_string(daemon_playlist.size());
-        // Right-aligned on the bottom hints row.
-        drawTextRight(idx, card_w - MR, 68, 8,
-                      C_HN_R, C_HN_G, C_HN_B, fade(175));
+        drawTextRight(idx, card_w - MR, 68, 9,
+                      C_HN_R, C_HN_G, C_HN_B, fade(190));
+        idx_left = card_w - MR - measureText(idx, 9) - 8;
     }
+
+    const std::string hints_row1 =
+        "FN +  A Play   L/R Skip   L2/R2 Vol";
+    const std::string hints_row2 =
+        "FN +  X Mute   Y Launch   B Exit   Up Show";
+    drawText(hints_row1, ML, 54, 9, C_HN_R, C_HN_G, C_HN_B, fade(220));
+    // Clip the bottom row against the track-index's left edge so the
+    // two never collide visually on long playlists.
+    drawText(hints_row2, ML, 68, 9, C_HN_R, C_HN_G, C_HN_B, fade(200),
+             idx_left);
 
     // ── 11. Flush to DRM dumb buffer ─────────────────────────────────────────
 #ifndef _WIN32
@@ -1342,15 +1395,8 @@ void runDaemon() {
 
     auto last_tick    = std::chrono::steady_clock::now();
     bool fn_held      = false;
+    bool dpad_up_held = false;   // edge-detect for FN + D-pad-Up show-overlay
     double last_render_pos = -1.0;
-
-    // Left-stick volume control state.  ABS_Y events stream continuously
-    // (~hundreds per second when the stick is moved); we want one volume
-    // step per push, not per event.  Track the discretised direction
-    // (-1 = up, 0 = center, +1 = down) and only fire on transitions
-    // from center.  Thresholds chosen for ~half-deflection so a casual
-    // touch counts but stick drift doesn't.
-    int  lstick_y_dir = 0;
 
     // Two-tap arming for destructive / mode-switching FN combos.
     // First tap arms + shows a confirmation toast; second tap within
@@ -1402,9 +1448,12 @@ void runDaemon() {
             dispatchNotification(formatTrackNotification(mpv, "\xE2\x96\xA0",
                                                         "Daemon stopped"));
         }
-        // Snapshot current effective volume (mpv exposes "volume" 0-100).
-        const int64_t cur = mpv.getPropertyInt("volume");
-        if (cur <= 0) { daemon_running = false; return; }
+        // Snapshot current effective volume.  Read as DOUBLE — "volume"
+        // is double-native, and getPropertyInt returned 0 here, which
+        // made the `cur <= 0` guard fire every time and skip the fade
+        // entirely (abrupt cut instead of the intended ramp).
+        const double cur = mpv.getPropertyDouble("volume");
+        if (cur <= 0.0) { daemon_running = false; return; }
         using namespace std::chrono;
         const auto start = steady_clock::now();
         while (true) {
@@ -1418,6 +1467,21 @@ void runDaemon() {
             std::this_thread::sleep_for(milliseconds(20));
         }
         daemon_running = false;
+    };
+
+    // Force-show the now-playing card for 5 s and re-toast in-game.
+    // Factored out because it's bound to SEVERAL inputs (FN+SEL,
+    // FN+START, FN+D-pad-Up) — on R36S the physical Select button is
+    // often the hotkey/FN key itself, so a single "FN+SEL" combo can
+    // be physically impossible; binding the D-pad-Up fallback (the
+    // original working bind from commit 50b6371) guarantees the user
+    // always has a way to summon the card.
+    auto showOverlayNow = [&]() {
+        daemon_overlay_timer = 5.0f;
+        overlay_active = true;
+        last_render_pos = -1.0;
+        dispatchNotification(formatTrackNotification(
+            mpv, "\xE2\x99\xAA", "Now Playing"));
     };
 
     // For reabsorption: snapshot current track + position into a small
@@ -1615,6 +1679,34 @@ void runDaemon() {
                         // confirm our `namespace btn` mappings match
                         // this device.  Quiet once validated.
                         std::cerr << "[daemon] FN+key ev.code=" << ev.code << "\n";
+                        // FN+L2 / FN+R2 → volume down / up.  Read the
+                        // CURRENT volume as a double — mpv's `volume`
+                        // property is double-native and asking via
+                        // INT64 returns 0/garbage at the C-API
+                        // boundary, which made every press snap to
+                        // 5 / 0 instead of incrementing from where the
+                        // user actually was.
+                        if (ev.code == btn::L2 || ev.code == btn::R2) {
+                            double v = mpv.getPropertyDouble("volume");
+                            const double step = 5.0;
+                            v = (ev.code == btn::R2)
+                                ? std::min(100.0, v + step)
+                                : std::max(0.0, v - step);
+                            mpv.setVolume(static_cast<int>(v));
+                            const std::string toast =
+                                std::string(ev.code == btn::R2
+                                            ? "\xE2\x96\xB2"      // ▲
+                                            : "\xE2\x96\xBC") +   // ▼
+                                " Volume " + std::to_string((int)v);
+                            setDaemonToast(toast, 1.5f);
+                            dispatchNotification(formatTrackNotification(
+                                mpv,
+                                ev.code == btn::R2 ? "\xE2\x96\xB2"
+                                                   : "\xE2\x96\xBC",
+                                ("Volume " + std::to_string((int)v)).c_str()));
+                            last_render_pos = -1.0;
+                            continue;
+                        }
                         if (ev.code == btn::L1) {
                             constexpr double kRestartThresholdSec = 3.0;
                             double cur = mpv.getPlaybackTime();
@@ -1681,41 +1773,42 @@ void runDaemon() {
                                 // memory is consistent across destructive
                                 // FN combos.
                                 last_quit_confirm_arm = now_tp;
+                                // Show the confirm prompt on the DRM
+                                // card itself (toast row).  Also push
+                                // it to the RA toast path for in-game
+                                // visibility.  Toast duration matches
+                                // kConfirmWindowMs so the prompt fades
+                                // exactly when the arming expires.
+                                setDaemonToast(
+                                    "\xE2\x96\xA0 Tap B again\nto stop daemon",
+                                    kConfirmWindowMs / 1000.0f);
                                 dispatchNotification(
                                     "\xE2\x96\xA0 Tap B again\nto stop daemon");
-                                daemon_overlay_timer = 5.0f;
-                                overlay_active = true;
                                 last_render_pos = -1.0;
                             }
-                        } else if (ev.code == btn::SELECT || ev.code == btn::START) {
-                            // Force-show overlay + re-toast.  Accept BOTH
-                            // SEL and START because this device swaps
-                            // A/B from the Linux standard, so SEL/START
-                            // may be swapped the same way; binding both
-                            // means the combo works either way. Nothing
-                            // else in the daemon's FN-prefixed handlers
-                            // consumes START, so the duplication is
-                            // harmless.
-                            daemon_overlay_timer = 5.0f;
-                            overlay_active = true;
-                            last_render_pos = -1.0;
-                            // Also fire a notification on demand so
-                            // the user gets RA toast confirmation even
-                            // when nothing transitioned.
-                            dispatchNotification(formatTrackNotification(
-                                mpv, "\xE2\x99\xAA", "Now Playing"));
+                        } else if (ev.code == btn::SELECT ||
+                                   ev.code == btn::START ||
+                                   ev.code == btn::DPAD_UP_KEY ||
+                                   ev.code == btn::DPAD_UP_BTN) {
+                            // Force-show overlay + re-toast.  Bound to
+                            // SEL, START, and D-pad-Up (key + btn
+                            // variants) so at least one works on this
+                            // device — see showOverlayNow comment.
+                            showOverlayNow();
                         } else if (ev.code == btn::X) { // mute toggle
                             const bool wasMuted = (mpv.getPropertyInt("mute") != 0);
                             mpv.setMute(!wasMuted);
                             // "×" = U+00D7 (BMP, every font has it);
                             // "♪" matches the play-time glyph for
                             // visual consistency on unmute.
+                            const char* glyph =
+                                wasMuted ? "\xE2\x99\xAA" : "\xC3\x97";
+                            const char* verb =
+                                wasMuted ? "Unmuted" : "Muted";
+                            setDaemonToast(std::string(glyph) + " " + verb,
+                                           1.5f);
                             dispatchNotification(formatTrackNotification(
-                                mpv,
-                                wasMuted ? "\xE2\x99\xAA" : "\xC3\x97",
-                                wasMuted ? "Unmuted"      : "Muted"));
-                            daemon_overlay_timer = 5.0f;
-                            overlay_active = true;
+                                mpv, glyph, verb));
                             last_render_pos = -1.0;
                         } else if (ev.code == btn::Y) { // two-tap quick-launch TubeLite
                             const auto now_tp = steady_clock::now();
@@ -1773,60 +1866,41 @@ void runDaemon() {
                                 // already covers user feedback.
                                 fadeOutAndExit(800, /*notify_quit=*/false);
                             } else {
-                                // First tap — arm + prompt.
+                                // First tap — arm + prompt (toast on
+                                // DRM card AND in RA toast path).
                                 last_quick_launch_arm = now_tp;
+                                setDaemonToast(
+                                    "\xE2\x96\xB6 Tap Y again\nto launch TubeLite",
+                                    kQuickLaunchWindowMs / 1000.0f);
                                 dispatchNotification(
                                     "\xE2\x96\xB6 Tap Y again\nto launch TubeLite");
-                                daemon_overlay_timer = 5.0f;
-                                overlay_active = true;
                                 last_render_pos = -1.0;
                             }
                         }
                     }
                 } else if (ev.type == EV_ABS && fn_held) {
-                    // Diagnostic — log ABS codes when FN is held so we
-                    // can verify left-stick Y is actually code 1 on
-                    // this device (could be ABS_RY=4 on some pads).
-                    // Only fires when stick is meaningfully deflected
-                    // to avoid drift spam.
+                    // Diagnostic — log ABS codes when FN is held.
                     if (std::abs(ev.value) > 8000) {
                         std::cerr << "[daemon] FN+abs ev.code=" << ev.code
                                   << " value=" << ev.value << "\n";
                     }
-                }
-                if (ev.type == EV_ABS && ev.code == btn::LSTICK_Y && fn_held) {
-                    // Left-stick Y → volume.  Discretise to {-1,0,+1}
-                    // and fire only on transitions away from center so
-                    // a single push = one volume step, and stick drift
-                    // doesn't spam.
-                    int new_dir = 0;
-                    if (ev.value < -16000) new_dir = -1;       // up   → louder
-                    else if (ev.value > 16000) new_dir = +1;   // down → quieter
-                    if (new_dir != lstick_y_dir) {
-                        if (new_dir == -1) {  // first crossing UP
-                            int v = (int)mpv.getPropertyInt("volume");
-                            v = std::min(100, v + 5);
-                            mpv.setVolume(v);
-                            // "▲" = U+25B2 (BMP, present in every font).
-                            dispatchNotification(
-                                "\xE2\x96\xB2 Volume: " + std::to_string(v));
-                            daemon_overlay_timer = 5.0f;
-                            overlay_active = true;
-                            last_render_pos = -1.0;
-                        } else if (new_dir == +1) {  // first crossing DOWN
-                            int v = (int)mpv.getPropertyInt("volume");
-                            v = std::max(0, v - 5);
-                            mpv.setVolume(v);
-                            // "▼" = U+25BC.
-                            dispatchNotification(
-                                "\xE2\x96\xBC Volume: " + std::to_string(v));
-                            daemon_overlay_timer = 5.0f;
-                            overlay_active = true;
-                            last_render_pos = -1.0;
-                        }
-                        lstick_y_dir = new_dir;
+                    // FN + D-pad-Up arrives as ABS_HAT0Y with a
+                    // negative value on this device (the d-pad is an
+                    // ABS hat, not discrete buttons).  Trigger show-
+                    // overlay on the transition into the up position
+                    // so a single press fires once, not per event.
+                    if (ev.code == btn::HAT0_Y) {
+                        const bool up_now = (ev.value < 0);
+                        if (up_now && !dpad_up_held) showOverlayNow();
+                        dpad_up_held = up_now;
                     }
                 }
+                // (L-stick volume removed — moved to FN+L2/R2 buttons.
+                // The stick path was fragile: even with a deadzone the
+                // stick centre drifts on this hardware and produced
+                // unwanted volume changes, and the underlying mpv read
+                // was broken anyway — see the getPropertyDouble note
+                // in the FN+L2/R2 handler above.)
             }
         }
 #endif
@@ -1845,6 +1919,16 @@ void runDaemon() {
             daemon_overlay_timer -= dt;
             if (daemon_overlay_timer <= 0.0f)
                 overlay_active = false;
+        }
+        // Toast ticks independently so the confirmation prompt can be
+        // SHORTER than the auto-hide of the underlying card.
+        if (daemon_toast_timer > 0.0f) {
+            daemon_toast_timer -= dt;
+            if (daemon_toast_timer <= 0.0f) daemon_toast_text.clear();
+            // Force re-render so the toast actually disappears once the
+            // timer expires (otherwise the pos-changed gate keeps the
+            // last frame frozen on screen for a beat).
+            last_render_pos = -1.0;
         }
 
         // ── Post-emulator overlay recovery ────────────────────────────────

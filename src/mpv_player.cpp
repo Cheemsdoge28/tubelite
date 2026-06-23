@@ -677,6 +677,12 @@ int64_t MpvPlayer::getPropertyInt(const std::string& name) const {
     mpv_get_property(mpv_, name.c_str(), MPV_FORMAT_INT64, &val);
     return val;
 }
+double MpvPlayer::getPropertyDouble(const std::string& name) const {
+    if (!mpv_) return 0.0;
+    double val = 0.0;
+    mpv_get_property(mpv_, name.c_str(), MPV_FORMAT_DOUBLE, &val);
+    return val;
+}
 void MpvPlayer::showText(const std::string& text, int duration_ms) {
     if (!mpv_) return;
     std::string d = std::to_string(duration_ms);
