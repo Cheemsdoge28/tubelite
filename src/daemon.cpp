@@ -1423,7 +1423,7 @@ static void renderCard(MpvPlayer& mpv) {
     const std::string hints_row1 =
         "FN +  A Play   L/R Skip   L2/R2 Vol";
     const std::string hints_row2 =
-        "FN +  X Light  Y Mute     B Exit   Up Show   SEL Spd";
+        "FN +  X Light             B Exit   Up Show   SEL Spd";
     drawText(hints_row1, ML, 54, 9, C_HN_R, C_HN_G, C_HN_B, fade(220));
     // Clip the bottom row against the track-index's left edge so the
     // two never collide visually on long playlists.
@@ -1984,21 +1984,6 @@ void runDaemon() {
                                     kConfirmWindowMs / 1000.0f);
                                 dispatchNotification("Press FN+X to sleep screen");
                             }
-                            last_render_pos = -1.0;
-                        } else if (ev.code == btn::Y) { // mute toggle
-                            const bool wasMuted = (mpv.getPropertyInt("mute") != 0);
-                            mpv.setMute(!wasMuted);
-                            // "×" = U+00D7 (BMP, every font has it);
-                            // "♪" matches the play-time glyph for
-                            // visual consistency on unmute.
-                            const char* glyph =
-                                wasMuted ? "\xE2\x99\xAA" : "\xC3\x97";
-                            const char* verb =
-                                wasMuted ? "Unmuted" : "Muted";
-                            setDaemonToast(std::string(glyph) + " " + verb,
-                                           1.5f);
-                            dispatchNotification(formatTrackNotification(
-                                mpv, glyph, verb));
                             last_render_pos = -1.0;
                         }
                     }
