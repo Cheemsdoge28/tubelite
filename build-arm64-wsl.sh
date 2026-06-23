@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
-OUTPUT="$BUILD_DIR/browser.arm64"
+OUTPUT="$BUILD_DIR/tubelite.arm64"
 
 mkdir -p "$BUILD_DIR"
 
