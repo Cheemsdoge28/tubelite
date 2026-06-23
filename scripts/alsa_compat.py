@@ -160,22 +160,114 @@ def check_file(path):
 
     return tokens, dmix_pcms, rate_indices
 
-def prompt_user(message):
-    sys.stdout.write(message + " ")
-    sys.stdout.flush()
-    try:
-        if not sys.stdin.isatty():
-            with open('/dev/tty', 'r') as tty:
-                response = tty.readline()
-        else:
-            response = sys.stdin.readline()
-    except Exception:
-        response = sys.stdin.readline()
+def prompt_user(message, pcm_name, path):
+    import select
+    import struct
+    import time
+
+    options = [
+        "Yes, update rate to 48000 Hz (Recommended)",
+        "No, keep current rate"
+    ]
     
-    response = response.strip()
-    if response == '' or response.lower() in ['y', 'yes']:
-        return True
-    return False
+    selected = 0
+    js = None
+    
+    # Check if joystick exists
+    has_joystick = os.path.exists('/dev/input/js0')
+    if has_joystick:
+        try:
+            js_fd = os.open('/dev/input/js0', os.O_RDONLY | os.O_NONBLOCK)
+            js = os.fdopen(js_fd, 'rb')
+        except Exception as e:
+            sys.stderr.write(f"[Audio Compat] Warning: Could not open /dev/input/js0: {e}\n")
+
+    def print_menu():
+        # Clear screen/lines if possible, or just print clearly
+        if js or os.environ.get('TUBELITE_FROM_ES') == '1':
+            sys.stdout.write("\033[H\033[J")
+            sys.stdout.write("\033[1m=== TubeLite Audio Compatibility Setup ===\033[0m\n\n")
+            sys.stdout.write(f"File: {path}\n")
+            sys.stdout.write(f"Configuration: {pcm_name}\n\n")
+            sys.stdout.write("TubeLite, MPV, RetroArch, and YouTube audio work best at 48000 Hz.\n")
+            sys.stdout.write("Would you like to update the dmix mixer rate to 48000 Hz?\n\n")
+            sys.stdout.write("Use DPAD to move, A to select.\n\n")
+        else:
+            sys.stdout.write("\n")
+            sys.stdout.write(f"[Audio Compat] dmix configuration ({pcm_name}) in {path} is 44100 Hz.\n")
+            sys.stdout.write("TubeLite, MPV, RetroArch, and YouTube audio work best at 48000 Hz.\n")
+            sys.stdout.write("Select an option (Use keys 1-2 to select, or Enter to confirm):\n")
+            
+        for i, opt in enumerate(options):
+            if i == selected:
+                sys.stdout.write(f" \033[1;32m-> [{opt}]\033[0m\n")
+            else:
+                sys.stdout.write(f"    {opt}\n")
+        sys.stdout.flush()
+
+    print_menu()
+
+    stdin_source = sys.stdin
+    tty_file = None
+    if not sys.stdin.isatty():
+        try:
+            tty_file = open('/dev/tty', 'r')
+            stdin_source = tty_file
+        except Exception:
+            pass
+
+    try:
+        while True:
+            inputs = [stdin_source]
+            if js:
+                inputs.append(js)
+            
+            r, _, _ = select.select(inputs, [], [], 0.1)
+            
+            if js in r:
+                try:
+                    data = js.read(8)
+                    if data and len(data) == 8:
+                        t, val, type, num = struct.unpack('IhBB', data)
+                        if type == 1 and val == 1: # Button Down
+                            if num == 1: # A button (Select)
+                                return selected == 0
+                            if num == 0: # B button (Back/Exit/Cancel)
+                                return False
+                            if num == 8: # UP
+                                selected = (selected - 1) % len(options)
+                                print_menu()
+                            if num == 9: # DOWN
+                                selected = (selected + 1) % len(options)
+                                print_menu()
+                except Exception as e:
+                    sys.stderr.write(f"[Audio Compat] Error reading joystick: {e}\n")
+            
+            if stdin_source in r:
+                char = stdin_source.read(1)
+                if char.isdigit():
+                    val = int(char)
+                    if 1 <= val <= len(options):
+                        return val == 1
+                elif char == '\n':
+                    return selected == 0
+                elif char.lower() == 'y':
+                    return True
+                elif char.lower() == 'n':
+                    return False
+            
+            time.sleep(0.01)
+    finally:
+        if js:
+            try:
+                js.close()
+            except Exception:
+                pass
+        if tty_file:
+            try:
+                tty_file.close()
+            except Exception:
+                pass
 
 def backup_file(path):
     try:
@@ -242,8 +334,8 @@ def main():
                 if old_rate_val == '48000':
                     print(f"[Audio Compat] dmix configuration ({pcm_name}) in {path} is already set to 48000 Hz. No changes needed.")
                 elif old_rate_val == '44100':
-                    prompt_msg = f"\nA dmix configuration was detected using 44100 Hz in {path} ({pcm_name}).\nTubeLite, MPV, RetroArch and most YouTube audio use 48000 Hz.\nWould you like to update the dmix mixer rate to 48000 Hz? [Y/n]"
-                    if prompt_user(prompt_msg):
+                    prompt_msg = f"A dmix configuration was detected using 44100 Hz in {path} ({pcm_name})."
+                    if prompt_user(prompt_msg, pcm_name, path):
                         if not backup_path:
                             backup_path = backup_file(path)
                         if backup_path:
