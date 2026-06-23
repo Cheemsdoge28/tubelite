@@ -651,6 +651,8 @@ static void dispatchNotification(const std::string& text) {
 // self-contained status (anything other than the default "Now
 // Playing") we skip the title/author tail so momentary toasts stay
 // short and readable.
+static std::string truncateText(const std::string& t, size_t maxLen);
+
 static std::string formatTrackNotification(MpvPlayer& mpv,
                                            const char* glyph,
                                            const char* verb_override) {
@@ -675,12 +677,12 @@ static std::string formatTrackNotification(MpvPlayer& mpv,
     if (!fullDetail) {
         // For pause/resume/mute we still append the title so the user
         // knows WHICH track the action applied to — but nothing else.
-        if (!v.title.empty()) { out += sep; out += v.title; }
+        if (!v.title.empty()) { out += sep; out += truncateText(v.title, 34); }
         return out;
     }
 
     // Title.
-    if (!v.title.empty()) { out += sep; out += v.title; }
+    if (!v.title.empty()) { out += sep; out += truncateText(v.title, 34); }
 
     // Author.
     if (!v.author.empty()) { out += sep; out += v.author; }
@@ -1409,7 +1411,7 @@ static void renderCard(MpvPlayer& mpv) {
     // its left edge instead of overlapping it.
     //
     //   y=54: FN +  A Play   L/R Skip   L2/R2 Vol
-    //   y=68: FN +  X Mute   Y Launch   B Exit   SEL Show     2 / 5
+    //   y=68: FN +  X Light   B Exit   Up Show   SEL Spd      2 / 5
     int idx_left = card_w - MR;
     if ((int)daemon_playlist.size() > 1) {
         std::string idx = std::to_string(daemon_current_index + 1)
@@ -1423,7 +1425,7 @@ static void renderCard(MpvPlayer& mpv) {
     const std::string hints_row1 =
         "FN +  A Play   L/R Skip   L2/R2 Vol";
     const std::string hints_row2 =
-        "FN +  X Light             B Exit   Up Show   SEL Spd";
+        "FN +  X Light   B Exit   Up Show   SEL Spd";
     drawText(hints_row1, ML, 54, 9, C_HN_R, C_HN_G, C_HN_B, fade(220));
     // Clip the bottom row against the track-index's left edge so the
     // two never collide visually on long playlists.
