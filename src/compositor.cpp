@@ -1072,7 +1072,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 {"FN+A", purple, "DESC"},
                 {"SEL", textColor, "MINI"},
                 {"Y", green, "SUBS"},
-                {"L3", blue, "STATS"},
+                {"X", blue, "LIGHT"},
                 {"L1/R1", textColor, "SPEED"},
                 {"L2/R2", textColor, "VOL"}
             };

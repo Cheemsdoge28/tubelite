@@ -457,8 +457,27 @@ void App::run() {
         static float sleep_error_accum = 0.0f;
         auto loop_end = steady_clock::now();
         float work_time = duration<float>(loop_end - start).count();
-        float target_frame_time = 1.0f / 60.0f;
-        
+
+        // ── Battery-friendly dynamic frame pacing ────────────────────────────
+        // Render at the highest rate ONLY when the user is actually
+        // watching moving video; otherwise drop the loop rate so the
+        // RK3326 spends most of its time idle.  Tiers:
+        //   * screen-off  → 10 fps  (only pump mpv audio; nothing visual)
+        //   * playing video fullscreen, UNpaused → 60 fps (smooth)
+        //   * everything else (browsing, paused, miniplayer, menus) → 30 fps
+        // 30 fps is indistinguishable for a card UI / paused frame but
+        // roughly halves composite + CPU wakeups vs a constant 60.
+        float target_fps;
+        if (screenOff_) {
+            target_fps = 10.0f;
+        } else if (state_.currentScreen == TubeState::Screen::Playback &&
+                   mpv_player_.isPlaying()) {
+            target_fps = 60.0f;
+        } else {
+            target_fps = 30.0f;
+        }
+        float target_frame_time = 1.0f / target_fps;
+
         float sleep_sec = target_frame_time - work_time + sleep_error_accum;
         if (sleep_sec > 0.001f) {
             auto sleep_start = steady_clock::now();

@@ -171,6 +171,15 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "input-default-bindings", "no");
     mpv_set_option_string(mpv_, "input-vo-keyboard",      "no");
     mpv_set_option_string(mpv_, "osd-level",              "1");
+    // Push mpv's OSD messages (our playback toasts: Volume, Paused,
+    // Speed, screen-off prompt, …) DOWN into the lower-middle of the
+    // frame.  The default top-left position sat directly under our
+    // HUD's title/stats bar, which composites on top of mpv's FBO and
+    // obscured the toast.  Bottom-aligned with a large margin clears
+    // the top chrome while staying above the bottom hint pill row.
+    mpv_set_option_string(mpv_, "osd-align-x",            "center");
+    mpv_set_option_string(mpv_, "osd-align-y",            "bottom");
+    mpv_set_option_string(mpv_, "osd-margin-y",           "70");
     mpv_set_option_string(mpv_, "sub-auto",               "fuzzy");
     mpv_set_option_string(mpv_, "cache",                  "yes");
     mpv_set_option_string(mpv_, "network-timeout",        "5");
