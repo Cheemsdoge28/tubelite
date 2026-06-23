@@ -474,7 +474,7 @@ void App::run() {
                    mpv_player_.isPlaying()) {
             target_fps = 60.0f;
         } else {
-            target_fps = 30.0f;
+            target_fps = 60.0f;
         }
         float target_frame_time = 1.0f / target_fps;
 
