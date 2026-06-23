@@ -390,7 +390,44 @@ void Compositor::render(App* app, int width, int height) {
         SettingsModal::render(app, renderer_, width, height);
     }
 
+    // Screen-off confirmation — drawn ABSOLUTELY LAST so it sits above the
+    // player HUD (the regular playback toast was getting obscured by the
+    // overlay).  Only shown while the X-press is "armed".
+    if (app->screenOffArmMs_ != 0) {
+        drawScreenOffPrompt(app, width, height);
+    }
+
     { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
+}
+
+void Compositor::drawScreenOffPrompt(App* app, int width, int height) {
+    (void)app;
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    // Dim the whole screen so the prompt reads clearly over video.
+    SDL_Rect scrim{0, 0, width, height};
+    fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(180));
+
+    // Centered card.
+    const int cardW = 460, cardH = 150;
+    SDL_Rect card{ (width - cardW) / 2, (height - cardH) / 2, cardW, cardH };
+    // Soft shadow + body + accent bar, matching the app's modal language.
+    SDL_Rect s1{ card.x - 2, card.y + 4, card.w + 4, card.h + 4 };
+    fillRoundedRect(renderer_, s1, theme::RADIUS_CARD, theme::BLACK.a8(70));
+    fillRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::SURFACE);
+    SDL_Rect accent{ card.x, card.y, 4, card.h };
+    fillRoundedRect(renderer_, accent, 2, theme::ACCENT);
+    drawRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::BORDER);
+
+    const int cx = width / 2;
+    drawTextCentered(renderer_, cx, card.y + 26, "TURN SCREEN OFF?", 3, theme::TEXT);
+    drawTextCentered(renderer_, cx, card.y + 64,
+                     "Audio keeps playing. The panel goes dark", 1, theme::TEXT_2);
+    drawTextCentered(renderer_, cx, card.y + 80,
+                     "and the CPU drops to low power.", 1, theme::TEXT_2);
+    drawTextCentered(renderer_, cx, card.y + 112,
+                     "Press X again to confirm  -  any other button cancels",
+                     1, theme::ACCENT_BRIGHT);
+    app->uiDirty_ = true;   // keep the prompt animating/visible until resolved
 }
 
 void Compositor::drawSignInHelp(App* app, int width, int height) {

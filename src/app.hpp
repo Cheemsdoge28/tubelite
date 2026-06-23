@@ -114,6 +114,10 @@ private:
     void exitScreenOff();                     // restore backlight + governor (idempotent)
     void requestScreenOffToggle();            // X-press: arm, confirm, or cancel
 
+    // Player volume step (dir = -1 down / +1 up).  Reads mpv's actual
+    // volume so it matches the daemon and never drifts.  Bound to L2/R2.
+    void adjustPlayerVolume(int dir);
+
     TubeState state_;
     MpvPlayer mpv_player_;
     YouTubeAPI youtube_api_;

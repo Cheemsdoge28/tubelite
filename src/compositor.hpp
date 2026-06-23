@@ -15,6 +15,8 @@ private:
     void renderPlaybackOverlay(App* app, int width, int height);
     void drawDebugOverlay(App* app, int width, int height);
     void drawSignInHelp(App* app, int width, int height);
+    // Topmost screen-off confirmation prompt (drawn above the player HUD).
+    void drawScreenOffPrompt(App* app, int width, int height);
     // Short fade-from-black drawn over a freshly-appeared video surface.
     void drawVideoFade(App* app, const SDL_Rect& region, int radius);
 

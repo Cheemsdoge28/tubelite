@@ -222,20 +222,24 @@ bool App::initialize() {
         return false;
     }
     loadSettings();
-    // Reabsorb FIRST — if the daemon is currently playing, we want to
-    // transfer its track into our own mpv with continuous audio.  Doing
-    // killExistingDaemon() before this would cut audio for a beat while
-    // mpv spins up.  reabsorbDaemonPlayback() handles the daemon kill
-    // (via fade-out signal) itself once playback has been picked up.
+    loadHistory();
+    // Restore browse state BEFORE reabsorb so reabsorb can drop the user
+    // back onto the SCREEN they were last on (e.g. their search results)
+    // with the now-playing miniplayer over it — instead of always
+    // forcing Home.  loadBrowseState() transitions to the saved screen
+    // and hydrates the grids; reabsorb then keeps that screen.
+    bool restored = loadBrowseState();
+    // Reabsorb: if the daemon is currently playing, transfer its track
+    // into our own mpv with continuous audio.  Doing killExistingDaemon()
+    // before this would cut audio for a beat while mpv spins up.
+    // reabsorbDaemonPlayback() handles the daemon kill (via fade-out
+    // signal) itself once playback has been picked up, and preserves the
+    // browse screen restored above.
     bool reabsorbed = reabsorbDaemonPlayback();
     if (!reabsorbed) killExistingDaemon();
-    loadHistory();
-    // Browse-state restore happens BEFORE loadHomeFeeds: an empty restore
-    // (no saved state, or cold install) falls through to the standard
-    // trending fetch; a successful restore short-circuits the fetch so
-    // its async callback can't clobber the just-hydrated home/search
-    // grids and reset the cursor to index 0.
-    bool restored = loadBrowseState();
+    // An empty restore (no saved state / cold install) falls through to
+    // the standard trending fetch; a successful restore short-circuits it
+    // so the async callback can't clobber the hydrated grids.
     if (!restored) {
         loadHomeFeeds();
     }
@@ -422,8 +426,24 @@ void App::run() {
             }
         }
         { PROFILE_SCOPE("focus_update");    focus_manager_.update(dt); }
-        renderFrame();
-        
+
+        // Safety net: if we somehow left the player while the screen was
+        // blanked (track ended → home, reabsorb, etc.), restore the
+        // backlight immediately so the device is never left dark on a
+        // non-player screen.
+        if (screenOff_ && state_.currentScreen != TubeState::Screen::Playback) {
+            exitScreenOff();
+            uiDirty_ = true;
+        }
+
+        // No-render power-save: while the panel is off, skip the entire
+        // render path (FBO composite, present) — only mpv audio decode
+        // keeps running above.  This is most of the CPU/GPU saving on top
+        // of the conservative governor + zero backlight.
+        if (!screenOff_) {
+            renderFrame();
+        }
+
         // Calculate FPS
         frame_count_++;
         auto now = steady_clock::now();
@@ -608,6 +628,20 @@ void App::exitScreenOff() {
     screenOffArmMs_ = 0;
     savedBacklight_ = -1;
     savedGovernor_.clear();
+}
+
+void App::adjustPlayerVolume(int dir) {
+    // Read mpv's ACTUAL volume (double-native) so steps never drift out
+    // of sync after fades / reabsorb — exactly mirrors the daemon's
+    // FN+L2/R2 handler.  ±5 per press, clamp 0..100.
+    double cur = mpv_player_.getPropertyDouble("volume");
+    if (cur <= 0.0 && state_.volume > 0) cur = state_.volume; // mpv not ready yet
+    int v = (int)cur + dir * 5;
+    v = std::max(0, std::min(100, v));
+    state_.volume = v;
+    mpv_player_.setVolume(v);
+    showPlaybackToast("Volume " + std::to_string(v) + "%");
+    uiDirty_ = true;
 }
 
 void App::requestScreenOffToggle() {
@@ -1248,22 +1282,10 @@ void App::updateSticks(float dt) {
             lastStickDirY_ = 0;
         }
     } else if (state_.currentScreen == TubeState::Screen::Playback) {
-        // Trigger-based volume control during playback
-        static auto lastVolumeAdjust = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastVolumeAdjust).count() > 150) {
-            if (state_.leftTrigger > 0.3f) {
-                state_.volume = std::max(0, state_.volume - 5);
-                mpv_player_.setVolume(state_.volume);
-                showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
-                lastVolumeAdjust = now;
-            } else if (state_.rightTrigger > 0.3f) {
-                state_.volume = std::min(100, state_.volume + 5);
-                mpv_player_.setVolume(state_.volume);
-                showPlaybackToast("Volume " + std::to_string(state_.volume) + "%");
-                lastVolumeAdjust = now;
-            }
-        }
+        // (Volume is on the L2/R2 BUTTONS now — handled in
+        // handleJoyButton — because the R36S exposes L2/R2 as digital
+        // buttons 6/7, not analog trigger axes.  The old analog-trigger
+        // path here never fired on this device.)
 
         // Repeating scroll for description drawer
         if (state_.showDescriptionDrawer) {
@@ -2017,6 +2039,11 @@ void App::handleJoyAxis(const SDL_JoyAxisEvent& jaxis) {
 }
 
 void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
+    // Diagnostic — read off raw joystick button indices so ambiguous
+    // physical buttons (notably L2/R2, which on some R36S images arrive
+    // as digital buttons rather than analog triggers) can be mapped
+    // correctly.  Only logs on press to avoid doubling the spam.
+    if (down) std::cerr << "[app] joybutton index=" << (int)button << "\n";
     switch (button) {
     case 0: handleControllerButton(SDL_CONTROLLER_BUTTON_B, down); break;
     case 1: handleControllerButton(SDL_CONTROLLER_BUTTON_A, down); break;
@@ -2037,12 +2064,25 @@ void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
         if (button == 12) handleControllerButton(SDL_CONTROLLER_BUTTON_BACK, down);
         else handleControllerButton(SDL_CONTROLLER_BUTTON_START, down);
         break;
-    case 6:
-    case 14:
+    // R36S button indices:
+    //   6 = L2, 7 = R2        (triggers exposed as digital buttons)
+    //   14 = L3, 15 = R3      (stick clicks — NOT in the abbreviated
+    //                          mapping table, but the device has them)
+    // The old code conflated 6+14 → LEFTSTICK and 7+15 → RIGHTSTICK,
+    // which is why BOTH L2 and L3 were hitting the stats overlay.  Split
+    // them: L2/R2 → volume, L3/R3 → their real stick-click bindings.
+    case 6:  // L2 → volume down (player only)
+        if (down && state_.currentScreen == TubeState::Screen::Playback)
+            adjustPlayerVolume(-1);
+        break;
+    case 7:  // R2 → volume up (player only)
+        if (down && state_.currentScreen == TubeState::Screen::Playback)
+            adjustPlayerVolume(+1);
+        break;
+    case 14: // L3 → debug overlay toggle (handleControllerButton routes it)
         handleControllerButton(SDL_CONTROLLER_BUTTON_LEFTSTICK, down);
         break;
-    case 7:
-    case 15:
+    case 15: // R3 → reload feed
         handleControllerButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, down);
         break;
     case 16:
@@ -2463,8 +2503,17 @@ void App::saveBrowseState() {
     // the file by an order of magnitude.
     try {
         nlohmann::json j;
-        const char* screenName = "home";
-        if (state_.currentScreen == TubeState::Screen::Search) screenName = "search";
+        // Save the underlying BROWSE screen, not the literal current
+        // screen — when the user is in fullscreen Playback (or a
+        // miniplayer over a browse screen), currentScreen is Playback,
+        // and the old code defaulted that to "home", silently losing the
+        // Search context the user came from.  getPreviousBrowseScreen()
+        // recovers Search vs Home in that case.
+        TubeState::Screen browseScreen = state_.currentScreen;
+        if (browseScreen == TubeState::Screen::Playback)
+            browseScreen = state_manager_.getPreviousBrowseScreen();
+        const char* screenName =
+            (browseScreen == TubeState::Screen::Search) ? "search" : "home";
         j["screen"]        = screenName;
         j["search_query"]  = current_search_query_;
         j["search_page"]   = search_page_;
@@ -2700,7 +2749,16 @@ bool App::reabsorbDaemonPlayback() {
         if (!sig) killExistingDaemon();
     }
 
-    state_manager_.transitionTo(TubeState::Screen::Home);
+    // Land back on whatever browse screen loadBrowseState() restored
+    // (Search or Home) with the miniplayer over it — don't force Home
+    // and lose the user's search context.  If we're somehow not on a
+    // browse screen, fall back to Home.
+    TubeState::Screen target = state_.currentScreen;
+    if (target != TubeState::Screen::Search &&
+        target != TubeState::Screen::Home) {
+        target = TubeState::Screen::Home;
+    }
+    state_manager_.transitionTo(target);
     state_manager_.setMiniplayerActive(true);
     state_.showUi = true;
     if (!wasPlaying) {
