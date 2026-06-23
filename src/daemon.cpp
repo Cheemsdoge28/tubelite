@@ -1452,7 +1452,6 @@ void runDaemon() {
     using namespace std::chrono;
     auto last_quick_launch_arm = steady_clock::time_point::min();
     auto last_quit_confirm_arm = steady_clock::time_point::min();
-    auto last_speed_arm        = steady_clock::time_point::min();
     constexpr int kConfirmWindowMs = 2000;
     // Keep the old name as an alias for the quick-launch path so the
     // existing call site reads cleanly.
@@ -1836,45 +1835,28 @@ void runDaemon() {
                                 // kConfirmWindowMs so the prompt fades
                                 // exactly when the arming expires.
                                 setDaemonToast(
-                                    "\xE2\x96\xA0 Tap B again\nto stop daemon",
+                                    "\xE2\x96\xA0 Press FN+B again\nto close BG player",
                                     kConfirmWindowMs / 1000.0f);
                                 dispatchNotification(
-                                    "\xE2\x96\xA0 Tap B again\nto stop daemon");
+                                    "Press FN+B to close TubeLite BG player");
                                 last_render_pos = -1.0;
                             }
                         } else if (ev.code == btn::SELECT || ev.code == 704) {
-                            const auto now_tp = steady_clock::now();
-                            const auto since_arm_ms =
-                                duration_cast<milliseconds>(
-                                    now_tp - last_speed_arm).count();
-                            if (last_speed_arm !=
-                                    steady_clock::time_point::min() &&
-                                since_arm_ms <= kConfirmWindowMs) {
-                                // Confirmed — cycle speed
-                                double s = mpv.getSpeed();
-                                double rounded = std::round(s * 4.0) / 4.0;
-                                double next_speed = rounded + 0.25;
-                                if (next_speed > 2.01) {
-                                    next_speed = 0.25;
-                                }
-                                daemon_speed = next_speed;
-                                mpv.setSpeed(daemon_speed);
-
-                                char spdBuf[32];
-                                snprintf(spdBuf, sizeof(spdBuf), "Speed: %.2fx", daemon_speed);
-                                setDaemonToast(spdBuf, 1.5f);
-                                dispatchNotification(formatTrackNotification(
-                                    mpv, "\xE2\x99\xAA", spdBuf));
-                                last_speed_arm = now_tp; // keep window open for consecutive cycles
-                            } else {
-                                // First tap — arm + prompt
-                                last_speed_arm = now_tp;
-                                double s = mpv.getSpeed();
-                                char promptBuf[64];
-                                snprintf(promptBuf, sizeof(promptBuf), "Tap SELECT to\ncycle speed (%.2fx)", s);
-                                setDaemonToast(promptBuf, kConfirmWindowMs / 1000.0f);
-                                dispatchNotification(promptBuf);
+                            // Cycle speed: round to nearest 0.25, increment by 0.25, and wrap around to 0.25 at > 2.0
+                            double s = mpv.getSpeed();
+                            double rounded = std::round(s * 4.0) / 4.0;
+                            double next_speed = rounded + 0.25;
+                            if (next_speed > 2.01) {
+                                next_speed = 0.25;
                             }
+                            daemon_speed = next_speed;
+                            mpv.setSpeed(daemon_speed);
+
+                            char spdBuf[32];
+                            snprintf(spdBuf, sizeof(spdBuf), "Speed: %.2fx", daemon_speed);
+                            setDaemonToast(spdBuf, 1.5f);
+                            dispatchNotification(formatTrackNotification(
+                                mpv, "\xE2\x99\xAA", spdBuf));
                             last_render_pos = -1.0;
                             continue;
                         } else if (ev.code == btn::START ||
@@ -1959,10 +1941,10 @@ void runDaemon() {
                                 // DRM card AND in RA toast path).
                                 last_quick_launch_arm = now_tp;
                                 setDaemonToast(
-                                    "\xE2\x96\xB6 Tap Y again\nto launch TubeLite",
+                                    "\xE2\x96\xB6 Press FN+Y again\nto launch TubeLite",
                                     kQuickLaunchWindowMs / 1000.0f);
                                 dispatchNotification(
-                                    "\xE2\x96\xB6 Tap Y again\nto launch TubeLite");
+                                    "Press FN+Y to launch TubeLite");
                                 last_render_pos = -1.0;
                             }
                         }

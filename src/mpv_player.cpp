@@ -179,7 +179,7 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     // the top chrome while staying above the bottom hint pill row.
     mpv_set_option_string(mpv_, "osd-align-x",            "left");
     mpv_set_option_string(mpv_, "osd-align-y",            "top");
-    mpv_set_option_string(mpv_, "osd-margin-y",           "60");
+    mpv_set_option_string(mpv_, "osd-margin-y",           "70");
     mpv_set_option_string(mpv_, "sub-auto",               "fuzzy");
     mpv_set_option_string(mpv_, "cache",                  "yes");
     mpv_set_option_string(mpv_, "network-timeout",        "5");
