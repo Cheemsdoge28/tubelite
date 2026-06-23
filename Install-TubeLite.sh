@@ -202,17 +202,31 @@ if [ "$1" = "--uninstall" ] || [ "$1" = "--uninstall-app" ] || [ "$1" = "--unins
     if [ "$REMOVE_THEME" -eq 1 ]; then
         # Remove theme entries
         BASE_THEME_ROOT="/etc/emulationstation/themes"
+        THEME_CLEANED=0
         if [ -d "$BASE_THEME_ROOT" ]; then
             for theme_dir in "$BASE_THEME_ROOT"/*/; do
-                if [ -d "${theme_dir}${SYSTEM_NAME}" ]; then
-                    rm -rf "${theme_dir}${SYSTEM_NAME}"
-                fi
-                if [ -d "${theme_dir}fire4arkos" ]; then
-                    rm -rf "${theme_dir}fire4arkos"
-                fi
+                [ -d "$theme_dir" ] || continue
+                theme_name="$(basename "$theme_dir")"
+                for sys_name in "$SYSTEM_NAME" "fire4arkos"; do
+                    if [ -d "${theme_dir}${sys_name}" ]; then
+                        rm -rf "${theme_dir}${sys_name}"
+                        log_ok "  Removed ${sys_name} from $theme_name"
+                        THEME_CLEANED=$((THEME_CLEANED + 1))
+                    fi
+                done
             done
-            rm -rf "$BASE_THEME_ROOT/$SYSTEM_NAME"
-            log_ok "Removed theme assets from all theme directories"
+            # Also remove any top-level system name directory
+            if [ -d "$BASE_THEME_ROOT/$SYSTEM_NAME" ]; then
+                rm -rf "$BASE_THEME_ROOT/$SYSTEM_NAME"
+                THEME_CLEANED=$((THEME_CLEANED + 1))
+            fi
+            if [ "$THEME_CLEANED" -gt 0 ]; then
+                log_ok "Removed theme assets from $THEME_CLEANED locations"
+            else
+                log_info "No theme assets found to remove"
+            fi
+        else
+            log_info "Theme root $BASE_THEME_ROOT does not exist — nothing to remove"
         fi
     fi
 
@@ -583,13 +597,67 @@ fi
 if [ "$DO_THEME" -eq 1 ]; then
     log_step "5/7" "Installing theme..."
     BASE_THEME_ROOT="/etc/emulationstation/themes"
-    if [ -d "$BASE_THEME_ROOT" ] && [ -d "$SCRIPT_DIR/theme" ]; then
+    THEME_SRC="$SCRIPT_DIR/theme"
+
+    # ── Validate source assets before touching the target ────────────
+    THEME_REQUIRED_FILES="theme.xml logo.png system.png blank.png"
+    THEME_SRC_OK=1
+    for f in $THEME_REQUIRED_FILES; do
+        if [ ! -f "$THEME_SRC/$f" ]; then
+            log_err "Required theme asset missing: $THEME_SRC/$f"
+            THEME_SRC_OK=0
+        fi
+    done
+    if [ "$THEME_SRC_OK" -eq 0 ]; then
+        log_err "Theme source directory is incomplete — skipping theme install"
+    elif [ ! -d "$BASE_THEME_ROOT" ]; then
+        log_warn "Theme root $BASE_THEME_ROOT does not exist — skipping theme install"
+    else
+        THEME_OK=0
+        THEME_FAIL=0
+        THEME_TOTAL=0
         for theme_dir in "$BASE_THEME_ROOT"/*/; do
+            [ -d "$theme_dir" ] || continue
+            THEME_TOTAL=$((THEME_TOTAL + 1))
+            theme_name="$(basename "$theme_dir")"
             target_dir="${theme_dir}${SYSTEM_NAME}"
-            mkdir -p "$target_dir"
-            cp -r "$SCRIPT_DIR/theme"/* "$target_dir/" 2>/dev/null || true
+
+            # Clean up legacy fire4arkos directory if present
+            if [ -d "${theme_dir}fire4arkos" ]; then
+                rm -rf "${theme_dir}fire4arkos" 2>/dev/null || true
+                log_info "  Cleaned legacy fire4arkos dir from $theme_name"
+            fi
+
+            # Attempt to create the target directory
+            if ! mkdir -p "$target_dir" 2>/dev/null; then
+                log_warn "  $theme_name: cannot create $target_dir (read-only filesystem?) — skipped"
+                THEME_FAIL=$((THEME_FAIL + 1))
+                continue
+            fi
+
+            # Copy theme assets
+            if cp -r "$THEME_SRC"/* "$target_dir/" 2>&1; then
+                # Validate that the critical file landed
+                if [ -f "$target_dir/theme.xml" ]; then
+                    log_ok "  $theme_name: theme assets installed"
+                    THEME_OK=$((THEME_OK + 1))
+                else
+                    log_warn "  $theme_name: copy appeared to succeed but theme.xml is missing"
+                    THEME_FAIL=$((THEME_FAIL + 1))
+                fi
+            else
+                log_warn "  $theme_name: copy failed"
+                THEME_FAIL=$((THEME_FAIL + 1))
+            fi
         done
-        log_ok "Theme installed"
+
+        if [ "$THEME_TOTAL" -eq 0 ]; then
+            log_warn "No theme directories found under $BASE_THEME_ROOT"
+        elif [ "$THEME_FAIL" -eq 0 ]; then
+            log_ok "Theme installed into all $THEME_OK theme directories"
+        else
+            log_warn "Theme installed into $THEME_OK of $THEME_TOTAL directories ($THEME_FAIL failed)"
+        fi
     fi
 fi
 

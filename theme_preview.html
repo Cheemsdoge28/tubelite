@@ -7,80 +7,146 @@
     <style>
         body {
             margin: 0;
-            background: #1a1a1a;
+            background: #0C0D12;
             color: #eee;
             font-family: sans-serif;
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
             height: 100vh;
             overflow: hidden;
+            gap: 30px;
+        }
+        .screens {
+            display: flex;
+            gap: 40px;
+            flex-wrap: wrap;
+            justify-content: center;
         }
         .screen {
-            width: 640px;
-            height: 480px;
-            background: #000;
             position: relative;
             box-shadow: 0 0 50px rgba(0,0,0,0.5);
-            border: 10px solid #333;
+            border: 4px solid #222630;
             border-radius: 5px;
+            overflow: hidden;
         }
+        .screen-4x3 { width: 480px; height: 360px; }
+        .screen-1x1 { width: 360px; height: 360px; }
         .background {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             background-image: url('theme/system.png');
             background-size: cover;
             background-position: center;
-            opacity: 0.8;
         }
-        .logo {
+        /* System view */
+        .sys-view .background { opacity: 1; }
+        .sys-view .logo {
             position: absolute;
-            top: 30%;
+            top: 45%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 60%;
-            max-height: 30%;
+            max-width: 55%;
+            max-height: 55%;
             object-fit: contain;
         }
-        .description {
+        .sys-view .description {
             position: absolute;
-            bottom: 50px;
+            bottom: 12%;
             left: 50%;
             transform: translateX(-50%);
             width: 80%;
             text-align: center;
-            font-size: 14px;
-            color: #ddd;
+            font-size: 11px;
+            color: #A5ACBA;
             line-height: 1.4;
         }
-        .system-info {
+        /* Gamelist view */
+        .gl-view .background { opacity: 0.15; }
+        .gl-view .logo {
             position: absolute;
-            top: 20px;
-            right: 20px;
-            font-size: 12px;
-            color: #888;
+            top: 12%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 20%;
+            max-height: 18%;
+            object-fit: contain;
+        }
+        .gl-view .gamelist {
+            position: absolute;
+            top: 26%;
+            left: 5%;
+            width: 90%;
+            height: 58%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            overflow: hidden;
+        }
+        .gl-view .gamelist-item {
+            width: 100%;
+            text-align: center;
+            font-size: 11px;
+            color: #A5ACBA;
+            padding: 4px 0;
+        }
+        .gl-view .gamelist-item.selected {
+            color: #FFFFFF;
+            background: rgba(255, 48, 48, 0.35);
+            border-radius: 3px;
+        }
+        .gl-view .help-bar {
+            position: absolute;
+            bottom: 6%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 9px;
+            color: #787E8C;
         }
         .label {
-            position: absolute;
-            top: -30px;
-            left: 0;
             font-weight: bold;
             color: #FF3030;
+            font-size: 12px;
+        }
+        .title {
+            font-size: 16px;
+            color: #F0F2F5;
+            font-weight: bold;
         }
     </style>
 </head>
 <body>
-    <div class="screen">
-        <div class="label">EmulationStation "System" View Preview</div>
-        <div class="background"></div>
-        <img src="theme/logo.png" class="logo" alt="TubeLite Logo">
-        <div class="description">
-            TubeLite: Native YouTube Client. Smooth video and audio playback on your ArkOS handheld.
+    <div class="title">TubeLite EmulationStation Theme Preview</div>
+    <div class="screens">
+        <!-- 4:3 System View -->
+        <div>
+            <div class="label">System View — 4:3</div>
+            <div class="screen screen-4x3 sys-view">
+                <div class="background"></div>
+                <img src="theme/logo.png" class="logo" alt="TubeLite Logo">
+                <div class="description">
+                    TubeLite: Native YouTube Client. Smooth video and audio playback on your ArkOS handheld.
+                </div>
+            </div>
         </div>
-        <div class="system-info">640x480 / ArkOS</div>
+        <!-- 1:1 Gamelist View (720x720 simulation) -->
+        <div>
+            <div class="label">Gamelist View — 1:1 (720×720)</div>
+            <div class="screen screen-1x1 gl-view">
+                <div class="background"></div>
+                <img src="theme/logo.png" class="logo" alt="TubeLite Logo">
+                <div class="gamelist">
+                    <div class="gamelist-item">Browse Trending</div>
+                    <div class="gamelist-item selected">Search Videos</div>
+                    <div class="gamelist-item">My Queue</div>
+                    <div class="gamelist-item">Settings</div>
+                </div>
+                <div class="help-bar">A Select  B Back  Y Search</div>
+            </div>
+        </div>
     </div>
 </body>
 </html>

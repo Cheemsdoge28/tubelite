@@ -2588,14 +2588,13 @@
 		<release>2010</release>
 		<hardware>emulator</hardware>
 	</system>
-  <!-- TubeLite YouTube Client — added by install-es-system.py -->
   <system>
-    <name>tubelite</name>
-    <fullname>TubeLite YouTube Client</fullname>
-    <path>/roms/tools/TubeLite</path>
-    <extension>.tbl</extension>
+    <name>fire4arkos</name>
+    <fullname>Fire4ArkOS Browser</fullname>
+    <path>/roms/tools/fire4arkos</path>
+    <extension>.sh</extension>
     <command>bash %ROM%</command>
-    <platform>tubelite</platform>
-    <theme>tubelite</theme>
+    <platform>fire4arkos</platform>
+    <theme>ports</theme>
   </system>
 </systemList>

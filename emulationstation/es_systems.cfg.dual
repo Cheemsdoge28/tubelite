@@ -5144,14 +5144,14 @@
 		<release>2008</release>
 		<hardware>console</hardware>
 	</system>
-
+  <!-- TubeLite YouTube Client — added by install-es-system.py -->
   <system>
-    <name>fire4arkos</name>
-    <fullname>Fire4ArkOS Browser</fullname>
-    <path>/roms/tools/fire4arkos</path>
-    <extension>.sh</extension>
+    <name>tubelite</name>
+    <fullname>TubeLite YouTube Client</fullname>
+    <path>/roms/tools/TubeLite</path>
+    <extension>.tbl</extension>
     <command>bash %ROM%</command>
-    <platform>fire4arkos</platform>
-    <theme>ports</theme>
+    <platform>tubelite</platform>
+    <theme>tubelite</theme>
   </system>
 </systemList>
