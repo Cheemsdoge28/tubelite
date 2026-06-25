@@ -1,9 +1,18 @@
 #ifndef MPV_DYN_HPP
 #define MPV_DYN_HPP
 
+// Include the client API header for types like mpv_handle, mpv_event, etc.
 #include <mpv/client.h>
+
+// Guard: mpv_render_context_update_fn was a named typedef in libmpv1 headers
+// but was removed in libmpv2 (trixie). We include render.h + render_gl.h only
+// if we are NOT going to define the callback type ourselves, since the system
+// header may or may not declare the old typedef. We always include them for
+// the struct/enum types (mpv_render_context, mpv_render_param, etc.) but we
+// never reference the old mpv_render_context_update_fn typedef directly.
 #include <mpv/render.h>
 #include <mpv/render_gl.h>
+
 #include <dlfcn.h>
 #include <iostream>
 #include <string>
@@ -26,7 +35,16 @@ struct MpvDynLoader {
     const char* (*error_string)(int error) = nullptr;
     const char* (*event_name)(mpv_event_id event) = nullptr;
 
+    // Property set/get — present in all libmpv versions
+    int (*set_property)(mpv_handle* ctx, const char* name, mpv_format format, void* data) = nullptr;
+    char* (*get_property_string)(mpv_handle* ctx, const char* name) = nullptr;
+    int (*set_property_string)(mpv_handle* ctx, const char* name, const char* data) = nullptr;
+
     // Render context function pointers
+    // NOTE: the callback type is spelled out as `void(*)(void*)` explicitly.
+    // libmpv1 headers exposed this as a named typedef `mpv_render_context_update_fn`
+    // which libmpv2 removed.  Using the raw pointer type here means we compile
+    // correctly against both header generations.
     int (*render_context_create)(mpv_render_context** res, mpv_handle* mal_ctx, mpv_render_param* params) = nullptr;
     void (*render_context_set_update_callback)(mpv_render_context* ctx, void (*callback)(void*), void* callback_data) = nullptr;
     uint64_t (*render_context_update)(mpv_render_context* ctx) = nullptr;
@@ -82,6 +100,10 @@ struct MpvDynLoader {
         ok &= load_sym(error_string, "mpv_error_string");
         ok &= load_sym(event_name, "mpv_event_name");
 
+        ok &= load_sym(set_property, "mpv_set_property");
+        ok &= load_sym(get_property_string, "mpv_get_property_string");
+        ok &= load_sym(set_property_string, "mpv_set_property_string");
+
         ok &= load_sym(render_context_create, "mpv_render_context_create");
         ok &= load_sym(render_context_set_update_callback, "mpv_render_context_set_update_callback");
         ok &= load_sym(render_context_update, "mpv_render_context_update");
@@ -118,6 +140,10 @@ extern MpvDynLoader g_mpv_dyn;
 #define mpv_terminate_destroy g_mpv_dyn.terminate_destroy
 #define mpv_error_string g_mpv_dyn.error_string
 #define mpv_event_name g_mpv_dyn.event_name
+
+#define mpv_set_property g_mpv_dyn.set_property
+#define mpv_get_property_string g_mpv_dyn.get_property_string
+#define mpv_set_property_string g_mpv_dyn.set_property_string
 
 #define mpv_render_context_create g_mpv_dyn.render_context_create
 #define mpv_render_context_set_update_callback g_mpv_dyn.render_context_set_update_callback

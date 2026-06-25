@@ -166,9 +166,9 @@ run_compat_wizard() {
     fi
 
     # ── 2. Preferred fix: apt ────────────────────────────────────────────
-    log_step "2/3" "Trying apt install of libmpv1 (proper, version-matched fix)..."
+    log_step "2/3" "Trying apt install of libmpv2 or libmpv1 (proper, version-matched fix)..."
     apt-get update -qq 2>/dev/null || true
-    apt-get install -y --no-install-recommends libmpv1 2>/dev/null || true
+    apt-get install -y --no-install-recommends libmpv2 2>/dev/null || apt-get install -y --no-install-recommends libmpv1 2>/dev/null || true
     purge_display_managers
     if compat_have_system_libmpv; then
         log_ok "libmpv installed via apt. Playback should work now."
@@ -584,9 +584,9 @@ if [ "$DO_DEPS" -eq 1 ]; then
     # NOTE: ffmpeg binary intentionally omitted — mpv handles all decoding internally.
     # Including ffmpeg pulls in ghostscript → gnome-shell → gdm3 via recommended deps,
     # which hijacks the KMSDRM display and breaks EmulationStation on ArkOS.
-    # To protect ArkOS custom/optimized held libraries (like libsdl2-2.0-0, libasound2, libmpv1),
+    # To protect ArkOS custom/optimized held libraries (like libsdl2-2.0-0, libasound2, libmpv1, libmpv2, and display libraries),
     # we check each dependency and only invoke apt-get install for those that are missing.
-    CRITICAL_DEPS="python3 libsdl2-2.0-0 libasound2 libmpv1 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6"
+    CRITICAL_DEPS="python3 libsdl2-2.0-0 libasound2 libsdl2-ttf-2.0-0 libharfbuzz0b libfreetype6 libegl1 libgles2 libdrm2 libgbm1"
     RUNTIME_DEPS=""
     for pkg in $CRITICAL_DEPS; do
         if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
@@ -595,6 +595,16 @@ if [ "$DO_DEPS" -eq 1 ]; then
             RUNTIME_DEPS="$RUNTIME_DEPS $pkg"
         fi
     done
+
+    # Dynamic check for libmpv1 / libmpv2 to avoid installation failure if one isn't in repositories
+    HAS_MPV=0
+    if dpkg -l "libmpv1" 2>/dev/null | grep -q '^ii'; then
+        log_info "Dependency libmpv1 is already installed. Keeping stock version."
+        HAS_MPV=1
+    elif dpkg -l "libmpv2" 2>/dev/null | grep -q '^ii'; then
+        log_info "Dependency libmpv2 is already installed. Keeping stock version."
+        HAS_MPV=1
+    fi
 
     # --no-install-recommends is CRITICAL on ArkOS: recommended deps often drag in
     # entire GNOME stacks (gdm3, gnome-shell) which steal DRM master from ES.
@@ -617,6 +627,12 @@ if [ "$DO_DEPS" -eq 1 ]; then
         apt-get install $APT_FLAGS $RUNTIME_DEPS || true
     else
         log_info "All runtime dependencies are already installed."
+    fi
+
+    # Install libmpv if missing
+    if [ "$HAS_MPV" -eq 0 ]; then
+        log_info "libmpv is missing. Trying to install libmpv2 or libmpv1..."
+        apt-get install $APT_FLAGS libmpv2 2>/dev/null || apt-get install $APT_FLAGS libmpv1 2>/dev/null || true
     fi
 
     # Guard: purge any display manager that snuck in as a side effect.
