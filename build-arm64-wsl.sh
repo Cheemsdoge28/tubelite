@@ -87,6 +87,7 @@ aarch64-linux-gnu-g++ \
     "${SOURCES[@]}" \
     -o "$OUTPUT" \
     "${LIB_FLAGS[@]}" "${LINK_OPT_FLAGS[@]}" \
+    -Wl,--no-as-needed -l:libgomp.so.1 -Wl,--as-needed \
     -lSDL2 -lSDL2_ttf \
     -lGLESv2 -lEGL \
     -lfreetype \

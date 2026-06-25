@@ -25,7 +25,13 @@ endif
 CXXFLAGS ?= -std=c++17 -O3 -fno-plt -ffunction-sections -fdata-sections -Wall -Wextra -Wpedantic -pthread -Isrc
 # -rdynamic exports the executable's symbols into .dynsym so the dynamically
 # loaded libmpv can resolve our GBM compatibility stubs (see src/gbm_compat.cpp).
-LDFLAGS ?= -ldl -pthread -rdynamic -Wl,--gc-sections -Wl,--as-needed
+# --no-as-needed -l:libgomp.so.1: force libgomp to load at STARTUP (initial TLS
+# image) rather than via libmpv's dlopen.  libgomp uses static-model TLS, and on
+# older glibc (eoan 2.30) it can't be placed in the dlopen static-TLS surplus
+# ("cannot allocate memory in static TLS block").  Linking it like this restores
+# the pre-dynamic-loader behavior; -l: matches the runtime soname so no -dev
+# symlink is required.  Wrapped so --as-needed still applies to the SDL libs.
+LDFLAGS ?= -ldl -pthread -rdynamic -Wl,--gc-sections -Wl,--no-as-needed -l:libgomp.so.1 -Wl,--as-needed
 
 # LTO flags check (skip on Windows/macOS if causing issues, default on for native optimization)
 ifeq ($(LTO),1)
@@ -166,7 +172,7 @@ native: check_compiler $(BUILD_TARGET)
 # Usage: make native-dev [-j4]
 native-dev: PLATFORM=native
 native-dev: CXXFLAGS=-std=c++17 -O1 -Wall -Wextra -pthread -Isrc -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35
-native-dev: LDFLAGS=-ldl -pthread -rdynamic
+native-dev: LDFLAGS=-ldl -pthread -rdynamic -Wl,--no-as-needed -l:libgomp.so.1 -Wl,--as-needed
 native-dev: check_compiler $(BUILD_TARGET)
 	@echo "Native dev build complete: $<"
 
