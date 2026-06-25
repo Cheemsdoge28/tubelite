@@ -86,7 +86,6 @@ aarch64-linux-gnu-g++ \
     "${SOURCES[@]}" \
     -o "$OUTPUT" \
     "${LIB_FLAGS[@]}" "${LINK_OPT_FLAGS[@]}" \
-    -lmpv \
     -lSDL2 -lSDL2_ttf \
     -lGLESv2 -lEGL \
     -lfreetype \

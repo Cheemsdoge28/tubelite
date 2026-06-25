@@ -1,3 +1,18 @@
+# Release Notes - 2026-06-25 (v1.6.1)
+
+This update introduces EOL apt repository correction, build header restoration for on-device compilation on stripped distributions like dArkOSRE, and minor UI rendering and status hint fixes.
+
+### Installation & Compatibility
+- **dArkOSRE & OS Distribution Compatibility**: Added automatic EOL Ubuntu mirror rewriting to use `old-releases.ubuntu.com` in `Install-TubeLite.sh`.
+- **On-Device Header Auto-Repair**: Implemented a robust build header checking and reinstallation system (`fix_dev_headers()`) that restores stripped development header packages (such as SDL2, Mesa, and libmpv) to enable native compilation (`make native`) on compact OS distributions.
+- **libmpv Compatibility Fallback**: Enhanced the installer's `--compat` wizard to fix missing libmpv via apt first, then utilize a bundled fallback pack with graceful handling.
+
+### UI & UX Fixes
+- **Status Overlay Keyboard Hints**: Added missing `L1` (MODE) and `X` (DELETE) status hints to the on-screen keyboard overlay.
+- **Chipped Rounded Corners**: Fixed a rendering artifact where rounded-rect corners appeared chipped due to unpinned blend modes, and clamped the radius on small rectangles to prevent visual overlaps.
+
+---
+
 # Release Notes - 2026-06-23 (v1.6.0)
 
 This major release introduces background playback speed controls, screen sleep power saving, offline installation enhancements, and ALSA Audio Compatibility safeguards.

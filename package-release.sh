@@ -109,7 +109,7 @@ if [ -f "$SCRIPT_DIR/VERSION" ]; then
 fi
 
 cat > "$APP_DIR/RELEASE_NOTES.txt" <<'EOF'
-TubeLite YouTube Client (v1.6.0 - 2026-06-23)
+TubeLite YouTube Client (v1.6.1 - 2026-06-25)
 
 Major Features & Improvements:
 - Native audio and video playback using hardware acceleration (rk3326-optimized GLESv2/EGL/MPV layers).
@@ -120,10 +120,9 @@ Major Features & Improvements:
 - Unified installer and controller-friendly setup menu.
 
 Fixes in this build:
-- Cross-card input determinism: the gamepad is now read through SDL's raw
-  joystick layer with a fixed button map and never as an SDL game controller.
-  This fixes A/B being swapped, Select/Start being dead, and X screen-sleep
-  instantly re-waking on SD-card images whose gamecontrollerdb matched the pad.
+- dArkOSRE & OS Distribution Compatibility: Rewrites EOL Ubuntu apt source lists to use old-releases.ubuntu.com and adds a header auto-repair system to restore stripped build headers for native compiling.
+- Keyboard Status Overlay Hints: Added missing L1 (MODE) and X (DELETE) status hints.
+- Chipped Rounded Corners: Fixed rendering artifact where rounded-rect corners appeared chipped.
 
 Contents:
 - Install-TubeLite.sh

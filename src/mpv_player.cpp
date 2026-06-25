@@ -1,4 +1,5 @@
 #include "mpv_player.hpp"
+MpvDynLoader g_mpv_dyn;
 #include "profiler.hpp"
 #include <iostream>
 #include <cmath>
@@ -74,6 +75,10 @@ static bool restore_egl_context(void* dpy, void* draw, void* read, void* ctx) {
 }
 
 bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
+    if (!g_mpv_dyn.load()) {
+        std::cerr << "[mpv] ERROR: failed to dynamically load libmpv!\n";
+        return false;
+    }
     window_   = window;
     renderer_ = renderer;
 

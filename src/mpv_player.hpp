@@ -1,8 +1,7 @@
 #pragma once
 #include <SDL2/SDL.h>
 #include <string>
-#include <mpv/client.h>
-#include <mpv/render_gl.h>
+#include "mpv_dyn.hpp"
 #include <GLES2/gl2.h>
 
 // MpvPlayer manages a libmpv instance and its GLES render context.

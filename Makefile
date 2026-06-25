@@ -23,7 +23,7 @@ endif
 # fast-math reorders/contracts float ops and can desync audio. Section flags +
 # --gc-sections drop unreferenced code/data for a smaller, tighter binary.
 CXXFLAGS ?= -std=c++17 -O3 -fno-plt -ffunction-sections -fdata-sections -Wall -Wextra -Wpedantic -pthread -Isrc
-LDFLAGS ?= -lmpv -pthread -Wl,--gc-sections -Wl,--as-needed
+LDFLAGS ?= -ldl -pthread -Wl,--gc-sections -Wl,--as-needed
 
 # LTO flags check (skip on Windows/macOS if causing issues, default on for native optimization)
 ifeq ($(LTO),1)

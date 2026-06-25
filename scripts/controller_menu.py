@@ -11,7 +11,9 @@ def main():
         "Uninstall Everything",
         "Uninstall App Only",
         "Uninstall Theme Only",
-        "Exit"
+        "Exit",
+        "Fix Playback / Compatibility (libmpv)",
+        "Fix Build Headers (for on-device compile)"
     ]
     
     selected = 0
@@ -73,7 +75,7 @@ def main():
             char = sys.stdin.read(1)
             if char.isdigit():
                 val = int(char)
-                if 1 <= val <= 7:
+                if 1 <= val <= 9:
                     return finish(val)
             elif char == '\n':
                 return finish(selected + 1)
