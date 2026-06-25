@@ -4,6 +4,7 @@ MpvDynLoader g_mpv_dyn;
 #include <iostream>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <filesystem>
 #include <vector>
@@ -146,7 +147,19 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_ = mpv_create();
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
-    mpv_set_option_string(mpv_, "hwdec",                  "rkmpp,auto");
+    // Hardware decode.  rkmpp is the Rockchip MPP path that works on ArkOS;
+    // some images (e.g. DarkOS RE / trixie kernels) expose MPP differently or
+    // not at all, where rkmpp decodes but the dmabuf→GL interop yields no
+    // visible frame (black video, audio fine).  Allow an env override so a
+    // device can fall back without a rebuild:
+    //   TUBELITE_HWDEC=no     → pure software decode (slow but universal)
+    //   TUBELITE_HWDEC=auto   → let mpv choose any available hwdec
+    //   TUBELITE_HWDEC=auto-copy → hwdec but copy frames back to system memory
+    //                              (avoids the dmabuf/EGL-image interop entirely)
+    const char* hwdec_env = std::getenv("TUBELITE_HWDEC");
+    mpv_set_option_string(mpv_, "hwdec", (hwdec_env && *hwdec_env) ? hwdec_env : "rkmpp,auto");
+    if (hwdec_env && *hwdec_env)
+        std::cerr << "[mpv] hwdec overridden via TUBELITE_HWDEC=" << hwdec_env << "\n";
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     // Route through ALSA's `plug:dmix` so the codec is shared, not
