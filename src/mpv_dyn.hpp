@@ -66,14 +66,34 @@ struct MpvDynLoader {
 
         std::vector<std::string> errors;
         for (const auto& lib : libs) {
+            // Prefer eager binding (RTLD_NOW): if every symbol resolves, great.
             handle = dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL);
             if (handle) {
                 std::cerr << "[mpv-dyn] Successfully loaded " << lib << "\n";
                 break;
-            } else {
-                const char* err = dlerror();
-                errors.push_back(lib + ": " + (err ? err : "unknown error"));
             }
+
+            // Capture the eager error (dlerror() clears itself, so call once).
+            const char* e = dlerror();
+            std::string nowErr = e ? e : "unknown error";
+
+            // Fall back to LAZY binding.  Some handheld images ship a libmpv
+            // whose dependency chain references symbols this device's stripped/
+            // vendor libraries lack — most notably libmpv2 (trixie) pulling
+            // `gbm_surface_create_with_modifiers` from a newer Mesa than the
+            // Mali libgbm here exports.  That symbol lives in mpv's standalone
+            // GBM/DRM windowing path, which TubeLite never uses (we drive mpv
+            // through the OpenGL render API with our own SDL/EGL context), so
+            // deferring its resolution lets libmpv load and play normally.
+            handle = dlopen(lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+            if (handle) {
+                std::cerr << "[mpv-dyn] Loaded " << lib << " with LAZY binding"
+                          << " (eager load failed: " << nowErr << ")\n";
+                break;
+            }
+
+            const char* e2 = dlerror();
+            errors.push_back(lib + ": " + (e2 ? e2 : nowErr));
         }
 
         if (!handle) {
