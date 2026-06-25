@@ -147,6 +147,16 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_ = mpv_create();
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
 
+    // Diagnostic: TUBELITE_MPV_VERBOSE=1 routes mpv's own verbose log to stderr
+    // (file open, track selection, decoder/VO choice, errors).  Decisive for
+    // "black video" — shows whether mpv is even playing a file and what the
+    // video pipeline is doing.  Off by default (no perf/noise cost).
+    if (std::getenv("TUBELITE_MPV_VERBOSE")) {
+        mpv_set_option_string(mpv_, "terminal",  "yes");
+        mpv_set_option_string(mpv_, "msg-level", "all=v");
+        std::cerr << "[mpv] verbose logging enabled (terminal=yes msg-level=all=v)\n";
+    }
+
     // Hardware decode.  rkmpp is the Rockchip MPP path that works on ArkOS;
     // some images (e.g. DarkOS RE / trixie kernels) expose MPP differently or
     // not at all, where rkmpp decodes but the dmabuf→GL interop yields no
