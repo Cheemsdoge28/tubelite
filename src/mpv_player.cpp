@@ -12,6 +12,31 @@ MpvDynLoader g_mpv_dyn;
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
+// Bind to the EGL library SDL actually uses.  On multi-vendor images (DarkOS RE
+// has the generic libEGL.so.1, Mesa's libEGL_mesa, AND a 40 MB Mali GPU blob
+// all resident), eglGetCurrent*/eglGetProcAddress are thread-local INSIDE the
+// library that owns the context.  Querying the wrong one returns a null/zero
+// context, which made mpv_render_context_create fail ("not supported") and
+// dropped playback to audio-only.  Prefer whatever EGL is ALREADY resident
+// (RTLD_NOLOAD) so we share SDL's context, trying the Mali GPU driver first
+// (that's where SDL's real GLES context lives on these handhelds), then the
+// generic sonames.  Cached after the first resolve.
+static void* egl_lib() {
+    static void* cached = []() -> void* {
+        const char* names[] = {
+            "libmali-bifrost-g31-rxp0-gbm.so",  // RK3326 / Mali-G31 (DarkOS RE)
+            "libMali.so", "libmali.so.1", "libmali.so",
+            "libEGL.so.1", "libEGL.so", "libEGL_mesa.so.0",
+        };
+        for (const char* n : names)   // 1) already-loaded provider (shares SDL's context)
+            if (void* h = dlopen(n, RTLD_NOW | RTLD_NOLOAD)) return h;
+        for (const char* n : names)   // 2) nothing resident yet — load one
+            if (void* h = dlopen(n, RTLD_LAZY | RTLD_GLOBAL)) return h;
+        return nullptr;
+    }();
+    return cached;
+}
+
 // Resolve GL/EGL function pointers via eglGetProcAddress (dlopen, no headers needed).
 // Fallback to dlsym on libGLESv2 for core functions not exported by eglGetProcAddress.
 // This is thread-safe and independent of SDL's context management.
@@ -19,8 +44,7 @@ static void* gl_get_proc_addr(void* /*ctx*/, const char* name) {
     // ── eglGetProcAddress ────────────────────────────────────────────────────
     using PFN_eglGPA = void*(*)(const char*);
     static PFN_eglGPA egl_gpa = []() -> PFN_eglGPA {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        void* lib = egl_lib();
         return lib ? reinterpret_cast<PFN_eglGPA>(dlsym(lib, "eglGetProcAddress")) : nullptr;
     }();
 
@@ -54,13 +78,11 @@ typedef int (*PFN_eglMakeCurrent)(EGLDisplay dpy, EGLSurface draw, EGLSurface re
 
 static bool restore_egl_context(void* dpy, void* draw, void* read, void* ctx) {
     static auto egl_get_current_context = []() -> PFN_eglGetCurrentContext {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        void* lib = egl_lib();
         return lib ? reinterpret_cast<PFN_eglGetCurrentContext>(dlsym(lib, "eglGetCurrentContext")) : nullptr;
     }();
     static auto egl_make_current = []() -> PFN_eglMakeCurrent {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        void* lib = egl_lib();
         return lib ? reinterpret_cast<PFN_eglMakeCurrent>(dlsym(lib, "eglMakeCurrent")) : nullptr;
     }();
 
@@ -92,18 +114,15 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     SDL_RenderFlush(renderer_);
 
     static auto egl_get_current_display = []() -> PFN_eglGetCurrentDisplay {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        void* lib = egl_lib();
         return lib ? reinterpret_cast<PFN_eglGetCurrentDisplay>(dlsym(lib, "eglGetCurrentDisplay")) : nullptr;
     }();
     static auto egl_get_current_surface = []() -> PFN_eglGetCurrentSurface {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        void* lib = egl_lib();
         return lib ? reinterpret_cast<PFN_eglGetCurrentSurface>(dlsym(lib, "eglGetCurrentSurface")) : nullptr;
     }();
     static auto egl_get_current_context = []() -> PFN_eglGetCurrentContext {
-        void* lib = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_GLOBAL);
-        if (!lib) lib = dlopen("libEGL.so", RTLD_LAZY | RTLD_GLOBAL);
+        void* lib = egl_lib();
         return lib ? reinterpret_cast<PFN_eglGetCurrentContext>(dlsym(lib, "eglGetCurrentContext")) : nullptr;
     }();
 
