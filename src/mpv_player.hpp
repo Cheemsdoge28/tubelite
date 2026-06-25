@@ -18,6 +18,15 @@ public:
     MpvPlayer()  = default;
     ~MpvPlayer() { shutdown(); }
 
+    // Load libmpv (and its dependency chain) up front, while the process is
+    // still single-threaded.  Must be called from main() BEFORE any worker
+    // thread starts: libmpv pulls in libgomp, which uses static-model TLS, and
+    // on older glibc (e.g. Ubuntu eoan / ArkOS) a static-TLS library can only
+    // be dlopen'd while single-threaded — otherwise it fails with
+    // "libgomp.so.1: cannot allocate memory in static TLS block".  Best-effort:
+    // safe to call even if libmpv is absent (initialize() re-checks).
+    static void preloadLibrary();
+
     // Call AFTER SDL_CreateRenderer. Primes the EGL context then inits mpv.
     bool initialize(SDL_Window* window, SDL_Renderer* renderer);
     bool initializeAudioOnly();

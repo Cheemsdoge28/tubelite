@@ -97,6 +97,13 @@ static bool restore_egl_context(void* dpy, void* draw, void* read, void* ctx) {
     return false;
 }
 
+void MpvPlayer::preloadLibrary() {
+    // Best-effort early load (see header).  Loading the library is cheap and
+    // the handle is cached, so initialize()'s later load() is a no-op.
+    if (g_mpv_dyn.load())
+        std::cerr << "[mpv] libmpv preloaded (single-threaded, static-TLS safe)\n";
+}
+
 bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     if (!g_mpv_dyn.load()) {
         std::cerr << "[mpv] ERROR: failed to dynamically load libmpv!\n";
