@@ -584,8 +584,20 @@ void App::run() {
 }
 
 void App::queueOnMainThread(std::function<void()> cb) {
-    std::lock_guard<std::mutex> lock(queue_mutex_);
-    main_thread_queue_.push_back(cb);
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        main_thread_queue_.push_back(cb);
+    }
+    // Wake the main loop if it's parked in SDL_WaitEventTimeout.  Background
+    // worker threads (feed streaming, stream resolves, image loads) post here,
+    // and a queue push is NOT an SDL event — so without this nudge the result
+    // wouldn't be processed/rendered until the idle timeout or the next input.
+    // That manifested as "home feed showed one item until I reloaded": later
+    // chunks were queued but not painted.  SDL_PushEvent is thread-safe.
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_USEREVENT;
+    SDL_PushEvent(&ev);
 }
 
 void App::processMainThreadQueue() {
