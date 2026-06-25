@@ -23,7 +23,9 @@ endif
 # fast-math reorders/contracts float ops and can desync audio. Section flags +
 # --gc-sections drop unreferenced code/data for a smaller, tighter binary.
 CXXFLAGS ?= -std=c++17 -O3 -fno-plt -ffunction-sections -fdata-sections -Wall -Wextra -Wpedantic -pthread -Isrc
-LDFLAGS ?= -ldl -pthread -Wl,--gc-sections -Wl,--as-needed
+# -rdynamic exports the executable's symbols into .dynsym so the dynamically
+# loaded libmpv can resolve our GBM compatibility stubs (see src/gbm_compat.cpp).
+LDFLAGS ?= -ldl -pthread -rdynamic -Wl,--gc-sections -Wl,--as-needed
 
 # LTO flags check (skip on Windows/macOS if causing issues, default on for native optimization)
 ifeq ($(LTO),1)
@@ -164,7 +166,7 @@ native: check_compiler $(BUILD_TARGET)
 # Usage: make native-dev [-j4]
 native-dev: PLATFORM=native
 native-dev: CXXFLAGS=-std=c++17 -O1 -Wall -Wextra -pthread -Isrc -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35
-native-dev: LDFLAGS=-ldl -pthread
+native-dev: LDFLAGS=-ldl -pthread -rdynamic
 native-dev: check_compiler $(BUILD_TARGET)
 	@echo "Native dev build complete: $<"
 

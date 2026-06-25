@@ -68,6 +68,7 @@ OPT_FLAGS=(
 )
 
 LINK_OPT_FLAGS=(
+    -rdynamic                  # export executable symbols so dlopen'd libmpv resolves our GBM stubs
     -Wl,--gc-sections          # drop unreferenced sections (pairs with -ffunction/-fdata-sections)
     -Wl,--as-needed
 )
