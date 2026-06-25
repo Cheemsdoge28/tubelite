@@ -108,12 +108,6 @@ purge_display_managers() {
         fi
     done
 
-    # ArkOS uses getty autologin for the ark user to reach ES.
-    # Make sure it is still enabled on tty1.
-    if [ -f "/lib/systemd/system/getty@.service" ]; then
-        systemctl enable "getty@tty1.service" 2>/dev/null || true
-    fi
-
     systemctl daemon-reload 2>/dev/null || true
 }
 
