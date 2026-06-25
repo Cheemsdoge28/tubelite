@@ -170,6 +170,21 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     mpv_set_option_string(mpv_, "hwdec", (hwdec_env && *hwdec_env) ? hwdec_env : "rkmpp,auto");
     if (hwdec_env && *hwdec_env)
         std::cerr << "[mpv] hwdec overridden via TUBELITE_HWDEC=" << hwdec_env << "\n";
+
+    // CRITICAL: use the libmpv render API as the video output.  We composite
+    // mpv's frames ourselves via mpv_render_context_create, so mpv must NOT try
+    // to open a standalone VO.  Without this, libmpv2 (DarkOS RE) defaults to
+    // vo=gpu and tries to grab DRM/GBM/X11 itself; where that fails it gives up
+    // and DESELECTS the video track ("Error opening ... video_out", "Video: no
+    // video") → audio-only, black screen.  vo=libmpv routes every frame into
+    // our FBO and never probes standalone outputs.  (On ArkOS/libmpv1 the
+    // render context implied this; libmpv2 needs it stated explicitly.)
+    mpv_set_option_string(mpv_, "vo", "libmpv");
+    // We resolve stream URLs ourselves (tubed/yt-dlp), so disable mpv's built-in
+    // youtube-dl hook — otherwise it re-resolves the URL (double work, and the
+    // audio-only "first load then ytdl reload" churn seen in the logs).
+    mpv_set_option_string(mpv_, "ytdl", "no");
+
     mpv_set_option_string(mpv_, "profile",                "fast");
     mpv_set_option_string(mpv_, "ao",                     "alsa");
     // Route through ALSA's `plug:dmix` so the codec is shared, not
