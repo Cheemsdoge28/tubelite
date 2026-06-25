@@ -64,16 +64,23 @@ struct MpvDynLoader {
             "./vendor/lib/libmpv.so.1"
         };
 
+        std::vector<std::string> errors;
         for (const auto& lib : libs) {
             handle = dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL);
             if (handle) {
                 std::cerr << "[mpv-dyn] Successfully loaded " << lib << "\n";
                 break;
+            } else {
+                const char* err = dlerror();
+                errors.push_back(lib + ": " + (err ? err : "unknown error"));
             }
         }
 
         if (!handle) {
-            std::cerr << "[mpv-dyn] ERROR: Failed to load libmpv (tried libmpv.so.2, libmpv.so.1, etc.): " << dlerror() << "\n";
+            std::cerr << "[mpv-dyn] ERROR: Failed to load libmpv. Attempts:\n";
+            for (const auto& err : errors) {
+                std::cerr << "  - " << err << "\n";
+            }
             return false;
         }
 

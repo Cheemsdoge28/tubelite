@@ -295,6 +295,10 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
 }
 
 bool MpvPlayer::initializeAudioOnly() {
+    if (!g_mpv_dyn.load()) {
+        std::cerr << "[mpv] ERROR: failed to dynamically load libmpv!\n";
+        return false;
+    }
     std::cerr << "[mpv] mpv_create (audio only)...\n";
     mpv_ = mpv_create();
     if (!mpv_) { std::cerr << "[mpv] mpv_create failed\n"; return false; }
