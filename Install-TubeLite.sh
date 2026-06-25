@@ -250,6 +250,103 @@ run_compat_wizard() {
     return 0
 }
 
+# ============================================================================
+# Fix on-device build headers.
+#
+# ArkOS / RG351MP images routinely SHIP the -dev packages in dpkg's database
+# (so `dpkg -l` says "ii") but DELETE the actual header files to save space.
+# Plain `apt-get install libsdl2-dev` is then a no-op — apt sees it as already
+# installed — and `make native` dies on "SDL2/SDL.h: No such file".
+#
+# This routine checks each header FILE the native build needs and force
+# `--reinstall`s the owning package (per-package, so one unavailable .deb can't
+# abort the rest).  Reusable from the menu, the --fix-headers flag, and the
+# native-compile path.
+# ============================================================================
+fix_dev_headers() {
+    # header_file:owning_package — the representative file we test for presence.
+    local pairs=(
+        "/usr/include/features.h:libc6-dev"
+        "/usr/include/SDL2/SDL.h:libsdl2-dev"
+        "/usr/include/SDL2/SDL_ttf.h:libsdl2-ttf-dev"
+        "/usr/include/freetype2/ft2build.h:libfreetype6-dev"
+        "/usr/include/harfbuzz/hb.h:libharfbuzz-dev"
+        "/usr/include/libdrm/drm.h:libdrm-dev"
+        "/usr/include/xf86drm.h:libdrm-dev"
+        "/usr/include/GLES2/gl2.h:libgles2-mesa-dev"
+        "/usr/include/EGL/egl.h:libegl1-mesa-dev"
+        "/usr/include/GL/gl.h:libgl1-mesa-dev"
+        "/usr/include/mpv/client.h:libmpv-dev"
+    )
+
+    log_step "Headers" "Checking on-device build headers..."
+
+    # EOL Ubuntu mirror rewrite so --reinstall can actually fetch the .debs.
+    if grep -q "archive.ubuntu.com\|security.ubuntu.com\|ports.ubuntu.com" /etc/apt/sources.list 2>/dev/null \
+       && ! grep -q "old-releases.ubuntu.com" /etc/apt/sources.list 2>/dev/null; then
+        log_info "Rewriting EOL Ubuntu apt sources to old-releases..."
+        sed -i -e 's|http://archive.ubuntu.com|http://old-releases.ubuntu.com|g' \
+               -e 's|http://security.ubuntu.com|http://old-releases.ubuntu.com|g' \
+               -e 's|http://ports.ubuntu.com|http://old-releases.ubuntu.com|g' \
+               /etc/apt/sources.list || true
+    fi
+    apt-get update -qq 2>/dev/null || true
+
+    # Build the (deduplicated) set of packages whose header file is missing.
+    local need=""
+    local pair hdr pkg
+    for pair in "${pairs[@]}"; do
+        hdr="${pair%%:*}"; pkg="${pair##*:}"
+        if [ ! -f "$hdr" ]; then
+            log_warn "Missing: $hdr  →  $pkg"
+            case " $need " in *" $pkg "*) ;; *) need="$need $pkg" ;; esac
+        fi
+    done
+
+    # Compiler / toolchain programs (not header files).
+    command -v g++  >/dev/null 2>&1 || need="$need build-essential g++"
+    command -v make >/dev/null 2>&1 || need="$need make"
+    command -v pkg-config >/dev/null 2>&1 || need="$need pkg-config"
+
+    if [ -z "$need" ]; then
+        log_ok "All build headers and the toolchain are present."
+        return 0
+    fi
+
+    # Force re-extraction PER PACKAGE: `--reinstall` aborts the whole
+    # transaction if any one package isn't downloadable, so isolate them.
+    log_info "Restoring:${need}"
+    local p
+    for p in $need; do
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --reinstall "$p" 2>/dev/null; then
+            log_ok "  reinstalled $p"
+        elif DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" 2>/dev/null; then
+            log_ok "  installed $p"
+        else
+            log_warn "  could not (re)install $p (unavailable on this mirror?)"
+        fi
+    done
+
+    # Build tools can drag in a display manager via recommends — sweep it.
+    purge_display_managers
+
+    # Re-verify the header files actually landed this time.
+    local still=""
+    for pair in "${pairs[@]}"; do
+        hdr="${pair%%:*}"
+        [ -f "$hdr" ] || still="$still $hdr"
+    done
+    if [ -n "$still" ]; then
+        log_err "Headers still missing after reinstall:$still"
+        log_info "Their .debs may be unavailable on this image's apt mirror, or the"
+        log_info "device is offline. Connect to the internet and re-run:"
+        log_info "  sudo bash Install-TubeLite.sh --fix-headers"
+        return 1
+    fi
+    log_ok "Build headers restored — 'make native' should compile now."
+    return 0
+}
+
 DO_DEPS=1
 DO_BINARY=1
 DO_FILES=1
@@ -313,6 +410,22 @@ if [ "$1" = "--compat" ] || [ "$1" = "--fix-libs" ]; then
         echo -e "${GREEN}Compatibility check complete.${NC} Launch TubeLite to test playback."
     else
         echo -e "${YELLOW}Compatibility wizard could not fully fix playback.${NC} See the notes above."
+    fi
+    exit "$rc"
+fi
+
+# ---------- Build-header repair ----------
+# Restore -dev headers that the OS image deleted while leaving dpkg's records
+# intact, so on-device `make native` can compile:
+#   sudo bash Install-TubeLite.sh --fix-headers
+if [ "$1" = "--fix-headers" ] || [ "$1" = "--fix-build" ]; then
+    fix_dev_headers
+    rc=$?
+    echo ""
+    if [ "$rc" -eq 0 ]; then
+        echo -e "${GREEN}Build headers OK.${NC} You can now run:  make native"
+    else
+        echo -e "${YELLOW}Some headers could not be restored.${NC} See the notes above."
     fi
     exit "$rc"
 fi
@@ -424,7 +537,8 @@ if [ "$#" -eq 0 ]; then
         echo "6) Uninstall Theme Only"
         echo "7) Exit"
         echo "8) Fix Playback / Compatibility (libmpv)"
-        read -p "Enter choice [1-8]: " choice </dev/tty 2>/dev/null || choice="1"
+        echo "9) Fix Build Headers (for on-device compile)"
+        read -p "Enter choice [1-9]: " choice </dev/tty 2>/dev/null || choice="1"
     fi
 
     case "$choice" in
@@ -436,6 +550,7 @@ if [ "$#" -eq 0 ]; then
         6) exec bash "$0" "--uninstall-theme" ;;
         7) exit 0 ;;
         8) run_compat_wizard; exit $? ;;
+        9) fix_dev_headers; exit $? ;;
         *) log_err "Invalid choice. Exiting."; exit 1 ;;
     esac
 fi
@@ -585,37 +700,13 @@ if [ "$DO_BINARY" -eq 1 ]; then
 
     if [ -z "$APP_BIN" ]; then
         log_info "No pre-built binary found. Compiling natively..."
-        BUILD_DEPS="build-essential g++ make pkg-config libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dev libfreetype6-dev libharfbuzz-dev libmpv-dev libdrm-dev"
-        # --no-install-recommends is CRITICAL: build tools have recommended deps that
-        # can pull in full GNOME stacks (via ghostscript, libgs-dev chains).
-        BUILD_APT_FLAGS="-y --no-install-recommends"
-        if [ "${REINSTALL_DEPS:-0}" = "1" ]; then BUILD_APT_FLAGS="$BUILD_APT_FLAGS --reinstall"; fi
-        log_info "Installing build dependencies..."
-        apt-get install $BUILD_APT_FLAGS $BUILD_DEPS || true
+        # Restore every header the native build needs (file-checked + force
+        # --reinstall), since the image leaves dpkg records but deletes the
+        # actual headers.  This is the comprehensive replacement for the old
+        # piecemeal freetype/drm/sdl checks — it also covers harfbuzz, GLES2,
+        # EGL and the mpv headers the build requires.
+        fix_dev_headers || log_warn "Some build headers could not be restored; compile may fail."
 
-        # Guard: purge any display manager that snuck in as a build dep side effect.
-        purge_display_managers
-
-        # Check for missing FreeType headers on filesystem (often deleted on handheld OS images)
-        if [ ! -f "/usr/include/freetype2/ft2build.h" ]; then
-            log_warn "FreeType headers (ft2build.h) missing from filesystem. Restoring libfreetype6-dev..."
-            apt-get install -y --no-install-recommends --reinstall libfreetype6-dev || true
-        fi
-
-        # Check for missing DRM headers on filesystem (often deleted on handheld OS images)
-        if [ ! -f "/usr/include/libdrm/drm.h" ] || [ ! -f "/usr/include/xf86drm.h" ]; then
-            log_warn "DRM headers (drm.h/xf86drm.h) missing from filesystem. Restoring libdrm-dev..."
-            apt-get install -y --no-install-recommends --reinstall libdrm-dev || true
-        fi
-
-        # Check for missing core C/C++ or SDL2 headers on filesystem
-        if [ ! -f "/usr/include/features.h" ] || [ ! -f "/usr/include/SDL2/SDL.h" ]; then
-            log_warn "Core C/C++ or SDL2 development headers are missing from filesystem."
-            log_warn "Running header file restore ritual to repair the compilation environment..."
-            DEV_HEADERS="gdb libc6-dev libsdl2-dev linux-libc-dev g++ libstdc++-9-dev libsdl2-ttf-dev git python3 ninja-build cmake make i2c-tools usbutils fbcat fbset mmc-utils libglew-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libdrm-dev libssl-dev"
-            apt-get install -y --no-install-recommends --reinstall $DEV_HEADERS || true
-        fi
-        
         cd "$SCRIPT_DIR"
         log_info "Running make native..."
         make native || true
