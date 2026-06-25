@@ -75,6 +75,10 @@ private:
     std::string streamCacheKey(const std::string& videoId, int maxHeight) const;
     std::optional<std::string> getCachedStreamUrl(const std::string& key);
     void setCachedStreamUrl(const std::string& key, const std::string& url);
+    // Metadata cached alongside the stream URL (same key) so a cache hit can
+    // restore stats/description without a second resolver round-trip.
+    void cacheStreamMeta(const std::string& key, const VideoPlaybackMetadata& meta);
+    std::optional<VideoPlaybackMetadata> getCachedStreamMeta(const std::string& key);
     // Cache encoding: "video_url|subtitle_url|audio_url" — last two may be empty.
     static void splitCachedStream(const std::string& cached,
                                   std::string& video_url,
@@ -170,6 +174,11 @@ private:
     bool is_loading_preview_{false};
     std::unordered_map<std::string, std::string> stream_url_cache_;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> stream_url_cache_times_;
+    // Resolve-time metadata keyed identically to stream_url_cache_, evicted in
+    // lockstep.  A cache hit reads stats/description from here instead of
+    // re-invoking the stream resolver (that backfill used to race the daemon
+    // handoff when the user exited mid-resolve).
+    std::unordered_map<std::string, VideoPlaybackMetadata> stream_meta_cache_;
     std::unordered_set<std::string> stream_prefetch_inflight_;
     // Hard backstop against a runaway preview-prefetch loop: a cacheKey that
     // just failed is not re-requested until this time passes.  Without it, a
@@ -258,4 +267,10 @@ private:
     void loadMoreSearchResults();
     void updateHoverPreviews();
     void handleVideoEnded();
+    // mpv reported the current file failed to load (stale/poisoned cached URL).
+    // Evict the bad entry and re-resolve once as a real play.
+    void handlePlaybackLoadFailure();
+    // Video id that already got an automatic post-failure re-resolve; cleared
+    // once playback actually progresses, so a genuinely dead stream can't loop.
+    std::string load_retry_video_id_;
 };

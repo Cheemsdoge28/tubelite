@@ -416,8 +416,15 @@ bool MpvPlayer::update() {
 
         if (ev->event_id == MPV_EVENT_END_FILE) {
             auto* end_file = static_cast<mpv_event_end_file*>(ev->data);
-            if (end_file && end_file->reason == MPV_END_FILE_REASON_EOF) {
-                file_ended_ = true;
+            if (end_file) {
+                if (end_file->reason == MPV_END_FILE_REASON_EOF) {
+                    file_ended_ = true;
+                } else if (end_file->reason == MPV_END_FILE_REASON_ERROR) {
+                    // Stream failed to load (dead/expired URL). REASON_STOP —
+                    // emitted by our own stop() before each loadfile — is NOT an
+                    // error and is deliberately ignored here.
+                    load_failed_ = true;
+                }
             }
         }
 
@@ -575,6 +582,7 @@ void MpvPlayer::play(const std::string& url, const std::string& subtitle_url,
                      const std::string& audio_url) {
     if (!mpv_) return;
     file_ended_ = false;
+    load_failed_ = false;
     has_new_frame_ = true;
     pending_seek_position_ = -1.0;          // stale seek from a prior file → drop
     restore_egl_context(egl_display_, egl_draw_, egl_read_, egl_context_);
@@ -789,4 +797,10 @@ bool MpvPlayer::checkAndClearEnded() {
     bool ended = file_ended_;
     file_ended_ = false;
     return ended;
+}
+
+bool MpvPlayer::checkAndClearLoadFailed() {
+    bool failed = load_failed_;
+    load_failed_ = false;
+    return failed;
 }

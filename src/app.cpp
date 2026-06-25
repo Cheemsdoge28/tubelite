@@ -361,23 +361,36 @@ void App::run() {
             uiDirty_ = true;
         }
         
-        bool active = uiDirty_ || gridScrolling || mpv_player_.isPlaying() || is_playing_preview_ || is_loading_preview_ || state_.isScrubbing || (state_.inputMode == TubeState::InputMode::SearchText) || state_.isSearching || state_.isLoadingVideo || (state_.currentScreen == TubeState::Screen::Playback && state_.showUi);
-        // (Removed a forced 60fps spin during the 0.85s post-navigation dwell:
-        // nothing animates then — the focus ring is instant and the title
-        // marquee only starts at 1.5s and raises uiDirty itself. The 100ms
-        // event-wait below still advances focusedTime to trigger previews, so
-        // browsing now idles the CPU instead of busy-rendering.)
+        // Does anything VISIBLE need redrawing this frame?  This is distinct
+        // from "keep the loop alive": background audio (mpv_player_.isPlaying())
+        // must keep the loop spinning so audio/events flow, but must NOT force a
+        // redraw of the static browse grid.  Every genuine browse-visual change
+        // (thumbnail upload, marquee, scroll, play flash, loading) already set
+        // uiDirty_ above, so they're all captured here.
+        bool videoVisible = (state_.currentScreen == TubeState::Screen::Playback)
+                          || is_playing_preview_ || is_loading_preview_
+                          || state_.miniplayerActive;
+        bool shouldRender = uiDirty_ || gridScrolling || state_.isScrubbing
+                          || (state_.inputMode == TubeState::InputMode::SearchText)
+                          || state_.isSearching || state_.isLoadingVideo
+                          || videoVisible;
 
-        if (!active) {
+        bool workPending;
+        {
             std::lock_guard<std::mutex> lock(queue_mutex_);
-            if (!main_thread_queue_.empty()) active = true;
+            workPending = !main_thread_queue_.empty();
         }
-        
+
         {
             PROFILE_SCOPE("sdl_events");
             SDL_Event event;
-            if (!active) {
-                if (SDL_WaitEventTimeout(&event, 100)) {
+            if (!shouldRender && !workPending) {
+                // Nothing to draw and no queued work — block on events so the
+                // CPU idles instead of busy-spinning.  Keep the timeout short
+                // while audio is alive so mpv events stay serviced; otherwise
+                // wait longer to fully idle.
+                int waitMs = mpv_player_.isPlaying() ? 16 : 100;
+                if (SDL_WaitEventTimeout(&event, waitMs)) {
                     handleEvent(event);
                 }
             }
@@ -412,15 +425,28 @@ void App::run() {
         {
             PROFILE_SCOPE("mpv_update");
             if (mpv_player_.update()) {
-                uiDirty_ = true;
                 PROFILE_COUNT("mpv_new_frame");
+                // Only a VISIBLE video frame warrants a redraw. Background/
+                // hidden audio playback continuing on a browse screen must NOT
+                // force the static grid to re-rasterise 60x/sec — that was the
+                // single biggest idle cost (home_grid ~11ms/frame).
+                bool videoVisible = (state_.currentScreen == TubeState::Screen::Playback)
+                                  || is_playing_preview_ || state_.miniplayerActive;
+                if (videoVisible) uiDirty_ = true;
             }
         }
         if (mpv_player_.checkAndClearEnded()) {
             handleVideoEnded();
+        } else if (mpv_player_.checkAndClearLoadFailed()) {
+            handlePlaybackLoadFailure();
         } else if (mpv_player_.isPlaying()) {
             double pos = mpv_player_.getPlaybackTime();
             double dur = mpv_player_.getDuration();
+            // Stream is genuinely playing — clear the post-failure retry guard so
+            // a future failure of this same video is eligible for one re-resolve.
+            if (pos > 1.0 && load_retry_video_id_ == current_video_.id) {
+                load_retry_video_id_.clear();
+            }
             if (dur > 0.0 && pos > 0.0 && dur - pos <= 90.0) {
                 prefetchNextVideo();
             }
@@ -440,7 +466,12 @@ void App::run() {
         // render path (FBO composite, present) — only mpv audio decode
         // keeps running above.  This is most of the CPU/GPU saving on top
         // of the conservative governor + zero backlight.
-        if (!screenOff_) {
+        //
+        // Visual-dirty gate: also skip the render path when nothing visible
+        // changed (e.g. idling on the browse grid with background audio).
+        // uiDirty_ is re-read because steps after shouldRender was computed
+        // (mpv frame, video-ended handling, focus update) can set it.
+        if (!screenOff_ && (shouldRender || uiDirty_)) {
             renderFrame();
         }
 
@@ -841,16 +872,31 @@ std::optional<std::string> App::getCachedStreamUrl(const std::string& key) {
         if (age >= 120) {
             stream_url_cache_.erase(it);
             stream_url_cache_times_.erase(timeIt);
+            stream_meta_cache_.erase(key);
             return std::nullopt;
         }
     }
     return it->second;
 }
 
+std::optional<VideoPlaybackMetadata> App::getCachedStreamMeta(const std::string& key) {
+    auto it = stream_meta_cache_.find(key);
+    if (it == stream_meta_cache_.end()) return std::nullopt;
+    return it->second;
+}
+
+void App::cacheStreamMeta(const std::string& key, const VideoPlaybackMetadata& meta) {
+    // Only meaningful while the matching URL entry is live; the URL cache owns
+    // eviction, so don't store meta for a key with no resolved URL.
+    if (stream_url_cache_.find(key) == stream_url_cache_.end()) return;
+    stream_meta_cache_[key] = meta;
+}
+
 void App::setCachedStreamUrl(const std::string& key, const std::string& url) {
     if (url.empty()) {
         stream_url_cache_.erase(key);
         stream_url_cache_times_.erase(key);
+        stream_meta_cache_.erase(key);
         return;
     }
     stream_url_cache_[key] = url;
@@ -866,6 +912,7 @@ void App::setCachedStreamUrl(const std::string& key, const std::string& url) {
         for (auto it = stream_url_cache_times_.begin(); it != stream_url_cache_times_.end(); ++it) {
             if (it->second < oldest->second) oldest = it;
         }
+        stream_meta_cache_.erase(oldest->first);
         stream_url_cache_.erase(oldest->first);
         stream_url_cache_times_.erase(oldest);
     }
@@ -1158,7 +1205,11 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     if (state_.isLoadingVideo && current_video_.id == video.id) return;
     // If a different video is loading, cancel it and start the new one
     state_.isLoadingVideo = false;
-    
+
+    // Starting a genuinely different video resets the post-failure retry budget
+    // (the re-resolve path replays the same id, so it won't clear it here).
+    if (video.id != load_retry_video_id_) load_retry_video_id_.clear();
+
     bool keepMiniplayer = state_.miniplayerActive && !forceFullscreen;
     if (!keepMiniplayer) {
         state_manager_.setMiniplayerActive(false);
@@ -1214,20 +1265,33 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
             storyboard_.start(stream_url, video.duration_seconds);
         }
 
-        // The cached URL carries no metadata, which previously left the player's
-        // stat row stuck on "loading stats". Fetch stats/description from the
-        // backend — a tubed cache hit, so it's fast and spawns no yt-dlp.
-        youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight,
-            [this, video](bool ok, const std::string&, const std::string&, const std::string&, const VideoPlaybackMetadata& meta) {
-                if (!ok) return;
-                queueOnMainThread([this, video, meta]() {
-                    if (current_video_.id != video.id) return;
-                    active_video_metadata_ = meta;
-                    wrapped_description_lines_ = wrapText(meta.description, 280, 1);
-                    uiDirty_ = true;
-                });
-            },
-            /*isPreview=*/false, /*isLive=*/video.is_live);
+        // The cached URL string carries no metadata on its own.  Restore
+        // stats/description from the locally cached metadata captured at resolve
+        // time — this deliberately does NOT re-invoke the stream resolver.  The
+        // old code fired a full getStreamUrl here purely for stats; if the user
+        // exited to the background daemon during that in-flight resolve, it
+        // raced the daemon's own tubed request and the handoff could fail.
+        auto cachedMeta = getCachedStreamMeta(cacheKey);
+        if (cachedMeta.has_value()) {
+            active_video_metadata_ = cachedMeta.value();
+            wrapped_description_lines_ = wrapText(cachedMeta->description, 280, 1);
+            uiDirty_ = true;
+        } else {
+            // Rare: a URL cached without its metadata (e.g. an older entry).
+            // Backfill once so the stat row isn't stuck on "loading".
+            youtube_api_.getStreamUrl(video.id, state_.maxQualityHeight,
+                [this, video, cacheKey](bool ok, const std::string&, const std::string&, const std::string&, const VideoPlaybackMetadata& meta) {
+                    if (!ok) return;
+                    queueOnMainThread([this, video, cacheKey, meta]() {
+                        if (current_video_.id != video.id) return;
+                        active_video_metadata_ = meta;
+                        wrapped_description_lines_ = wrapText(meta.description, 280, 1);
+                        cacheStreamMeta(cacheKey, meta);
+                        uiDirty_ = true;
+                    });
+                },
+                /*isPreview=*/false, /*isLive=*/video.is_live);
+        }
         return;
     }
 
@@ -1239,6 +1303,7 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
                 active_video_metadata_ = meta;
                 wrapped_description_lines_ = wrapText(meta.description, 280, 1);
                 setCachedStreamUrl(cacheKey, url + "|" + subtitle_url + "|" + audio_url);
+                cacheStreamMeta(cacheKey, meta);
                 if (keepMiniplayer) {
                     state_manager_.transitionTo(state_.currentScreen);
                     state_manager_.setMiniplayerActive(true);
@@ -2447,16 +2512,21 @@ void App::updateHoverPreviews() {
             stream_prefetch_inflight_.find(cacheKey) == stream_prefetch_inflight_.end()) {
             stream_prefetch_inflight_.insert(cacheKey);
             is_loading_preview_ = true;
-            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& /*meta*/) {
-                queueOnMainThread([this, cacheKey, success, url, subtitle_url, audio_url]() {
+            youtube_api_.getStreamUrl(focusedCard->video.id, state_.maxQualityHeight, [this, cacheKey](bool success, const std::string& url, const std::string& subtitle_url, const std::string& audio_url, const VideoPlaybackMetadata& meta) {
+                queueOnMainThread([this, cacheKey, success, url, subtitle_url, audio_url, meta]() {
                     stream_prefetch_inflight_.erase(cacheKey);
                     is_loading_preview_ = false;
                     if (success && !url.empty()) {
                         setCachedStreamUrl(cacheKey, url + "|" + subtitle_url + "|" + audio_url);
+                        cacheStreamMeta(cacheKey, meta);
                         stream_prefetch_fail_until_.erase(cacheKey);
                     } else {
-                        setCachedStreamUrl(cacheKey, ""); // Cache failure
-                        // Back off 30s before this key may be re-requested.
+                        // Do NOT evict the cache here. A preview resolve most
+                        // often "fails" because tubed deliberately aborted it
+                        // when a real play for the SAME id queued behind it —
+                        // and that play may have just populated the cache.
+                        // Erasing would poison the good entry the user is about
+                        // to watch. Only arm the re-request cooldown.
                         stream_prefetch_fail_until_[cacheKey] =
                             std::chrono::steady_clock::now() + std::chrono::seconds(30);
                     }
@@ -3065,6 +3135,41 @@ bool App::loadHomeCache() {
     } catch (...) {
         return false;
     }
+}
+
+void App::handlePlaybackLoadFailure() {
+    // Only meaningful while a video is actually loaded in the player.
+    if (current_video_.id.empty()) return;
+    if (state_.currentScreen != TubeState::Screen::Playback && !state_.miniplayerActive) return;
+
+    YouTubeVideo v = current_video_;
+    const std::string cacheKey = streamCacheKey(v.id, state_.maxQualityHeight);
+
+    // The URL we just tried to play was dead (expired googlevideo link, or a
+    // preview-poisoned cache entry).  Evict it (this also drops the cached
+    // metadata) so the re-resolve below can't pull the same dead URL back out.
+    setCachedStreamUrl(cacheKey, "");
+
+    // Re-resolve at most once per video so a genuinely unplayable stream can't
+    // spin in an evict→re-resolve→fail loop.  The guard is cleared once a
+    // stream actually plays past ~1s (see the run loop), so a later legitimate
+    // failure of the same id is still eligible for a fresh retry.
+    if (load_retry_video_id_ == v.id) {
+        loading_status_text_ = "Stream Resolve Failed — Press A to retry";
+        state_.isLoadingVideo = false;
+        uiDirty_ = true;
+        return;
+    }
+    load_retry_video_id_ = v.id;
+
+    // playVideo() short-circuits a request to (re)play the current video on the
+    // Playback screen, so clear current_video_ first to force the fresh,
+    // non-preview resolve.  Preserve whichever mode (fullscreen / miniplayer)
+    // we were in.
+    bool wasMini = state_.miniplayerActive;
+    current_video_ = YouTubeVideo();
+    state_.isLoadingVideo = false;
+    playVideo(v, /*forceFullscreen=*/!wasMini);
 }
 
 void App::handleVideoEnded() {

@@ -1084,18 +1084,32 @@ std::string formatStatsNumber(long long count) {
 }
 
 void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
-    if (radius <= 0 || !g_solid_corner_texture) {
+    // Clamp the radius so a rect smaller than 2*radius (short pills, thin
+    // chips) can't produce negative-width middle/side rects or corner blits
+    // that overlap and overdraw each other — both read as "broken" corners.
+    int r = radius;
+    if (r > 0) {
+        int maxR = std::min(rect.w, rect.h) / 2;
+        if (r > maxR) r = maxR;
+    }
+    if (r <= 0 || !g_solid_corner_texture) {
         SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
         SDL_RenderFillRect(renderer, &rect);
         return;
     }
-    
+
+    // Corners carry the antialiased edge, so they MUST blend.  fillRoundedRect
+    // used to inherit whatever blend state the previous draw left on the
+    // renderer/texture; when that was BLENDMODE_NONE the AA alpha was written
+    // as hard pixels and the corners looked chipped.  Pin both explicitly so
+    // the result is identical regardless of caller order.
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_SetTextureBlendMode(g_solid_corner_texture, SDL_BLENDMODE_BLEND);
     SDL_SetTextureColorMod(g_solid_corner_texture, color.r, color.g, color.b);
     SDL_SetTextureAlphaMod(g_solid_corner_texture, color.a);
-    
+
     int r_base = 64;
-    int r = radius;
     SDL_Rect middleRect{rect.x + r, rect.y, rect.w - 2 * r, rect.h};
     SDL_Rect sideRect{rect.x, rect.y + r, rect.w, rect.h - 2 * r};
     SDL_RenderFillRect(renderer, &middleRect);
@@ -1119,8 +1133,15 @@ void fillRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, S
 }
 
 void drawRoundedRect(SDL_Renderer* renderer, const SDL_Rect& rect, int radius, SDL_Color color) {
+    // Clamp (don't drop to a sharp rect) when the rect is smaller than
+    // 2*radius — fillRoundedRect now clamps the same way, so the border keeps
+    // matching the fill instead of squaring off only the outline.
     int r = radius;
-    if (r <= 0 || rect.w < 2 * r || rect.h < 2 * r) {
+    if (r > 0) {
+        int maxR = std::min(rect.w, rect.h) / 2;
+        if (r > maxR) r = maxR;
+    }
+    if (r <= 0) {
         SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
         SDL_RenderDrawRect(renderer, &rect);
         return;

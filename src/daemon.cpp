@@ -69,6 +69,12 @@ static std::string daemon_subtitle_url;
 static std::string daemon_audio_url;
 static std::mutex daemon_resolved_mutex;
 
+// Video id that already got ONE automatic retry after a resolve or stream-load
+// failure.  Prevents a genuinely-dead track from spinning in an
+// evict→re-resolve→fail loop.  Cleared once a track actually plays past ~1s, or
+// when we move to a different track (see playCurrentTrack).
+static std::string daemon_retry_id;
+
 // Predictive prefetch state.  When the current track has < 90 s left,
 // we kick off a background resolve for the NEXT-in-queue and write the
 // result into its playlist slot.  On track end / skip, playCurrentTrack
@@ -1034,6 +1040,11 @@ static void playCurrentTrack(MpvPlayer& mpv, YouTubeAPI& yt) {
         audio_url    = video.audio_url;
     }
 
+    // Moving to a different track resets the one-shot retry budget.  The
+    // failure-recovery paths re-invoke playCurrentTrack with the SAME id, so
+    // they intentionally leave the guard set.
+    if (daemon_retry_id != vid_id) daemon_retry_id.clear();
+
     // Bump serial BEFORE mpv.stop() and BEFORE the new getStreamUrl call
     // so any in-flight callback from the PREVIOUS track is guaranteed to
     // see a mismatch and silently drop.  Without this ordering, a rapid
@@ -1707,6 +1718,12 @@ void runDaemon() {
         {
             const double dur = mpv.getDuration();
             const double pos = mpv.getPlaybackTime();
+            // The current track is genuinely playing — release the one-shot
+            // retry budget so a later legitimate failure of this id can recover.
+            if (daemon_status == DaemonStatus::Playing && pos > 1.0 &&
+                !daemon_retry_id.empty()) {
+                daemon_retry_id.clear();
+            }
             if (dur > 0.0 && pos > 0.0) {
                 maybePrefetchNext(yt, dur - pos);
             }
@@ -1777,12 +1794,57 @@ void runDaemon() {
                                        daemon_current_index < (int)daemon_playlist.size())
                         ? daemon_playlist[daemon_current_index].id
                         : std::string("<out-of-range>");
-                    std::cerr << "[daemon] Resolve failed idx=" << daemon_current_index
-                              << " id=" << vid << "\n";
-                    daemon_status = DaemonStatus::Error;
+                    // Retry once — the first resolve after a cold start or a
+                    // transient bot-wall often fails where an immediate retry
+                    // succeeds.  The slot's stream_url is still empty, so
+                    // playCurrentTrack re-enters the resolve path.
+                    if (!vid.empty() && vid != "<out-of-range>" && daemon_retry_id != vid) {
+                        daemon_retry_id = vid;
+                        std::cerr << "[daemon] Resolve failed idx=" << daemon_current_index
+                                  << " id=" << vid << " — retrying once\n";
+                        playCurrentTrack(mpv, yt);
+                    } else {
+                        std::cerr << "[daemon] Resolve failed idx=" << daemon_current_index
+                                  << " id=" << vid << " — giving up\n";
+                        daemon_status = DaemonStatus::Error;
+                    }
                 }
                 last_render_pos = -1.0;
             }
+        }
+
+        // ── Stream load failure ───────────────────────────────────────────
+        // mpv ended the file with an ERROR reason — the URL we handed it was
+        // dead (a stale pre-resolved URL from the app's handoff or the
+        // prefetch, or a just-resolved link that expired immediately).  Evict
+        // the dead URL from the current slot and re-resolve once.  Checked for
+        // both Playing (pre-resolved path) and the freshly-resolved case.
+        if ((daemon_status == DaemonStatus::Playing ||
+             daemon_status == DaemonStatus::Resolving) &&
+            mpv.checkAndClearLoadFailed()) {
+            std::string vid;
+            {
+                std::lock_guard<std::mutex> lk(daemon_resolved_mutex);
+                if (daemon_current_index >= 0 &&
+                    daemon_current_index < (int)daemon_playlist.size()) {
+                    auto& v = daemon_playlist[daemon_current_index];
+                    vid = v.id;
+                    v.stream_url.clear();   // drop the dead URL so we re-resolve
+                    v.subtitle_url.clear();
+                    v.audio_url.clear();
+                }
+            }
+            if (!vid.empty() && daemon_retry_id != vid) {
+                daemon_retry_id = vid;
+                std::cerr << "[daemon] Stream load failed id=" << vid
+                          << " — re-resolving\n";
+                playCurrentTrack(mpv, yt);
+            } else {
+                std::cerr << "[daemon] Stream load failed id=" << vid
+                          << " — giving up\n";
+                daemon_status = DaemonStatus::Error;
+            }
+            last_render_pos = -1.0;
         }
 
         // ── Track end ─────────────────────────────────────────────────────

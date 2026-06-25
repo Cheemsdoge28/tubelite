@@ -117,6 +117,139 @@ purge_display_managers() {
     systemctl daemon-reload 2>/dev/null || true
 }
 
+# ============================================================================
+# Compatibility Wizard — fix missing/broken libmpv (and its codec chain).
+#
+# Strategy (cheapest, cleanest first):
+#   1. Diagnose whether the system already provides libmpv.
+#   2. Try `apt-get install libmpv1` — the proper, version-matched fix.
+#   3. Fall back to the bundled compat pack (vendor/lib): either an
+#      already-extracted folder or a tubelite-compat-libs.zip placed next to
+#      the installer.  The ES launcher already adds vendor/lib to
+#      LD_LIBRARY_PATH, so dropping the libs there is enough.
+#
+# Edge cases handled:
+#   - vendor/lib folder absent on entry  → look for a compat zip and extract it
+#   - compat zip absent too              → clear, actionable message, no crash
+#   - zip nested under vendor-lib/        → flattened into vendor/lib
+#   - wrong-arch / still-unresolved libs → ldd sanity check + warning
+# ============================================================================
+COMPAT_LIB_DIR="$INSTALL_DIR/vendor/lib"
+
+compat_have_system_libmpv() {
+    if ldconfig -p 2>/dev/null | grep -q 'libmpv\.so'; then return 0; fi
+    for d in /usr/lib /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
+             /usr/local/lib /usr/local/lib64; do
+        if ls "$d"/libmpv.so* >/dev/null 2>&1; then return 0; fi
+    done
+    return 1
+}
+
+compat_bundle_present() {
+    [ -d "$COMPAT_LIB_DIR" ] && ls "$COMPAT_LIB_DIR"/*.so* >/dev/null 2>&1
+}
+
+run_compat_wizard() {
+    echo ""
+    echo -e "${BOLD}============================================${NC}"
+    echo -e "${BOLD}  ${APP_NAME} Compatibility Wizard (libmpv)${NC}"
+    echo -e "${BOLD}============================================${NC}"
+    echo ""
+
+    # ── 1. Diagnose ──────────────────────────────────────────────────────
+    log_step "1/3" "Checking for libmpv..."
+    if compat_have_system_libmpv; then
+        log_ok "System libmpv is present — playback should already work."
+        log_info "Continuing anyway to refresh/repair the fallback libs."
+    else
+        log_warn "System libmpv is MISSING — video playback will fail without a fix."
+    fi
+
+    # ── 2. Preferred fix: apt ────────────────────────────────────────────
+    log_step "2/3" "Trying apt install of libmpv1 (proper, version-matched fix)..."
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y --no-install-recommends libmpv1 2>/dev/null || true
+    purge_display_managers
+    if compat_have_system_libmpv; then
+        log_ok "libmpv installed via apt. Playback should work now."
+        return 0
+    fi
+    log_warn "apt could not provide libmpv (offline / EOL repos). Using bundled compat pack."
+
+    # ── 3. Fallback: bundled compat libs ─────────────────────────────────
+    log_step "3/3" "Setting up bundled compatibility libraries..."
+
+    # If the folder isn't there (or is empty), try to extract a compat zip
+    # that the user dropped next to the installer.
+    if ! compat_bundle_present; then
+        local zip=""
+        for z in "$SCRIPT_DIR/tubelite-compat-libs.zip" \
+                 "$SCRIPT_DIR/compat-libs.zip" \
+                 "$SCRIPT_DIR/vendor-lib.zip" \
+                 "$SCRIPT_DIR/dist/release/tubelite-compat-libs.zip"; do
+            if [ -f "$z" ]; then zip="$z"; break; fi
+        done
+
+        if [ -n "$zip" ]; then
+            log_info "Extracting compat pack: $(basename "$zip")"
+            mkdir -p "$COMPAT_LIB_DIR"
+            if command -v unzip >/dev/null 2>&1; then
+                unzip -o -q "$zip" -d "$COMPAT_LIB_DIR" || true
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" \
+                    "$zip" "$COMPAT_LIB_DIR" || true
+            else
+                log_err "Neither 'unzip' nor 'python3' is available to extract the pack."
+            fi
+            # Flatten if the archive nested everything under vendor-lib/.
+            if [ -d "$COMPAT_LIB_DIR/vendor-lib" ]; then
+                mv "$COMPAT_LIB_DIR/vendor-lib"/* "$COMPAT_LIB_DIR/" 2>/dev/null || true
+                rmdir "$COMPAT_LIB_DIR/vendor-lib" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # Edge case: still nothing to work with.
+    if ! compat_bundle_present; then
+        log_err "No compatibility libraries are available."
+        echo ""
+        log_info "apt could not install libmpv, and no compat pack was found at:"
+        log_info "  $COMPAT_LIB_DIR/  (extracted libs), or"
+        log_info "  $SCRIPT_DIR/tubelite-compat-libs.zip  (the pack)"
+        echo ""
+        log_info "To fix playback, do ONE of the following:"
+        log_info "  • Connect to the internet and re-run this wizard (apt path), or"
+        log_info "  • Download 'tubelite-compat-libs.zip', copy it into:"
+        log_info "      $SCRIPT_DIR/"
+        log_info "    then re-run:  sudo bash Install-TubeLite.sh --compat"
+        return 1
+    fi
+
+    chmod +x "$COMPAT_LIB_DIR"/*.so* 2>/dev/null || true
+    local n
+    n="$(ls -1 "$COMPAT_LIB_DIR"/*.so* 2>/dev/null | wc -l)"
+    log_ok "Bundled compat libraries ready ($n libraries in vendor/lib)."
+    log_info "The launcher adds this folder to LD_LIBRARY_PATH, so TubeLite uses"
+    log_info "these whenever the system libmpv is missing."
+
+    # Sanity check: does the app binary actually resolve libmpv now?
+    local bin=""
+    for c in "$INSTALL_DIR/build/tubelite.arm64" "$INSTALL_DIR/build/tubelite" \
+             "$INSTALL_DIR/bin/tubelite.arm64" "$INSTALL_DIR/bin/tubelite"; do
+        if [ -x "$c" ]; then bin="$c"; break; fi
+    done
+    if [ -n "$bin" ] && command -v ldd >/dev/null 2>&1; then
+        if LD_LIBRARY_PATH="$COMPAT_LIB_DIR:${LD_LIBRARY_PATH:-}" ldd "$bin" 2>/dev/null \
+                | grep -q 'libmpv.*not found'; then
+            log_warn "libmpv is still unresolved even with the bundle."
+            log_warn "The pack may be for the wrong architecture (need aarch64)."
+            return 1
+        fi
+        log_ok "Verified: TubeLite resolves libmpv with the bundled libraries."
+    fi
+    return 0
+}
+
 DO_DEPS=1
 DO_BINARY=1
 DO_FILES=1
@@ -167,6 +300,21 @@ if [ "$1" = "--fix-display" ]; then
     sleep 5
     reboot
     exit 0
+fi
+
+# ---------- Compatibility wizard ----------
+# Fix missing/broken libmpv (the #1 cause of "playback does nothing" on a
+# stripped OS image):  sudo bash Install-TubeLite.sh --compat
+if [ "$1" = "--compat" ] || [ "$1" = "--fix-libs" ]; then
+    run_compat_wizard
+    rc=$?
+    echo ""
+    if [ "$rc" -eq 0 ]; then
+        echo -e "${GREEN}Compatibility check complete.${NC} Launch TubeLite to test playback."
+    else
+        echo -e "${YELLOW}Compatibility wizard could not fully fix playback.${NC} See the notes above."
+    fi
+    exit "$rc"
 fi
 
 if [ "$1" = "--uninstall" ] || [ "$1" = "--uninstall-app" ] || [ "$1" = "--uninstall-theme" ]; then
@@ -275,7 +423,8 @@ if [ "$#" -eq 0 ]; then
         echo "5) Uninstall App Only"
         echo "6) Uninstall Theme Only"
         echo "7) Exit"
-        read -p "Enter choice [1-7]: " choice </dev/tty 2>/dev/null || choice="1"
+        echo "8) Fix Playback / Compatibility (libmpv)"
+        read -p "Enter choice [1-8]: " choice </dev/tty 2>/dev/null || choice="1"
     fi
 
     case "$choice" in
@@ -286,6 +435,7 @@ if [ "$#" -eq 0 ]; then
         5) exec bash "$0" "--uninstall-app" ;;
         6) exec bash "$0" "--uninstall-theme" ;;
         7) exit 0 ;;
+        8) run_compat_wizard; exit $? ;;
         *) log_err "Invalid choice. Exiting."; exit 1 ;;
     esac
 fi
@@ -415,6 +565,11 @@ if [ "$DO_DEPS" -eq 1 ]; then
         log_ok "Bundled deno detected at $SCRIPT_DIR/vendor/deno"
     else
         log_warn "No bundled deno found at $SCRIPT_DIR/vendor/deno"
+    fi
+    # Bundled portable libs (libmpv + codec chain) used as a runtime fallback
+    # via LD_LIBRARY_PATH when the OS image is missing them.  See TubeLite.tbl.
+    if [ -d "$SCRIPT_DIR/vendor/lib" ] && ls "$SCRIPT_DIR/vendor/lib"/*.so* >/dev/null 2>&1; then
+        log_ok "Bundled fallback libs detected ($(ls -1 "$SCRIPT_DIR/vendor/lib"/*.so* 2>/dev/null | wc -l) in vendor/lib)"
     fi
     log_ok "Dependencies verified"
 fi
@@ -565,6 +720,17 @@ done
 if [ -x "\$SCRIPT_DIR/vendor/deno" ]; then
     export PATH="\$SCRIPT_DIR/vendor:\${PATH}"
 fi
+
+# Bundled portable userland libs (libmpv + its codec chain, harvested from a
+# known-good device).  These are NON-device libs only — GPU/ALSA/SDL/glibc are
+# intentionally excluded so we never shadow the hardware-tuned copies ArkOS
+# ships.  Append (not prepend) so a working system library still wins and the
+# bundle only fills gaps on OS images that are missing libmpv.
+for d in "\$SCRIPT_DIR/vendor/lib" "\$SCRIPT_DIR/lib"; do
+    if [ -d "\$d" ]; then
+        export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:+\$LD_LIBRARY_PATH:}\$d"
+    fi
+done
 
 # Launch the app
 LOGFILE="\$SCRIPT_DIR/tubelite.log"

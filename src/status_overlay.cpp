@@ -67,6 +67,8 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     {"A", red, "TYPE"},
                     {"B", yellow, "CLOSE"},
                     {"Y", green, "SPACE"},
+                    {"X", blue, "DELETE"},
+                    {"L1", textColor, "MODE"},
                     {"START", textColor, "GO"}
                 };
             } else if (state.currentScreen == TubeState::Screen::Playback) {

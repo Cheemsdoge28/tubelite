@@ -81,6 +81,9 @@ public:
     // conversion at the C-API boundary is lossy or rejected.
     double  getPropertyDouble(const std::string& name) const;
     bool checkAndClearEnded();
+    // True once (then cleared) if mpv ended the current file with an ERROR
+    // reason — i.e. the stream URL failed to load. Distinct from EOF.
+    bool checkAndClearLoadFailed();
     void setPendingSeekPosition(double pos) { pending_seek_position_ = pos; }
 
 
@@ -108,6 +111,7 @@ private:
     std::string pending_subtitle_url_;
     std::string pending_audio_url_;
     bool file_ended_ = false;
+    bool load_failed_ = false;
     double pending_seek_position_ = -1.0;
 
 };

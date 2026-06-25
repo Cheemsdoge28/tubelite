@@ -13,6 +13,17 @@ if [ -x "$SCRIPT_DIR/vendor/deno" ]; then
     export PATH="$SCRIPT_DIR/vendor:${PATH}"
 fi
 
+# Bundled portable userland libs (libmpv + its codec chain, harvested from a
+# known-good device).  These are NON-device libs only — GPU/ALSA/SDL/glibc are
+# intentionally excluded so we never shadow the hardware-tuned copies ArkOS
+# ships.  Append (not prepend) so a working system library still wins and the
+# bundle only fills gaps on OS images that are missing libmpv.
+for d in "$SCRIPT_DIR/vendor/lib" "$SCRIPT_DIR/lib"; do
+    if [ -d "$d" ]; then
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$d"
+    fi
+done
+
 # Launch the app
 LOGFILE="$SCRIPT_DIR/tubelite.log"
 BINARIES=(
