@@ -2,6 +2,7 @@
 #define MPV_DYN_HPP
 
 #include <mpv/client.h>
+#include <mpv/render.h>
 #include <mpv/render_gl.h>
 #include <dlfcn.h>
 #include <iostream>
@@ -27,7 +28,7 @@ struct MpvDynLoader {
 
     // Render context function pointers
     int (*render_context_create)(mpv_render_context** res, mpv_handle* mal_ctx, mpv_render_param* params) = nullptr;
-    void (*render_context_set_update_callback)(mpv_render_context* ctx, mpv_render_context_update_fn callback, void* callback_data) = nullptr;
+    void (*render_context_set_update_callback)(mpv_render_context* ctx, void (*callback)(void*), void* callback_data) = nullptr;
     uint64_t (*render_context_update)(mpv_render_context* ctx) = nullptr;
     int (*render_context_render)(mpv_render_context* ctx, mpv_render_param* params) = nullptr;
     void (*render_context_free)(mpv_render_context* ctx) = nullptr;
