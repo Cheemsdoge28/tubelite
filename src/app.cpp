@@ -219,6 +219,12 @@ bool App::initialize() {
 
     if (!mpv_player_.initialize(window_, renderer_)) {
         logError("MPV init failed");
+        std::cerr << "\n*** libmpv could not be loaded — video playback is unavailable.\n"
+                  << "    The system libmpv.so.1 is missing (ArkOS images often strip it,\n"
+                  << "    even though dpkg reports libmpv1 as installed) and no compat pack\n"
+                  << "    was found in vendor/lib.\n"
+                  << "    Fix it with:  sudo bash Install-TubeLite.sh --compat\n"
+                  << "    (force-reinstalls libmpv1 via apt, else extracts the bundled pack)\n\n";
         return false;
     }
     loadSettings();
@@ -733,6 +739,13 @@ void App::shutdown() {
     status_.destroyTexture();
     storyboard_.stop();
     mpv_player_.shutdown();
+    // Free everything that owns SDL_Textures BEFORE we destroy the renderer and
+    // call SDL_Quit — otherwise these unique_ptr members are destructed later
+    // (in ~App, after the renderer is gone), and their SDL_DestroyTexture calls
+    // hit a dead renderer → segfault.  This bug only surfaced visibly on the
+    // mpv-init-failure exit path, but it was a latent teardown-order fault.
+    compositor_.reset();      // owns Layer FBO textures (HUD, header, miniplayer)
+    image_manager_.reset();   // owns cached thumbnail SDL_Textures + worker thread
     thumb_atlas_.reset();
     cleanupFonts();
     ui_sounds::shutdown();

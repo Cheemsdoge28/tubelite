@@ -164,7 +164,7 @@ native: check_compiler $(BUILD_TARGET)
 # Usage: make native-dev [-j4]
 native-dev: PLATFORM=native
 native-dev: CXXFLAGS=-std=c++17 -O1 -Wall -Wextra -pthread -Isrc -march=armv8-a+crc -mcpu=cortex-a35 -mtune=cortex-a35
-native-dev: LDFLAGS=-lmpv -pthread
+native-dev: LDFLAGS=-ldl -pthread
 native-dev: check_compiler $(BUILD_TARGET)
 	@echo "Native dev build complete: $<"
 

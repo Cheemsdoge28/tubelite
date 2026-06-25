@@ -166,9 +166,20 @@ run_compat_wizard() {
     fi
 
     # ── 2. Preferred fix: apt ────────────────────────────────────────────
-    log_step "2/3" "Trying apt install of libmpv2 or libmpv1 (proper, version-matched fix)..."
+    log_step "2/3" "Restoring libmpv via apt (force --reinstall — see below)..."
     apt-get update -qq 2>/dev/null || true
-    apt-get install -y --no-install-recommends libmpv2 2>/dev/null || apt-get install -y --no-install-recommends libmpv1 2>/dev/null || true
+    # CRITICAL: dpkg often reports libmpv1 as installed ("ii") while the actual
+    # libmpv.so.1 file was stripped from the image — so a plain `apt-get install`
+    # is a NO-OP and the file never comes back.  Force --reinstall first to
+    # re-extract the real .so; fall back to a fresh install only if the package
+    # genuinely isn't present.  Try libmpv2 (trixie+) then libmpv1.
+    for pkg in libmpv2 libmpv1; do
+        if apt-get install -y --no-install-recommends --reinstall "$pkg" 2>/dev/null; then
+            log_ok "Reinstalled $pkg"; break
+        elif apt-get install -y --no-install-recommends "$pkg" 2>/dev/null; then
+            log_ok "Installed $pkg"; break
+        fi
+    done
     purge_display_managers
     if compat_have_system_libmpv; then
         log_ok "libmpv installed via apt. Playback should work now."
