@@ -267,10 +267,9 @@ bool MpvPlayer::initialize(SDL_Window* window, SDL_Renderer* renderer) {
     // Use eglGetProcAddress via dlopen — NOT SDL_GL_GetProcAddress.
     // SDL's wrapper can return bad pointers when called outside its render loop.
     std::cerr << "[mpv] mpv_render_context_create...\n";
-    mpv_opengl_init_params gl_params;
+    mpv_opengl_init_params gl_params{};
     gl_params.get_proc_address     = gl_get_proc_addr;
     gl_params.get_proc_address_ctx = nullptr;
-    gl_params.extra_exts           = nullptr;
 
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE,           const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL)},
