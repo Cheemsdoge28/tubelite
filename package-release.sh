@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_ROOT="${1:-$SCRIPT_DIR/dist/release}"
 APP_DIR="$RELEASE_ROOT/TubeLite"
 
+RELEASE_VERSION="1.6.1"
+RELEASE_TAG="Stable-2026-06-26"
+
 copy_file() {
     local source_path="$1"
     local target_path="$2"
@@ -106,12 +109,21 @@ fi
 if [ -f "$SCRIPT_DIR/README.md" ]; then
     copy_file "$SCRIPT_DIR/README.md" "$APP_DIR/README.md"
 fi
-if [ -f "$SCRIPT_DIR/VERSION" ]; then
-    copy_file "$SCRIPT_DIR/VERSION" "$APP_DIR/VERSION"
-fi
 
-cat > "$APP_DIR/RELEASE_NOTES.txt" <<'EOF'
-TubeLite YouTube Client (v1.6.1 - 2026-06-25)
+# Write version file and generate version.json manifest
+echo "Generating version manifest..."
+cat > "$RELEASE_ROOT/version.json" <<EOF
+{
+  "version": "${RELEASE_VERSION}",
+  "tag": "${RELEASE_TAG}",
+  "date": "$(date +%Y-%m-%d)"
+}
+EOF
+copy_file "$RELEASE_ROOT/version.json" "$APP_DIR/version.json"
+echo "${RELEASE_VERSION}" > "$APP_DIR/VERSION"
+
+cat > "$APP_DIR/RELEASE_NOTES.txt" <<EOF
+TubeLite YouTube Client (v${RELEASE_VERSION} - $(date +%Y-%m-%d))
 
 Major Features & Improvements:
 - Native audio and video playback using hardware acceleration (rk3326-optimized GLESv2/EGL/MPV layers).
@@ -186,6 +198,7 @@ fi
 
 echo "Release staged at: $APP_DIR"
 echo "Archive created at: $RELEASE_ROOT/TubeLite-$(date +%G%m%d).zip"
+echo "Version manifest:  $RELEASE_ROOT/version.json"
 echo "Binary used: $BINARY_PATH"
 if [ -f "$COMPAT_ZIP" ]; then
     echo "Compat pack:      $COMPAT_ZIP (ship as a separate optional download)"
