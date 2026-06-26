@@ -39,6 +39,30 @@ static std::string truncateTextToWidth(const std::string& text, int scale, int m
     return utf8Slice(text, 0, best_len) + ell;
 }
 
+// Aspect-fit a source of size srcW×srcH into `area`, centering and letterboxing
+// so the image is NEVER stretched or squashed.  For a source that already
+// matches the area's aspect this returns `area` unchanged (a no-op); otherwise
+// it shrinks one axis and centers, leaving bars against whatever's drawn behind.
+//
+// This is the single source of truth for the "fit, don't stretch" behavior the
+// miniplayer pioneered — the scrub storyboard, browse previews, and miniplayer
+// all route through it so they behave identically.
+static SDL_Rect aspectFitRect(int srcW, int srcH, const SDL_Rect& area) {
+    SDL_Rect dst = area;
+    if (srcW > 0 && srcH > 0 && area.w > 0 && area.h > 0) {
+        const double sa = static_cast<double>(srcW) / srcH;
+        const double da = static_cast<double>(area.w) / area.h;
+        if (sa > da) {            // source wider → bars top & bottom
+            const int hh = static_cast<int>(area.w / sa + 0.5);
+            dst = {area.x, area.y + (area.h - hh) / 2, area.w, hh};
+        } else if (sa < da) {     // source taller → bars left & right
+            const int ww = static_cast<int>(area.h * sa + 0.5);
+            dst = {area.x + (area.w - ww) / 2, area.y, ww, area.h};
+        }
+    }
+    return dst;
+}
+
 void Compositor::render(App* app, int width, int height) {
     PROFILE_SCOPE("Compositor::render");
     if (app->state_.currentScreen == TubeState::Screen::Playback) {
@@ -141,11 +165,12 @@ void Compositor::render(App* app, int width, int height) {
                 };
                 SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
                 if (previewTex) {
-                    // Crop the letterbox bars before stretching into the
-                    // 16:9 thumbnail destination — otherwise the bars get
-                    // scaled into the dst and the video looks compressed.
+                    // Crop the letterbox bars, then aspect-fit (don't stretch)
+                    // the actual video pixels into the thumbnail slot — same as
+                    // the miniplayer, so non-16:9 sources don't get squished.
                     SDL_Rect srcRect = app->mpv_player_.getVideoRect();
-                    SDL_RenderCopy(renderer_, previewTex, &srcRect, &thumbDst);
+                    SDL_Rect fitDst  = aspectFitRect(srcRect.w, srcRect.h, thumbDst);
+                    SDL_RenderCopy(renderer_, previewTex, &srcRect, &fitDst);
                     maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
                     drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
@@ -178,8 +203,11 @@ void Compositor::render(App* app, int width, int height) {
                 };
                 SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, thumbW, thumbH);
                 if (previewTex) {
+                    // Aspect-fit the cropped video into the thumbnail slot (no
+                    // stretch) — mirrors the miniplayer / Home-grid preview.
                     SDL_Rect srcRect = app->mpv_player_.getVideoRect();
-                    SDL_RenderCopy(renderer_, previewTex, &srcRect, &thumbDst);
+                    SDL_Rect fitDst  = aspectFitRect(srcRect.w, srcRect.h, thumbDst);
+                    SDL_RenderCopy(renderer_, previewTex, &srcRect, &fitDst);
                     maskRoundedCornersTop(renderer_, thumbDst, theme::RADIUS_CARD, theme::BG);
                     drawVideoFade(app, thumbDst, theme::RADIUS_CARD);
                 }
@@ -338,24 +366,11 @@ void Compositor::render(App* app, int width, int height) {
             const SDL_Rect videoArea{mX + 2, mY + 2, mW, mVH};
             SDL_Rect srcRect = app->mpv_player_.getVideoRect();
             // Letterbox the SOURCE aspect into the 16:9 video area so the image
-            // is never stretched/squashed.  Previously the crop rect was blitted
-            // straight into a fixed 16:9 dst — if getVideoRect() ever returned a
-            // non-16:9 rect (e.g. dwidth/dheight reported the 4:3 FBO before the
-            // video params settled), the picture got squished.  For a true 16:9
-            // crop this is a no-op (dst == videoArea); otherwise it centres and
-            // bars against the BG backplate drawn above.
-            SDL_Rect videoDst = videoArea;
-            if (srcRect.w > 0 && srcRect.h > 0) {
-                const double sa = static_cast<double>(srcRect.w) / srcRect.h;
-                const double da = static_cast<double>(videoArea.w) / videoArea.h;
-                if (sa > da) {            // source wider → bars top & bottom
-                    const int hh = static_cast<int>(videoArea.w / sa + 0.5);
-                    videoDst = {videoArea.x, videoArea.y + (videoArea.h - hh) / 2, videoArea.w, hh};
-                } else if (sa < da) {     // source taller → bars left & right
-                    const int ww = static_cast<int>(videoArea.h * sa + 0.5);
-                    videoDst = {videoArea.x + (videoArea.w - ww) / 2, videoArea.y, ww, videoArea.h};
-                }
-            }
+            // is never stretched/squashed (e.g. if getVideoRect() reported the
+            // 4:3 FBO before the video params settled).  For a true 16:9 crop
+            // this is a no-op; otherwise it centres and bars against the BG
+            // backplate drawn above.
+            SDL_Rect videoDst = aspectFitRect(srcRect.w, srcRect.h, videoArea);
             SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
             // Corner mask + fade follow the whole video AREA (not the inset blit)
             // so the card's rounded top stays consistent regardless of bars.
@@ -1447,7 +1462,14 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             int previewX = std::max(mg, std::min(width - mg - thumbW, dotX - thumbW / 2));
             int previewY = pbY - thumbH - 24;
 
-            SDL_Rect thumbRect{previewX, previewY, thumbW, thumbH};
+            // Aspect-fit the storyboard tile into the 160×90 slot instead of
+            // stretching it — YouTube storyboard tiles aren't always 16:9 (e.g.
+            // vertical / 4:3 uploads), and blitting the whole tile into a fixed
+            // 16:9 rect squished them.  Same fit logic as the miniplayer.
+            int sbW = 0, sbH = 0;
+            SDL_QueryTexture(sbTex, nullptr, nullptr, &sbW, &sbH);
+            SDL_Rect thumbArea{previewX, previewY, thumbW, thumbH};
+            SDL_Rect thumbRect = aspectFitRect(sbW, sbH, thumbArea);
             SDL_RenderCopy(renderer_, sbTex, nullptr, &thumbRect);
 
             SDL_SetRenderDrawColor(renderer_, theme::WHITE.r, theme::WHITE.g, theme::WHITE.b, 180);
@@ -1457,8 +1479,8 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             getTextSize(timeStr, 1, &tw, &th);
             int pillW = tw + 8;
             int pillH = th + 4;
-            int pillX = thumbRect.x + (thumbW - pillW) / 2;
-            int pillY = thumbRect.y + thumbH - pillH - 4;
+            int pillX = thumbRect.x + (thumbRect.w - pillW) / 2;
+            int pillY = thumbRect.y + thumbRect.h - pillH - 4;
 
             SDL_Rect tsBg{pillX, pillY, pillW, pillH};
             fillRoundedRect(renderer_, tsBg, theme::RADIUS_SM, theme::BLACK.a8(200));
