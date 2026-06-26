@@ -57,6 +57,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
             const SDL_Color blue   = theme::BLUE;
             const SDL_Color yellow = theme::YELLOW;
             const SDL_Color green  = theme::GREEN;
+            const SDL_Color purple = theme::PURPLE;
             const SDL_Color panel  = theme::PANEL;
             const int boxY = 13;
             const int boxH = 22;
@@ -100,7 +101,7 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     // Chip is always blue per the standard X-button color.
                     {"X", blue, authLabel},
                     {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
-                    {"SEL+Y", textColor, "SETTINGS"},
+                    {"FN+Y", purple, "SETTINGS"},
                 };
                 // R3=RELOAD hint dropped to make room for START=QUEUE without
                 // overflowing the 640px bar; the R3 binding still works.
