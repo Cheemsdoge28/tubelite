@@ -3387,24 +3387,15 @@ void App::handleVideoEnded() {
         leavePlayback();
         return;
     }
-    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-    bool playedNext = false;
-
-    if (grid && !grid->videos.empty()) {
-        for (size_t i = 0; i < grid->videos.size(); ++i) {
-            if (grid->videos[i].id == current_video_.id) {
-                if (i + 1 < grid->videos.size()) {
-                    auto nextVideo = grid->videos[i + 1];
-                    focus_manager_.setFocusedIndex(i + 1);
-                    playVideo(nextVideo, !state_.miniplayerActive);
-                    playedNext = true;
-                }
-                break;
-            }
-        }
-    }
-    
-    if (!playedNext) {
+    // Auto-advance must honor the explicit queue first, then the grid — exactly
+    // like playNextTrack().  This used to do its own grid-walk and skip the
+    // queue entirely, so "Play Next / Add to Queue" items never played on
+    // auto-advance.  Peek first (nextUpVideo is non-consuming); if there's a
+    // next, let playNextTrack consume/advance it; otherwise stop at the end.
+    YouTubeVideo nextVideo;
+    if (nextUpVideo(nextVideo)) {
+        playNextTrack();
+    } else {
         mpv_player_.seekAbsoluteKeyframes(0.0);
         mpv_player_.pause();
         uiDirty_ = true;

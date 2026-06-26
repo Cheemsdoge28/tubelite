@@ -1322,11 +1322,15 @@ void drawDaemonCard(SDL_Renderer* renderer, const SDL_Rect& rect,
     // 3 px solid accent on the left, then a 16 px gradient fading right.
     if (drawAccentBar) {
         constexpr int kAccentW = 3;
-        SDL_Rect accent{cx, cy, kAccentW, ch};
+        // Inset the bar (and its glow) vertically by the corner radius so it
+        // sits on the STRAIGHT part of the left edge.  A full-height bar pokes
+        // out past the card's rounded corners and reads as crooked/malformed.
+        const int inset  = radius;
+        SDL_Rect accent{cx, cy + inset, kAccentW, ch - 2 * inset};
         fillRoundedRect(renderer, accent, 2, theme::ACCENT);
         const int glowX0 = cx + kAccentW;
-        const int glowY0 = cy + 1;
-        const int glowH  = ch - 2;
+        const int glowY0 = cy + inset;
+        const int glowH  = ch - 2 * inset;
         for (int i = 0; i < 16; ++i) {
             const int alpha = 30 - i * 2;
             if (alpha <= 0) break;

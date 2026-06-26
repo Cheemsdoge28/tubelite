@@ -1265,10 +1265,11 @@ static void renderCard(MpvPlayer& mpv) {
                   C_SF_R, C_SF_G, C_SF_B, 0);
 
     // ── 3. Left accent bar + glow ─────────────────────────────────────────────
-    // 4px solid bar, full card height with matching corner radius
-    fillRoundedRect(0, 0, 4, card_h, 2, C_AC_R, C_AC_G, C_AC_B, fa);
-    // Glow: short horizontal gradient fading right from bar
-    fillGradientH(4, 0, 32, card_h,
+    // 4px solid bar inset by the corner radius so it sits on the STRAIGHT part
+    // of the left edge — a full-height bar pokes past the rounded corners and
+    // looks crooked.  Glow follows the same vertical span.
+    fillRoundedRect(0, R, 4, card_h - 2 * R, 2, C_AC_R, C_AC_G, C_AC_B, fa);
+    fillGradientH(4, R, 32, card_h - 2 * R,
                   C_AC_R, C_AC_G, C_AC_B, fade(28),
                   C_AC_R, C_AC_G, C_AC_B, 0);
 

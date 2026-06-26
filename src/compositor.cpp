@@ -335,11 +335,32 @@ void Compositor::render(App* app, int width, int height) {
         // INTO the miniplayer too, leaving the video visibly squished.
         SDL_Texture* previewTex = app->mpv_player_.renderToTexture(renderer_, mW, mVH);
         if (previewTex) {
-            SDL_Rect videoDst{mX + 2, mY + 2, mW, mVH};
+            const SDL_Rect videoArea{mX + 2, mY + 2, mW, mVH};
             SDL_Rect srcRect = app->mpv_player_.getVideoRect();
+            // Letterbox the SOURCE aspect into the 16:9 video area so the image
+            // is never stretched/squashed.  Previously the crop rect was blitted
+            // straight into a fixed 16:9 dst — if getVideoRect() ever returned a
+            // non-16:9 rect (e.g. dwidth/dheight reported the 4:3 FBO before the
+            // video params settled), the picture got squished.  For a true 16:9
+            // crop this is a no-op (dst == videoArea); otherwise it centres and
+            // bars against the BG backplate drawn above.
+            SDL_Rect videoDst = videoArea;
+            if (srcRect.w > 0 && srcRect.h > 0) {
+                const double sa = static_cast<double>(srcRect.w) / srcRect.h;
+                const double da = static_cast<double>(videoArea.w) / videoArea.h;
+                if (sa > da) {            // source wider → bars top & bottom
+                    const int hh = static_cast<int>(videoArea.w / sa + 0.5);
+                    videoDst = {videoArea.x, videoArea.y + (videoArea.h - hh) / 2, videoArea.w, hh};
+                } else if (sa < da) {     // source taller → bars left & right
+                    const int ww = static_cast<int>(videoArea.h * sa + 0.5);
+                    videoDst = {videoArea.x + (videoArea.w - ww) / 2, videoArea.y, ww, videoArea.h};
+                }
+            }
             SDL_RenderCopy(renderer_, previewTex, &srcRect, &videoDst);
-            maskRoundedCornersTop(renderer_, videoDst, theme::RADIUS_PANEL, theme::BG);
-            drawVideoFade(app, videoDst, theme::RADIUS_PANEL);
+            // Corner mask + fade follow the whole video AREA (not the inset blit)
+            // so the card's rounded top stays consistent regardless of bars.
+            maskRoundedCornersTop(renderer_, videoArea, theme::RADIUS_PANEL, theme::BG);
+            drawVideoFade(app, videoArea, theme::RADIUS_PANEL);
         }
 
         // Composite chrome layer on top of the live video
@@ -423,7 +444,10 @@ void Compositor::drawScreenOffPrompt(App* app, int width, int height) {
     SDL_Rect s1{ card.x - 2, card.y + 4, card.w + 4, card.h + 4 };
     fillRoundedRect(renderer_, s1, theme::RADIUS_CARD, theme::BLACK.a8(70));
     fillRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::SURFACE);
-    SDL_Rect accent{ card.x, card.y, 4, card.h };
+    // Accent bar inset by the corner radius so it sits on the STRAIGHT part of
+    // the left edge — a full-height bar pokes out past the card's rounded
+    // corners and looks crooked.
+    SDL_Rect accent{ card.x, card.y + theme::RADIUS_CARD, 4, card.h - 2 * theme::RADIUS_CARD };
     fillRoundedRect(renderer_, accent, 2, theme::ACCENT);
     drawRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::BORDER);
 
@@ -452,8 +476,8 @@ void Compositor::drawCardMenu(App* app, int width, int height) {
 
     const char* items[] = { "Play Now", "Play Next", "Add to Queue", "Cancel" };
     const int nItems = 4;
-    const int rowH = 30, headH = 38, footH = 26;
-    const int cw = std::min(width - 40, 300);
+    const int rowH = 36, headH = 44, footH = 30;   // roomier rows/header/footer
+    const int cw = std::min(width - 40, 330);
     const int ch = headH + nItems * rowH + footH;
     const int cx = (width - cw) / 2;
     const int cy = (height - ch) / 2;
@@ -461,14 +485,15 @@ void Compositor::drawCardMenu(App* app, int width, int height) {
     fillRoundedRect(renderer_, SDL_Rect{cx + 2, cy + 3, cw, ch}, theme::RADIUS_CARD, theme::BLACK.a8(60));
     SDL_Rect cardR{cx, cy, cw, ch};
     fillRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::SURFACE);
-    fillRoundedRect(renderer_, SDL_Rect{cx, cy, 3, ch}, 2, theme::ACCENT);
+    // Accent bar inset by the corner radius (sits on the straight left edge).
+    fillRoundedRect(renderer_, SDL_Rect{cx, cy + theme::RADIUS_CARD, 3, ch - 2 * theme::RADIUS_CARD}, 2, theme::ACCENT);
     drawRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::BORDER);
 
-    const int padL = cx + 14;
-    std::string ht = truncateTextToWidth(vtitle, 1, cw - 28);
-    drawText(renderer_, padL, cy + 12, ht.empty() ? "Add to queue" : ht, 1, theme::TEXT);
+    const int padL = cx + 16;
+    std::string ht = truncateTextToWidth(vtitle, 1, cw - 32);
+    drawText(renderer_, padL, cy + 16, ht.empty() ? "Add to queue" : ht, 1, theme::TEXT);
     SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 200);
-    SDL_Rect hr{cx + 12, cy + headH - 6, cw - 24, 1};
+    SDL_Rect hr{cx + 14, cy + headH - 8, cw - 28, 1};
     SDL_RenderFillRect(renderer_, &hr);
 
     for (int i = 0; i < nItems; ++i) {
@@ -495,8 +520,8 @@ void Compositor::drawQueuePanel(App* app, int width, int height) {
     const auto& q = app->playQueue_;
     const int n = static_cast<int>(q.size());
 
-    const int headH = 34, footH = 26, rowH = 34;
-    const int cw = std::min(width - 24, 440);
+    const int headH = 38, footH = 30, rowH = 40;   // taller rows: title+author breathe
+    const int cw = std::min(width - 24, 448);
     const int cx = (width - cw) / 2;
     const int maxRows = std::max(1, (height - 24 - headH - footH) / rowH);
     const int visRows = std::max(1, std::min(std::max(n, 1), maxRows));
@@ -506,14 +531,15 @@ void Compositor::drawQueuePanel(App* app, int width, int height) {
     fillRoundedRect(renderer_, SDL_Rect{cx + 2, cy + 3, cw, ch}, theme::RADIUS_CARD, theme::BLACK.a8(60));
     SDL_Rect cardR{cx, cy, cw, ch};
     fillRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::SURFACE);
-    fillRoundedRect(renderer_, SDL_Rect{cx, cy, 3, ch}, 2, theme::ACCENT);
+    // Accent bar inset by the corner radius (sits on the straight left edge).
+    fillRoundedRect(renderer_, SDL_Rect{cx, cy + theme::RADIUS_CARD, 3, ch - 2 * theme::RADIUS_CARD}, 2, theme::ACCENT);
     drawRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::BORDER);
 
-    const int padL = cx + 14;
+    const int padL = cx + 16;
     char hdr[48]; snprintf(hdr, sizeof(hdr), "UP NEXT  (%d)", n);
-    drawText(renderer_, padL, cy + 9, hdr, 1, theme::ACCENT);
+    drawText(renderer_, padL, cy + 11, hdr, 1, theme::ACCENT);
     { const char* sub = "B close"; int sw = 0; getTextSize(sub, 1, &sw, nullptr);
-      drawText(renderer_, cx + cw - 14 - sw, cy + 9, sub, 1, theme::TEXT_MUTED); }
+      drawText(renderer_, cx + cw - 16 - sw, cy + 11, sub, 1, theme::TEXT_MUTED); }
     SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 200);
     SDL_Rect hr{cx + 12, cy + headH - 4, cw - 24, 1};
     SDL_RenderFillRect(renderer_, &hr);
@@ -537,12 +563,12 @@ void Compositor::drawQueuePanel(App* app, int width, int height) {
                 drawRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(150));
             }
             char num[8]; snprintf(num, sizeof(num), "%d", i + 1);
-            drawText(renderer_, padL, ry + 11, num, 1, theme::TEXT_MUTED);
-            const int tx = padL + 24;
-            const int avail = cw - (tx - cx) - 14;
-            drawText(renderer_, tx, ry + 4, truncateTextToWidth(q[i].title, 1, avail), 1,
+            drawText(renderer_, padL, ry + 16, num, 1, theme::TEXT_MUTED);
+            const int tx = padL + 26;
+            const int avail = cw - (tx - cx) - 16;
+            drawText(renderer_, tx, ry + 9, truncateTextToWidth(q[i].title, 1, avail), 1,
                      selRow ? SDL_Color(theme::TEXT) : SDL_Color(theme::TEXT_3));
-            drawText(renderer_, tx, ry + 18, truncateTextToWidth(q[i].author, 1, avail), 1, theme::TEXT_MUTED);
+            drawText(renderer_, tx, ry + 23, truncateTextToWidth(q[i].author, 1, avail), 1, theme::TEXT_MUTED);
         }
     }
     drawText(renderer_, padL, cy + ch - footH + 7, "A Play    X Remove    L1/R1 Move", 1, theme::TEXT_MUTED);
@@ -601,12 +627,14 @@ void Compositor::drawSignInHelp(App* app, int width, int height) {
         fillRoundedRect(renderer_, band, 0, theme::RAISED.a8(alpha));
     }
     // Left accent bar + glow
-    SDL_Rect accent{cx, cy, kAccentW, ch};
+    // Accent bar inset by the corner radius so it doesn't poke past the card's
+    // rounded corners (the "crooked bar" look).  The glow follows the same span.
+    SDL_Rect accent{cx, cy + theme::RADIUS_CARD, kAccentW, ch - 2 * theme::RADIUS_CARD};
     fillRoundedRect(renderer_, accent, 2, theme::ACCENT);
     for (int i = 0; i < 16; ++i) {
         int alpha = 30 - i * 2;
         if (alpha <= 0) break;
-        SDL_Rect g{cx + kAccentW + i, cy + 1, 1, ch - 2};
+        SDL_Rect g{cx + kAccentW + i, cy + theme::RADIUS_CARD, 1, ch - 2 * theme::RADIUS_CARD};
         fillRoundedRect(renderer_, g, 0, theme::ACCENT.a8(alpha));
     }
     drawRoundedRect(renderer_, card, theme::RADIUS_CARD, theme::BORDER);
