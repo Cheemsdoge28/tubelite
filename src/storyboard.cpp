@@ -82,9 +82,9 @@ void StoryboardManager::runExtraction(std::string stream_url, int duration_secon
 
     char cmd[8192];
 #ifdef _WIN32
-    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -vframes 120 -q:v 6 \"%s/preview_%%03d.jpg\" >NUL 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90:force_original_aspect_ratio=decrease\" -vframes 120 -q:v 6 \"%s/preview_%%03d.jpg\" >NUL 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
 #else
-    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90\" -vframes 120 -q:v 6 \"%s/preview_%%03d.jpg\" >/dev/null 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
+    std::snprintf(cmd, sizeof(cmd), "ffmpeg -y -threads 1 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -skip_frame nokey -i \"%s\" -vf \"fps=1/%d,scale=160:90:force_original_aspect_ratio=decrease\" -vframes 120 -q:v 6 \"%s/preview_%%03d.jpg\" >/dev/null 2>&1", stream_url.c_str(), interval, tmpDir.c_str());
 #endif
 
     int res = std::system(cmd);
