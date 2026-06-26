@@ -510,7 +510,19 @@ def _ytdlp_base_args(use_cookies=True):
         "-v",
     ]
     if use_cookies and _have_cookies():
-        args += ["--cookies", COOKIES]
+        # yt-dlp REWRITES its --cookies file when a run ends (it persists the
+        # refreshed cookie jar back to disk).  If we point it at the user's
+        # cookies.txt, deleting cookies.txt never sticks — an in-flight resolve
+        # re-saves it moments later.  So hand yt-dlp a throwaway copy in tmpfs:
+        # it reads valid cookies and writes back only to the copy, leaving the
+        # user's cookies.txt untouched (read-only from our side) and actually
+        # deletable.  Fall back to the original path if the copy can't be made.
+        tmp = "/dev/shm/tubed_cookies.txt"
+        try:
+            shutil.copyfile(COOKIES, tmp)
+            args += ["--cookies", tmp]
+        except OSError:
+            args += ["--cookies", COOKIES]
     return args
 
 
