@@ -1,0 +1,152 @@
+<theme>
+    <formatVersion>4</formatVersion>
+
+    <!-- ================================================================
+         TubeLite EmulationStation Theme
+         ================================================================
+         Designed to match the app's unified design system (theme.hpp).
+         All colors are derived from the C++ palette:
+           BG:       0C0D12   (12, 13, 18)    — screen background
+           BAR:      101216   (16, 18, 22)    — top/bottom chrome
+           PANEL:    181C22   (24, 28, 34)    — drawer / panel fills
+           SURFACE:  1A1C20   (26, 28, 32)    — card body
+           CHIP:     2A3038   (42, 48, 56)    — pills, small buttons
+           RAISED:   222630   (34, 38, 48)    — hovered surface
+           DIVIDER:  20242C   (32, 36, 44)    — structural lines
+           ACCENT:   FF3030   (255, 48, 48)   — the one red
+           TEXT:     F0F2F5   (240, 242, 245) — primary
+           TEXT_2:   A5ACBA   (165, 172, 186) — secondary
+           TEXT_3:   8C909E   (140, 144, 158) — tertiary
+           TEXT_MUTED: 787E8C (120, 126, 140) — faint hints
+
+         Layout uses center-origin positioning so it works on:
+           640×480 (4:3), 720×720 (1:1), 1280×720 (16:9), 480×320,
+           and any other resolution EmulationStation renders at.
+         ================================================================ -->
+
+    <!-- ── System View: Carousel Entry ────────────────────────────── -->
+    <view name="system">
+        <!-- Solid dark background — no image dependency for base fill -->
+        <image name="background" extra="true">
+            <path>./system.png</path>
+            <pos>0.5 0.5</pos>
+            <origin>0.5 0.5</origin>
+            <size>1 1</size>
+            <zIndex>1</zIndex>
+        </image>
+
+        <!-- Logo: centered on screen, uses maxSize to fit any aspect ratio -->
+        <image name="logo">
+            <path>./logo.png</path>
+            <pos>0.5 0.45</pos>
+            <origin>0.5 0.5</origin>
+            <maxSize>0.55 0.55</maxSize>
+            <zIndex>3</zIndex>
+        </image>
+
+        <text name="description">
+            <text>TubeLite: Native YouTube Client. Smooth video and audio playback on your ArkOS handheld.</text>
+            <pos>0.5 0.88</pos>
+            <origin>0.5 0.5</origin>
+            <size>0.8 0.08</size>
+            <fontSize>0.035</fontSize>
+            <alignment>center</alignment>
+            <color>A5ACBAFF</color>
+            <zIndex>4</zIndex>
+        </text>
+    </view>
+
+    <!-- ── Gamelist View: Clean Dark Mode List ────────────────────── -->
+    <view name="basic, detailed, video">
+        <!-- Dimmed background image — sits under the BG-tinted scrim -->
+        <image name="background" extra="true">
+            <path>./system.png</path>
+            <pos>0.5 0.5</pos>
+            <origin>0.5 0.5</origin>
+            <size>1 1</size>
+            <zIndex>1</zIndex>
+            <opacity>0.15</opacity>
+        </image>
+
+        <!-- Header logo: small, centered horizontally, near top -->
+        <image name="logo">
+            <path>./logo.png</path>
+            <pos>0.5 0.12</pos>
+            <origin>0.5 0.5</origin>
+            <maxSize>0.20 0.18</maxSize>
+            <zIndex>3</zIndex>
+        </image>
+
+        <!-- Game list: centered, occupies most of the screen height -->
+        <textlist name="gamelist">
+            <pos>0.05 0.26</pos>
+            <size>0.9 0.58</size>
+            <alignment>center</alignment>
+            <fontSize>0.04</fontSize>
+
+            <!-- App text hierarchy -->
+            <primaryColor>F0F2F5FF</primaryColor>
+            <secondaryColor>A5ACBAFF</secondaryColor>
+            <selectedColor>FFFFFFFF</selectedColor>
+            <selectorColor>FF303088</selectorColor>
+            <folderColor>F0F2F5FF</folderColor>
+
+            <zIndex>4</zIndex>
+        </textlist>
+
+        <!-- Suppress ALL metadata labels and values -->
+        <text name="md_lbl_releasedate, md_releasedate, md_lbl_developer, md_developer, md_lbl_publisher, md_publisher, md_lbl_genre, md_genre, md_lbl_players, md_players, md_lbl_lastplayed, md_lastplayed, md_lbl_playcount, md_playcount, md_lbl_rating, md_rating, md_description">
+            <pos>1 1</pos>
+            <size>0 0</size>
+        </text>
+
+        <!-- Help bar at bottom -->
+        <help name="help">
+            <pos>0.5 0.94</pos>
+            <origin>0.5 0.5</origin>
+            <fontSize>0.03</fontSize>
+            <textColor>787E8CFF</textColor>
+            <iconColor>787E8CFF</iconColor>
+        </help>
+    </view>
+
+    <!-- ── Menu / Settings Drawer ─────────────────────────────────── -->
+    <!-- Overrides ES's built-in light-grey menu with TubeLite colors.
+         Without this section the "Start → Settings" drawer uses the
+         system default palette which clashes with the dark theme. -->
+    <view name="menu">
+        <menuBackground name="menubg">
+            <color>0C0D12FF</color>
+            <cornerSize>0 0</cornerSize>
+        </menuBackground>
+
+        <menuText name="menutitle">
+            <fontSize>0.042</fontSize>
+            <color>F0F2F5FF</color>
+        </menuText>
+
+        <menuText name="menutext">
+            <fontSize>0.035</fontSize>
+            <color>A5ACBAFF</color>
+            <separatorColor>20242CFF</separatorColor>
+            <selectorColor>FF303066</selectorColor>
+            <selectedColor>FFFFFFFF</selectedColor>
+        </menuText>
+
+        <menuTextSmall name="menutextsmall">
+            <fontSize>0.030</fontSize>
+            <color>8C909EFF</color>
+        </menuTextSmall>
+
+        <menuText name="menufooter">
+            <fontSize>0.028</fontSize>
+            <color>787E8CFF</color>
+        </menuText>
+
+        <menuGroup name="menugroup">
+            <separatorColor>20242CFF</separatorColor>
+            <backgroundColor>181C22FF</backgroundColor>
+        </menuGroup>
+    </view>
+
+</theme>

@@ -1,0 +1,30 @@
+TubeLite YouTube Client (v1.6.1 - 2026-06-26)
+
+Major Features & Improvements:
+- Native audio and video playback using hardware acceleration (rk3326-optimized GLESv2/EGL/MPV layers).
+- Background audio player daemon supporting controller-based controls (Play/Pause, Next/Prev, Speed, Exit).
+- Seamless continuation of playback as a background audio daemon when exiting the main app.
+- Background playback speed control (FN+SELECT) and screen-sleep power saving (X / FN+X).
+- ALSA dmix audio mixing so TubeLite, MPV and RetroArch share the audio device.
+- Unified installer and controller-friendly setup menu.
+
+Fixes in this build:
+- Self-Preserving OTA Updater: Added a robust staged self-updating system (Update-TubeLite.sh/Update-TubeLite.tbl) that parses GitHub release API and prompts on reinstallation.
+- Input & Controller Modifier Separation: Split joystick Select (button 12) and Fn (button 16) modifier paths to prevent accidental miniplayer toggling during button chords.
+- Settings Overlay Chord Hint: Swapped search/home hints from SEL+Y to FN+Y (purple).
+- Storyboard Scaling & Masking: Aligned scrub storyboard preview card with the miniplayer aspect-ratio letterboxing, and implemented a cached mask texture to ensure clean rounded corners without subpixel leaks or 1px gaps.
+- Search Bar Text Centering: Increased search bar text entry height to 24px and dynamically centered text based on real font height.
+- dArkOS, dArkOSRE & OS Distribution Compatibility: Rewrites EOL Ubuntu apt source lists to use old-releases.ubuntu.com and adds a header auto-repair system to restore stripped build headers for native compiling on darkOS and darkOSRE.
+- Keyboard Status Overlay Hints: Added missing L1 (MODE) and X (DELETE) status hints.
+- Chipped Rounded Corners: Fixed rendering artifact where rounded-rect corners appeared chipped.
+
+Contents:
+- Install-TubeLite.sh
+- TubeLite.tbl
+- bin/tubelite.arm64 (Updated Binary)
+- src/ (Source for on-device rebuilds)
+
+Installation:
+1. Copy TubeLite folder to EASYROMS/tools/
+2. Run Install-TubeLite.sh from the terminal (or ES Tools menu) and follow the prompts.
+3. Reboot.

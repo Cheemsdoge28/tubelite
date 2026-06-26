@@ -155,6 +155,7 @@ fi
 
 REMOTE_VERSION=""
 REMOTE_TAG=""
+REMOTE_COMMIT=""
 
 if [ -n "$MANIFEST_URL" ]; then
     log_info "Fetching version manifest..."
@@ -175,14 +176,15 @@ import json, sys
 try:
     with open(sys.argv[1]) as f:
         d = json.load(f)
-        print(f"{d.get(\"version\",\"\")}|{d.get(\"tag\",\"\")}")
+        print(f"{d.get(\"version\",\"\")}|{d.get(\"tag\",\"\")}|{d.get(\"commit\",\"\")}")
 except Exception:
     pass
 ' "$MANIFEST_PATH" 2>/dev/null || true)
         
         if [ -n "$PARSED" ] && [[ "$PARSED" == *"|"* ]]; then
-            REMOTE_VERSION="${PARSED%%|*}"
-            REMOTE_TAG="${PARSED#*|}"
+            REMOTE_VERSION=$(echo "$PARSED" | cut -d'|' -f1)
+            REMOTE_TAG=$(echo "$PARSED" | cut -d'|' -f2)
+            REMOTE_COMMIT=$(echo "$PARSED" | cut -d'|' -f3)
         fi
     fi
     rm -f "$MANIFEST_PATH"
@@ -197,6 +199,19 @@ else
 fi
 
 NORM_REMOTE=$(normalize_version "$REMOTE_VERSION")
+
+# Read local commit hash if version.json exists locally
+LOCAL_COMMIT=""
+if [ -f "$TARGET_DIR/version.json" ]; then
+    LOCAL_COMMIT=$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("commit", ""))
+except Exception:
+    pass
+' "$TARGET_DIR/version.json" 2>/dev/null || true)
+fi
 
 # Perform comparison
 COMP_RESULT=0
@@ -214,33 +229,166 @@ else
     fi
 fi
 
-PROMPT_PROCEED=0
+VERSION_TYPE=""
 if [ "$COMP_RESULT" -eq 2 ]; then
-    log_info "New version available (Local: $LOCAL_VERSION, Remote: $REMOTE_VERSION)"
-    echo -n -e "${CYAN}${BOLD}Would you like to upgrade to $REMOTE_VERSION? (Y/n): ${NC}"
-    read -r -n 1 -t 30 ANSWER || ANSWER="y"
-    echo ""
-    if [ -z "$ANSWER" ] || [[ "$ANSWER" =~ ^[yY\ ]$ ]]; then
+    VERSION_TYPE="upgrade"
+elif [ "$COMP_RESULT" -eq 1 ]; then
+    VERSION_TYPE="downgrade"
+else
+    VERSION_TYPE="reinstall"
+fi
+
+# Run python inline controller menu
+CHOICE=$(python3 - "$VERSION_TYPE" "$LOCAL_VERSION" "$REMOTE_VERSION" <<'EOF'
+import struct, os, sys, time, select
+
+def main():
+    action_type = sys.argv[1]
+    local_ver = sys.argv[2]
+    remote_ver = sys.argv[3]
+    
+    if action_type == "upgrade":
+        title = "New version available!"
+        desc = f"Local: {local_ver} -> Remote: {remote_ver}"
+        options = [
+            "Upgrade to remote version (Recommended)",
+            "Back to EmulationStation / Exit"
+        ]
+        selected = 0
+    elif action_type == "downgrade":
+        title = "Local version is newer than remote!"
+        desc = f"Local: {local_ver} -> Remote: {remote_ver}"
+        options = [
+            "Back to EmulationStation / Exit (Recommended)",
+            "Downgrade to remote version"
+        ]
+        selected = 0
+    else: # reinstall
+        title = "Current version is already up to date."
+        desc = f"Version: {local_ver}"
+        options = [
+            "Back to EmulationStation / Exit (Recommended)",
+            "Reinstall version"
+        ]
+        selected = 0
+
+    js = None
+    try:
+        js_fd = os.open('/dev/input/js0', os.O_RDONLY | os.O_NONBLOCK)
+        js = os.fdopen(js_fd, 'rb')
+    except Exception:
+        pass
+
+    old_settings = None
+    fd_stdin = sys.stdin.fileno()
+    try:
+        import tty, termios
+        if os.isatty(fd_stdin):
+            old_settings = termios.tcgetattr(fd_stdin)
+            tty.setraw(fd_stdin)
+    except Exception:
+        pass
+
+    def print_menu():
+        sys.stderr.write("\033[H\033[J")
+        sys.stderr.write(f"\033[1;36m=== {title} ===\033[0m\n")
+        sys.stderr.write(f"{desc}\n\n")
+        sys.stderr.write("Use DPAD or Arrow Keys to move, A or Enter to select.\n\n")
+        for i, opt in enumerate(options):
+            if i == selected:
+                sys.stderr.write(f" \033[1;32m-> [{opt}]\033[0m\n")
+            else:
+                sys.stderr.write(f"    {opt}\n")
+        sys.stderr.flush()
+
+    try:
+        print_menu()
+        while True:
+            inputs = []
+            if js:
+                inputs.append(js)
+            inputs.append(sys.stdin)
+            
+            r, _, _ = select.select(inputs, [], [], 0.1)
+            
+            if js in r:
+                data = js.read(8)
+                if data and len(data) == 8:
+                    t, val, type_evt, num = struct.unpack('IhBB', data)
+                    if type_evt == 1 and val == 1: # Button Down
+                        if num == 1: # A button
+                            return selected
+                        if num == 0: # B button
+                            return 1 if action_type == "upgrade" else 0
+                        if num == 8: # UP
+                            selected = (selected - 1) % len(options)
+                            print_menu()
+                        if num == 9: # DOWN
+                            selected = (selected + 1) % len(options)
+                            print_menu()
+            
+            if sys.stdin in r:
+                if old_settings:
+                    char = sys.stdin.read(1)
+                    if char == '\x1b':
+                        r_seq, _, _ = select.select([sys.stdin], [], [], 0.05)
+                        if r_seq:
+                            seq2 = sys.stdin.read(1)
+                            if seq2 == '[':
+                                seq3 = sys.stdin.read(1)
+                                if seq3 == 'A':
+                                    selected = (selected - 1) % len(options)
+                                    print_menu()
+                                elif seq3 == 'B':
+                                    selected = (selected + 1) % len(options)
+                                    print_menu()
+                    elif char in ('\r', '\n'):
+                        return selected
+                    elif char.isdigit():
+                        val = int(char)
+                        if 1 <= val <= len(options):
+                            return val - 1
+                    elif char in ('q', 'Q'):
+                        return 1 if action_type == "upgrade" else 0
+                else:
+                    line = sys.stdin.readline().strip()
+                    if line.isdigit():
+                        val = int(line)
+                        if 1 <= val <= len(options):
+                            return val - 1
+                    elif line in ('y', 'Y'):
+                        return 0 if action_type == "upgrade" else 1
+                    else:
+                        return 1 if action_type == "upgrade" else 0
+            time.sleep(0.01)
+    finally:
+        if old_settings:
+            termios.tcsetattr(fd_stdin, termios.TCSADRAIN, old_settings)
+
+if __name__ == '__main__':
+    print(main())
+EOF
+)
+
+if [ -z "$CHOICE" ]; then
+    if [ "$VERSION_TYPE" = "upgrade" ]; then CHOICE="1"; else CHOICE="0"; fi
+fi
+
+PROMPT_PROCEED=0
+if [ "$VERSION_TYPE" = "upgrade" ]; then
+    if [ "$CHOICE" -eq 0 ]; then
         PROMPT_PROCEED=1
     else
         log_step "Upgrade cancelled. Backing out of updater..."
     fi
-elif [ "$COMP_RESULT" -eq 1 ]; then
-    log_warn "Local version ($LOCAL_VERSION) is newer than the remote version ($REMOTE_VERSION)."
-    echo -n -e "${YELLOW}${BOLD}Would you like to downgrade to $REMOTE_VERSION? (y/N): ${NC}"
-    read -r -n 1 -t 30 ANSWER || ANSWER="n"
-    echo ""
-    if [[ "$ANSWER" =~ ^[yY]$ ]]; then
+elif [ "$VERSION_TYPE" = "downgrade" ]; then
+    if [ "$CHOICE" -eq 1 ]; then
         PROMPT_PROCEED=1
     else
         log_step "Downgrade cancelled. Backing out of updater..."
     fi
 else
-    log_warn "Current version ($LOCAL_VERSION) is already up to date with the latest release ($REMOTE_VERSION)."
-    echo -n -e "${YELLOW}${BOLD}Would you like to reinstall anyway? (y/N): ${NC}"
-    read -r -n 1 -t 30 ANSWER || ANSWER="n"
-    echo ""
-    if [[ "$ANSWER" =~ ^[yY]$ ]]; then
+    if [ "$CHOICE" -eq 1 ]; then
         PROMPT_PROCEED=1
     else
         log_step "Reinstallation cancelled. Backing out of updater..."
@@ -255,59 +403,132 @@ fi
 
 log_info "Proceeding with update/reinstallation..."
 
-log_step "Downloading update package..."
-ZIP_PATH="/tmp/TubeLite_latest.zip"
-rm -f "$ZIP_PATH"
-
-if command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress --timeout=20 "$DOWNLOAD_URL" -O "$ZIP_PATH" || \
-    curl -fsL --connect-timeout 20 "$DOWNLOAD_URL" -o "$ZIP_PATH"
-else
-    curl -fsL --connect-timeout 20 "$DOWNLOAD_URL" -o "$ZIP_PATH"
+USE_DELTA=0
+if [ "$COMP_RESULT" -ne 0 ] && [ -n "$LOCAL_COMMIT" ] && [ -n "$REMOTE_COMMIT" ]; then
+    # We do delta updates for upgrades/downgrades but not for reinstalls (force reinstall to do full recovery)
+    USE_DELTA=1
 fi
 
-if [ ! -f "$ZIP_PATH" ] || [ ! -s "$ZIP_PATH" ]; then
-    log_err "Download failed or package file is empty."
-    exit 1
-fi
-log_ok "Download complete."
+ZIP_PATH=""
+EXTRACT_DIR=""
+CHANGED_FILES=""
+DELETED_FILES=""
 
-log_step "Validating update package..."
-if ! python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).testzip()" "$ZIP_PATH" 2>/dev/null; then
-    log_err "Downloaded zip file is corrupt or invalid."
-    exit 1
-fi
-log_ok "Package validation passed."
+if [ "$USE_DELTA" -eq 1 ]; then
+    log_step "Computing delta update from commit $LOCAL_COMMIT to $REMOTE_COMMIT..."
+    
+    COMPARISON_OUTPUT=$(python3 - <<'EOF'
+import urllib.request
+import json
+import sys
 
-log_step "Extracting update package..."
-EXTRACT_DIR="/tmp/tubelite_extracted"
-rm -rf "$EXTRACT_DIR"
-mkdir -p "$EXTRACT_DIR"
+try:
+    local_commit = sys.argv[1]
+    remote_commit = sys.argv[2]
+    url = f"https://api.github.com/repos/Cheemsdoge28/r36tube/compare/{local_commit}...{remote_commit}"
+    req = urllib.request.Request(url, headers={'User-Agent': 'TubeLite-Updater'})
+    with urllib.request.urlopen(req) as resp:
+        data = json.load(resp)
+        files = data.get("files", [])
+        prefix_release = "dist/release/TubeLite/"
+        prefix_releases = "dist/releases/TubeLite/"
+        changed = []
+        deleted = []
+        for f in files:
+            fname = f.get("filename", "")
+            status = f.get("status", "")
+            ref_prefix = None
+            if fname.startswith(prefix_release):
+                ref_prefix = prefix_release
+            elif fname.startswith(prefix_releases):
+                ref_prefix = prefix_releases
+                
+            if ref_prefix:
+                rel_path = fname[len(ref_prefix):]
+                if status in ("modified", "added"):
+                    changed.append(f"{rel_path}:{fname}")
+                elif status == "removed":
+                    deleted.append(rel_path)
+        print(",".join(changed))
+        print(",".join(deleted))
+except Exception as e:
+    sys.stderr.write(f"Compare error: {e}\n")
+    sys.exit(1)
+EOF
+"$LOCAL_COMMIT" "$REMOTE_COMMIT" 2>/dev/null || echo "")
 
-if command -v unzip >/dev/null 2>&1; then
-    unzip -o -q "$ZIP_PATH" -d "$EXTRACT_DIR" || true
-else
-    python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$ZIP_PATH" "$EXTRACT_DIR"
-fi
-
-# Detect staging layout (whether zip has nested TubeLite folder or files at root)
-SRC_DIR=""
-if [ -d "$EXTRACT_DIR/TubeLite" ] && [ -f "$EXTRACT_DIR/TubeLite/Install-TubeLite.sh" ]; then
-    SRC_DIR="$EXTRACT_DIR/TubeLite"
-else
-    # Find directory containing Install-TubeLite.sh
-    FOUND_DIR=$(find "$EXTRACT_DIR" -type f -name "Install-TubeLite.sh" -print -quit | xargs dirname 2>/dev/null || true)
-    if [ -n "$FOUND_DIR" ] && [ -d "$FOUND_DIR" ]; then
-        SRC_DIR="$FOUND_DIR"
+    if [ -n "$COMPARISON_OUTPUT" ]; then
+        CHANGED_FILES=$(echo "$COMPARISON_OUTPUT" | head -n 1)
+        DELETED_FILES=$(echo "$COMPARISON_OUTPUT" | tail -n +2 | head -n 1)
+        
+        log_info "Delta check complete."
+        IFS=',' read -ra ADDR <<< "$CHANGED_FILES"
+        CHANGED_COUNT=0
+        for item in "${ADDR[@]}"; do
+            if [ -n "$item" ]; then
+                CHANGED_COUNT=$((CHANGED_COUNT + 1))
+            fi
+        done
+        log_ok "$CHANGED_COUNT file(s) changed/added."
+    else
+        log_warn "Failed to compare commits. Falling back to full package update."
+        USE_DELTA=0
     fi
 fi
 
-if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR" ]; then
-    log_err "Invalid package structure: Install-TubeLite.sh not found."
+if [ "$USE_DELTA" -eq 0 ]; then
+    log_step "Downloading update package..."
+    ZIP_PATH="/tmp/TubeLite_latest.zip"
+    rm -f "$ZIP_PATH"
+    
+    if command -v wget >/dev/null 2>&1; then
+        wget -q --show-progress --timeout=20 "$DOWNLOAD_URL" -O "$ZIP_PATH" || \
+        curl -fsL --connect-timeout 20 "$DOWNLOAD_URL" -o "$ZIP_PATH"
+    else
+        curl -fsL --connect-timeout 20 "$DOWNLOAD_URL" -o "$ZIP_PATH"
+    fi
+    
+    if [ ! -f "$ZIP_PATH" ] || [ ! -s "$ZIP_PATH" ]; then
+        log_err "Download failed or package file is empty."
+        exit 1
+    fi
+    log_ok "Download complete."
+    
+    log_step "Validating update package..."
+    if ! python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).testzip()" "$ZIP_PATH" 2>/dev/null; then
+        log_err "Downloaded zip file is corrupt or invalid."
+        exit 1
+    fi
+    log_ok "Package validation passed."
+    
+    log_step "Extracting update package..."
+    EXTRACT_DIR="/tmp/tubelite_extracted"
     rm -rf "$EXTRACT_DIR"
-    exit 1
+    mkdir -p "$EXTRACT_DIR"
+    
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -o -q "$ZIP_PATH" -d "$EXTRACT_DIR" || true
+    else
+        python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$ZIP_PATH" "$EXTRACT_DIR"
+    fi
+    
+    SRC_DIR=""
+    if [ -d "$EXTRACT_DIR/TubeLite" ] && [ -f "$EXTRACT_DIR/TubeLite/Install-TubeLite.sh" ]; then
+        SRC_DIR="$EXTRACT_DIR/TubeLite"
+    else
+        FOUND_DIR=$(find "$EXTRACT_DIR" -type f -name "Install-TubeLite.sh" -print -quit | xargs dirname 2>/dev/null || true)
+        if [ -n "$FOUND_DIR" ] && [ -d "$FOUND_DIR" ]; then
+            SRC_DIR="$FOUND_DIR"
+        fi
+    fi
+    
+    if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR" ]; then
+        log_err "Invalid package structure: Install-TubeLite.sh not found."
+        rm -rf "$EXTRACT_DIR"
+        exit 1
+    fi
+    log_ok "Layout verified: $SRC_DIR"
 fi
-log_ok "Layout verified: $SRC_DIR"
 
 log_step "Preserving user configurations..."
 PRESERVE_DIR="/tmp/tubelite_preserve"
@@ -344,17 +565,77 @@ log_step "Applying update..."
 BACKUP_DIR="${TARGET_DIR}.old"
 rm -rf "$BACKUP_DIR"
 
-# Move old folder aside as backup
-mv "$TARGET_DIR" "$BACKUP_DIR"
-
-# Copy new folder into place
-if cp -r "$SRC_DIR" "$TARGET_DIR"; then
-    log_ok "Files replaced successfully."
+if [ "$USE_DELTA" -eq 1 ]; then
+    log_info "Backing up current installation..."
+    cp -r "$TARGET_DIR" "$BACKUP_DIR"
+    
+    log_info "Downloading changed files..."
+    set +e
+    IFS=',' read -ra ADDR <<< "$CHANGED_FILES"
+    DOWNLOAD_FAILED=0
+    for item in "${ADDR[@]}"; do
+        if [ -n "$item" ]; then
+            rel_path="${item%%:*}"
+            repo_path="${item#*:}"
+            log_info "  Updating $rel_path"
+            
+            target_file="$TARGET_DIR/$rel_path"
+            mkdir -p "$(dirname "$target_file")"
+            
+            raw_url="https://raw.githubusercontent.com/Cheemsdoge28/r36tube/${REMOTE_COMMIT}/${repo_path}"
+            
+            FETCHED=0
+            if command -v wget >/dev/null 2>&1; then
+                wget -q --timeout=15 "$raw_url" -O "$target_file" && FETCHED=1 || true
+            fi
+            if [ "$FETCHED" -eq 0 ]; then
+                curl -fsL --connect-timeout 15 "$raw_url" -o "$target_file" && FETCHED=1 || true
+            fi
+            
+            if [ "$FETCHED" -eq 0 ] || [ ! -f "$target_file" ]; then
+                log_err "Failed to download $rel_path"
+                DOWNLOAD_FAILED=1
+                break
+            fi
+            
+            if [[ "$rel_path" == *.sh ]] || [[ "$rel_path" == *.tbl ]] || [[ "$rel_path" == build/* ]] || [[ "$rel_path" == bin/* ]]; then
+                chmod +x "$target_file"
+            fi
+        fi
+    done
+    
+    if [ "$DOWNLOAD_FAILED" -eq 0 ]; then
+        log_info "Removing obsolete files..."
+        IFS=',' read -ra DEL_ADDR <<< "$DELETED_FILES"
+        for file in "${DEL_ADDR[@]}"; do
+            if [ -n "$file" ]; then
+                target_file="$TARGET_DIR/$file"
+                if [ -f "$target_file" ]; then
+                    log_info "  Deleting $file"
+                    rm -f "$target_file"
+                fi
+            fi
+        done
+        log_ok "Delta update applied successfully."
+        set -e
+    else
+        log_err "Delta update failed during download. Rolling back..."
+        rm -rf "$TARGET_DIR"
+        mv "$BACKUP_DIR" "$TARGET_DIR"
+        set -e
+        exit 1
+    fi
 else
-    log_err "Failed to replace files. Rolling back..."
-    rm -rf "$TARGET_DIR"
-    mv "$BACKUP_DIR" "$TARGET_DIR"
-    exit 1
+    # Move old folder aside as backup
+    mv "$TARGET_DIR" "$BACKUP_DIR"
+    if cp -r "$SRC_DIR" "$TARGET_DIR"; then
+        log_ok "Files replaced successfully."
+    else
+        log_err "Failed to replace files. Rolling back..."
+        rm -rf "$TARGET_DIR"
+        mv "$BACKUP_DIR" "$TARGET_DIR"
+        exit 1
+    fi
 fi
 
 log_step "Restoring preserved configurations..."
@@ -377,9 +658,11 @@ fi
 
 # Cleanup
 rm -rf "$BACKUP_DIR"
-rm -rf "$EXTRACT_DIR"
+if [ "$USE_DELTA" -eq 0 ]; then
+    rm -rf "$EXTRACT_DIR"
+    rm -f "$ZIP_PATH"
+fi
 rm -rf "$PRESERVE_DIR"
-rm -f "$ZIP_PATH"
 
 echo -e "\n${GREEN}${BOLD}Update Finished successfully!${NC}"
 echo "Restart EmulationStation to apply any launcher changes."

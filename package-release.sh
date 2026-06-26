@@ -112,10 +112,12 @@ fi
 
 # Write version file and generate version.json manifest
 echo "Generating version manifest..."
+COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
 cat > "$RELEASE_ROOT/version.json" <<EOF
 {
   "version": "${RELEASE_VERSION}",
   "tag": "${RELEASE_TAG}",
+  "commit": "${COMMIT_HASH}",
   "date": "$(date +%Y-%m-%d)"
 }
 EOF
@@ -165,41 +167,7 @@ python3 -c "import shutil, os; \
 archive_base = os.path.join(r'$RELEASE_ROOT_PY', 'TubeLite-$(date +%G%m%d)'); \
 shutil.make_archive(archive_base, 'zip', r'$RELEASE_ROOT_PY', 'TubeLite')"
 
-# ── Compatibility pack (optional, separate artifact) ────────────────────────
-# The harvested portable libmpv + codec chain is shipped as its OWN zip beside
-# the main release — NOT bundled into TubeLite-*.zip (it's ~65 MB and only
-# needed on stripped images that lack libmpv).  The installer's --compat wizard
-# extracts it into vendor/lib on demand.  Rebuild from a local libs source if
-# one is present (vendor/lib or vendor-lib, both gitignored); otherwise keep an
-# existing pack in place.
-COMPAT_ZIP="$RELEASE_ROOT/tubelite-compat-libs.zip"
-COMPAT_SRC=""
-for d in "$SCRIPT_DIR/vendor/lib" "$SCRIPT_DIR/vendor-lib"; do
-    if [ -d "$d" ] && ls "$d"/*.so* >/dev/null 2>&1; then COMPAT_SRC="$d"; break; fi
-done
-if [ -n "$COMPAT_SRC" ]; then
-    echo "Building compat pack from $COMPAT_SRC ..."
-    COMPAT_SRC_PY="$COMPAT_SRC"; COMPAT_ZIP_PY="$COMPAT_ZIP"
-    if command -v cygpath >/dev/null 2>&1; then
-        COMPAT_SRC_PY="$(cygpath -w "$COMPAT_SRC")"
-        COMPAT_ZIP_PY="$(cygpath -w "$COMPAT_ZIP")"
-    fi
-    python3 -c "import zipfile, os, sys; \
-src, out = sys.argv[1], sys.argv[2]; \
-z = zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6); \
-[z.write(os.path.join(src, f), arcname=f) for f in sorted(os.listdir(src)) if os.path.isfile(os.path.join(src, f))]; \
-z.close()" "$COMPAT_SRC_PY" "$COMPAT_ZIP_PY"
-    echo "Compat pack created at: $COMPAT_ZIP"
-elif [ -f "$COMPAT_ZIP" ]; then
-    echo "Compat pack kept (no libs source found to rebuild): $COMPAT_ZIP"
-else
-    echo "NOTE: no compat pack ($COMPAT_ZIP). Harvest libs into vendor/lib to build one."
-fi
-
 echo "Release staged at: $APP_DIR"
 echo "Archive created at: $RELEASE_ROOT/TubeLite-$(date +%G%m%d).zip"
 echo "Version manifest:  $RELEASE_ROOT/version.json"
 echo "Binary used: $BINARY_PATH"
-if [ -f "$COMPAT_ZIP" ]; then
-    echo "Compat pack:      $COMPAT_ZIP (ship as a separate optional download)"
-fi
