@@ -20,13 +20,13 @@ Unlike web-based wrappers, **TubeLite** is written natively in C++ using SDL2, O
 ---
 
 ## 📱 Supported Devices
-TubeLite is optimized specifically for **RK3326** based handhelds running **ArkOS**:
+TubeLite is optimized specifically for **RK3326** based handhelds running **ArkOS**, **darkOS**, or **darkOSRE**:
 - **R36S** (Highly Recommended)
 - **RG351MP / RG351P / RG351M**
 - **Powkiddy RGB10 / RGB10S**
 - **RK2020**
 - **Gameforce Chi**
-- Any other RK3326 device on ArkOS or similar OS
+- Any other RK3326 device on ArkOS, darkOS, darkOSRE, or similar OS distributions
 
 ---
 

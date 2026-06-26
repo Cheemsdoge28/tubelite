@@ -122,7 +122,12 @@ Major Features & Improvements:
 - Unified installer and controller-friendly setup menu.
 
 Fixes in this build:
-- dArkOSRE & OS Distribution Compatibility: Rewrites EOL Ubuntu apt source lists to use old-releases.ubuntu.com and adds a header auto-repair system to restore stripped build headers for native compiling.
+- Self-Preserving OTA Updater: Added a robust staged self-updating system (Update-TubeLite.sh/Update-TubeLite.tbl) that parses GitHub release API and prompts on reinstallation.
+- Input & Controller Modifier Separation: Split joystick Select (button 12) and Fn (button 16) modifier paths to prevent accidental miniplayer toggling during button chords.
+- Settings Overlay Chord Hint: Swapped search/home hints from SEL+Y to FN+Y (purple).
+- Storyboard Scaling & Masking: Aligned scrub storyboard preview card with the miniplayer aspect-ratio letterboxing, and implemented a cached mask texture to ensure clean rounded corners without subpixel leaks or 1px gaps.
+- Search Bar Text Centering: Increased search bar text entry height to 24px and dynamically centered text based on real font height.
+- dArkOS, dArkOSRE & OS Distribution Compatibility: Rewrites EOL Ubuntu apt source lists to use old-releases.ubuntu.com and adds a header auto-repair system to restore stripped build headers for native compiling on darkOS and darkOSRE.
 - Keyboard Status Overlay Hints: Added missing L1 (MODE) and X (DELETE) status hints.
 - Chipped Rounded Corners: Fixed rendering artifact where rounded-rect corners appeared chipped.
 

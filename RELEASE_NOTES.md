@@ -1,10 +1,23 @@
 # Release Notes - 2026-06-25 (v1.6.1)
 
-This update introduces EOL apt repository correction, build header restoration for on-device compilation on stripped distributions like dArkOSRE, and minor UI rendering and status hint fixes.
+This update introduces self-preserving OTA updates, dArkOSRE & darkOS distribution compatibility, build header auto-repair, and major joystick input mapping, storyboard scaling, and UI layout fixes.
+
+### Self-Preserving OTA Updater
+- **Staged Self-Updating OTA System**: Added a robust OTA updater script (`Update-TubeLite.sh`) that copies itself to `/tmp/` and executes from there to avoid file-in-use locks. It fetches GitHub Release metadata, compares version strings, and prompts for reinstallation or exits if up-to-date.
+- **Launcher Integration**: Added `Update-TubeLite.tbl` launcher mapped as an EmulationStation sub-item, and integrated it into `controller_menu.py` and `Install-TubeLite.sh`.
+
+### Input & Controller Changes
+- **Select / Fn Modifier Separation**: Separated joystick button 12 (Select) and button 16 (Fn). Holding/tapping Select modifier will no longer conflict with chord modifiers, eliminating accidental miniplayer toggling.
+- **Settings Chord Hint**: Swapped the search/home status overlay hint label from `SEL+Y` to `FN+Y` (purple) to match the in-player chord key convention.
+
+### Storyboard & UI Layout Fixes
+- **Aspect-Fit Storyboard Scaling**: Storyboard scrub previews now use the exact container display aspect-fitting/letterboxing logic as the miniplayer, preventing squishing on non-16:9 videos.
+- **Perfect Corner Masking**: Replaced the legacy `maskRoundedCorners` call for storyboards with a pre-rendered, cached `160x90` mask texture (`storyboard_mask_texture_`). This eliminates subpixel alignment gaps, rendering artifacts, or 1px borders leaking around the corners of the preview card.
+- **Search Bar Text Alignment**: Increased the search bar text entry field height from `20px` to `24px` to provide breathing room and prevent descenders from being cut off. The text is now dynamically vertically centered using standard font line-height measurements.
 
 ### Installation & Compatibility
-- **dArkOSRE & OS Distribution Compatibility**: Added automatic EOL Ubuntu mirror rewriting to use `old-releases.ubuntu.com` in `Install-TubeLite.sh`.
-- **On-Device Header Auto-Repair**: Implemented a robust build header checking and reinstallation system (`fix_dev_headers()`) that restores stripped development header packages (such as SDL2, Mesa, and libmpv) to enable native compilation (`make native`) on compact OS distributions.
+- **dArkOS, dArkOSRE & OS Distribution Compatibility**: Added automatic EOL Ubuntu mirror rewriting to use `old-releases.ubuntu.com` in `Install-TubeLite.sh` to fully support darkOS and darkOSRE.
+- **On-Device Header Auto-Repair**: Implemented a robust build header checking and reinstallation system (`fix_dev_headers()`) that restores stripped development header packages (such as SDL2, Mesa, and libmpv) to enable native compilation (`make native`) on compact OS distributions like darkOS/darkOSRE.
 - **libmpv Compatibility Fallback**: Enhanced the installer's `--compat` wizard to fix missing libmpv via apt first, then utilize a bundled fallback pack with graceful handling.
 
 ### UI & UX Fixes
