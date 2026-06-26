@@ -496,6 +496,11 @@ void Compositor::drawCardMenu(App* app, int width, int height) {
     SDL_Rect hr{cx + 14, cy + headH - 8, cw - 28, 1};
     SDL_RenderFillRect(renderer_, &hr);
 
+    // Vertical centering must use the real font line height (ascender+descender
+    // from FreeType metrics), not a guessed constant — the highlight ring is
+    // sized off rowH, so a wrong text height visibly offsets the label inside it.
+    int fontHeight = 14;
+    getTextSize("Ay", 1, nullptr, &fontHeight);
     for (int i = 0; i < nItems; ++i) {
         const int ry = cy + headH + i * rowH;
         const bool sel = (app->state_.cardMenuIndex == i);
@@ -504,7 +509,7 @@ void Compositor::drawCardMenu(App* app, int width, int height) {
             fillRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(45));
             drawRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(160));
         }
-        drawText(renderer_, padL, ry + (rowH - 8) / 2, items[i], 1,
+        drawText(renderer_, padL, ry + (rowH - fontHeight) / 2, items[i], 1,
                  sel ? SDL_Color(theme::TEXT) : SDL_Color(theme::TEXT_3));
     }
     drawText(renderer_, padL, cy + ch - footH + 7, "A  Select       B  Close", 1, theme::TEXT_MUTED);

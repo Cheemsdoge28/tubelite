@@ -3078,6 +3078,15 @@ void App::playQueueIndexNow(int idx) {
     // Jumping to an item drops it and everything before it from the queue.
     playQueue_.erase(playQueue_.begin(), playQueue_.begin() + idx + 1);
     prefetched_next_video_id_.clear();
+    // playVideo() short-circuits a request to (re)play the current video while
+    // on the Playback screen — that's the browse "don't re-trigger an
+    // already-playing card" debounce (see the retry-resolve path below for the
+    // same workaround). A queue jump must always hard-restart even if the
+    // picked item happens to share the current video's id (e.g. it was queued
+    // while already playing), otherwise the row silently disappears from the
+    // queue with no playback change — looks exactly like "pressing A does
+    // nothing".
+    current_video_ = YouTubeVideo();
     playVideo(v, !state_.miniplayerActive);
 }
 
