@@ -1,5 +1,3 @@
-# Build artifacts
-dist/**/*.zip
 obj/
 *.o
 *.d
@@ -8,8 +6,9 @@ obj/
 *.exe
 *.arm64
 
-# Allow arm64 binaries under dist/ to be tracked in Git
-!dist/**/*.arm64
+# Fully unignore everything under dist/
+!dist/
+!dist/**
 
 # Logs
 *.log
