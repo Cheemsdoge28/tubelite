@@ -176,7 +176,8 @@ import json, sys
 try:
     with open(sys.argv[1]) as f:
         d = json.load(f)
-        print(f"{d.get(\"version\",\"\")}|{d.get(\"tag\",\"\")}|{d.get(\"commit\",\"\")}")
+        force_inst = "true" if d.get("force_install") in (True, 1, "true", "1") else "false"
+        print(f"{d.get(\"version\",\"\")}|{d.get(\"tag\",\"\")}|{d.get(\"commit\",\"\")}|{force_inst}")
 except Exception:
     pass
 ' "$MANIFEST_PATH" 2>/dev/null || true)
@@ -185,6 +186,7 @@ except Exception:
             REMOTE_VERSION=$(echo "$PARSED" | cut -d'|' -f1)
             REMOTE_TAG=$(echo "$PARSED" | cut -d'|' -f2)
             REMOTE_COMMIT=$(echo "$PARSED" | cut -d'|' -f3)
+            REMOTE_FORCE_INSTALL=$(echo "$PARSED" | cut -d'|' -f4)
         fi
     fi
     rm -f "$MANIFEST_PATH"
@@ -649,11 +651,30 @@ done
 log_ok "Configurations restored."
 
 log_step "Finalizing installation..."
-# Run the installer non-interactively to finish registration, compile if needed, patch RA etc.
-if bash "$TARGET_DIR/Install-TubeLite.sh" --non-interactive; then
-    log_ok "Installation script executed successfully."
+RUN_INSTALLER=0
+
+if [ "$USE_DELTA" -eq 1 ]; then
+    if [[ ",$CHANGED_FILES," == *",Install-TubeLite.sh:"* ]] || [[ "$CHANGED_FILES" == "Install-TubeLite.sh:"* ]]; then
+        log_info "Installer script changed. Will execute unified installer."
+        RUN_INSTALLER=1
+    fi
 else
-    log_warn "Installation script completed with errors."
+    RUN_INSTALLER=1
+fi
+
+if [ "${REMOTE_FORCE_INSTALL:-}" = "true" ]; then
+    log_info "Remote manifest requested forced installation."
+    RUN_INSTALLER=1
+fi
+
+if [ "$RUN_INSTALLER" -eq 1 ]; then
+    if bash "$TARGET_DIR/Install-TubeLite.sh" --non-interactive; then
+        log_ok "Installation script executed successfully."
+    else
+        log_warn "Installation script completed with errors."
+    fi
+else
+    log_info "No installer or dependency changes. Skipping unified installer checks."
 fi
 
 # Cleanup

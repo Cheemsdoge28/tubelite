@@ -118,7 +118,8 @@ cat > "$RELEASE_ROOT/version.json" <<EOF
   "version": "${RELEASE_VERSION}",
   "tag": "${RELEASE_TAG}",
   "commit": "${COMMIT_HASH}",
-  "date": "$(date +%Y-%m-%d)"
+  "date": "$(date +%Y-%m-%d)",
+  "force_install": false
 }
 EOF
 copy_file "$RELEASE_ROOT/version.json" "$APP_DIR/version.json"
