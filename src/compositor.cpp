@@ -1102,6 +1102,10 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     // SDL_RenderCopy every frame thereafter.
     const bool drawerOpen   = app->state_.showDescriptionDrawer;
     const bool playingState = playing;
+    // Holding FN (SELECT) flips the hint bar to its second page (the FN+ chord
+    // controls), which keeps the base page uncluttered.  Rebuild the cached HUD
+    // chrome when the held-state changes.
+    const bool fnHeld       = app->select_held_;
     if (!hud_static_layer_.getTexture() ||
         hud_static_layer_.getWidth()  != width  ||
         hud_static_layer_.getHeight() != height ||
@@ -1111,6 +1115,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         hud_static_speed_badge_       != app->state_.speed ||
         hud_static_views_             != curViews ||
         hud_static_drawer_open_       != drawerOpen ||
+        hud_static_fn_held_           != fnHeld ||
         hud_static_playing_           != playingState) {
         hud_static_dirty_ = true;
     }
@@ -1222,19 +1227,32 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 {"L1/R1", textColor, "SPEED"},
                 {"L2/R2", textColor, "VOL"}
             };
+        } else if (fnHeld) {
+            // FN-held page: exactly what the buttons do WHILE FN is held — the
+            // chord controls.  Keeps FN+A=DESC discoverable.  This is also why
+            // the base page can drop the inline FN+/SEL chips: holding FN simply
+            // reveals them.
+            activeHints = {
+                {"FN+A", purple, "DESC"},
+                {"FN+L/R", purple, "SKIP"},
+                {"FN+Y", purple, "SETTINGS"},
+                {"FN", purple, "MINI"}
+            };
         } else {
+            // Base page: only the direct (no-modifier) actions you can do right
+            // now, plus START=QUEUE.  No inline FN+/SEL chips — hold FN to see
+            // those — so the row is no longer cramped/clipped.
             activeHints = {
                 {"A", red, playingState ? "PAUSE" : "PLAY"},
                 {"B", yellow, "EXIT"},
-                {"FN+A", purple, "DESC"},
-                {"SEL", textColor, "MINI"},
+                {"START", textColor, "QUEUE"},
                 {"Y", green, "SUBS"},
                 {"X", blue, "LIGHT"},
                 {"L1/R1", textColor, "SPEED"},
                 {"L2/R2", textColor, "VOL"}
             };
         }
-        drawHintButtons(renderer_, activeHints, height - 24, 20, 1, width, panel, theme::CHIP.a8(160), textColor);
+        drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(160), textColor);
 
         hud_static_layer_.end(renderer_);
 
@@ -1245,6 +1263,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         hud_static_speed_badge_ = app->state_.speed;
         hud_static_views_       = curViews;
         hud_static_drawer_open_ = drawerOpen;
+        hud_static_fn_held_     = fnHeld;
         hud_static_playing_     = playingState;
     }
 

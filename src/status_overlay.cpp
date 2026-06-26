@@ -93,16 +93,17 @@ void StatusOverlay::render(SDL_Renderer* renderer, const TubeState& state, int w
                     {"A", red, "PLAY"},
                     {"B", yellow, "BACK"},
                     {"Y", green, "SEARCH"},
+                    // START opens the focused card's action menu
+                    // (Play Now / Play Next / Add to Queue).
+                    {"START", textColor, "QUEUE"},
                     // X opens the sign-in help modal directly (was SEL+X).
                     // Chip is always blue per the standard X-button color.
                     {"X", blue, authLabel},
                     {"L1", textColor, state.backgroundDaemonEnabled ? "BG:ON" : "BG:OFF"},
-                    // R3 (right-stick click) refreshes the active feed —
-                    // the binding existed in handleControllerButton but
-                    // wasn't discoverable from the HUD.
-                    {"R3", textColor, "RELOAD"},
                     {"SEL+Y", textColor, "SETTINGS"},
                 };
+                // R3=RELOAD hint dropped to make room for START=QUEUE without
+                // overflowing the 640px bar; the R3 binding still works.
                 (void)authColor;  // kept for future "tint label too" tweak
             }
 

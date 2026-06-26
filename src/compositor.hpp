@@ -74,6 +74,7 @@ private:
     int          hud_static_h_{-1};
     std::string  hud_static_video_id_;
     bool         hud_static_drawer_open_{false};
+    bool         hud_static_fn_held_{false};   // FN(SEL)-held → hint bar shows the chord page
     bool         hud_static_playing_{false};
     double       hud_static_speed_badge_{1.0};  // last baked speed VALUE
     long long    hud_static_views_{-2};
