@@ -1317,12 +1317,14 @@ def _extract_stream(video_id, max_height, preview=False, deadline=None, is_live=
         fmt = "18/best[height<=360][vcodec*=avc1]/best[height<=360]/best"
         extractor_args = "youtube:player_client=android;skip=dash,hls"
 
-    # Pass cookies on stream resolves too when they exist.  Previous comment
-    # claimed cookies caused bot challenges with DASH+android_vr — but the
-    # current path is ios/android (with or without HLS) which doesn't have
-    # that interaction, and forcing cookies-off prevented signed-in users
-    # from accessing age-restricted / region-locked / private content.
-    args = _ytdlp_base_args(use_cookies=True) + [
+    # NO cookies on stream resolves.  Attaching an account (cookies) to the
+    # android client makes YouTube refuse the itag-18 muxed progressive format —
+    # it demands SABR / a GVS PO token instead and the android muxed formats get
+    # skipped, so the resolve returns nothing.  The cookieless android path is
+    # the ONLY one that reliably yields the 360p muxed stream we exclusively use.
+    # (Cookies still apply to feed/auth requests — see use_cookies=_have_cookies()
+    # on the feed path — just never to format resolution.)
+    args = _ytdlp_base_args(use_cookies=False) + [
         "--no-playlist",
         "--skip-download",
         # `--no-call-home` was removed: yt-dlp 2026.x deprecates it (only

@@ -2225,14 +2225,20 @@ void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
     case 9: handleControllerButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN, down); break;
     case 10: handleControllerButton(SDL_CONTROLLER_BUTTON_DPAD_LEFT, down); break;
     case 11: handleControllerButton(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, down); break;
-    case 12: 
+    case 12:
+        if (down) {
+            SDL_Joystick* joy = SDL_JoystickFromInstanceID(instanceId);
+            if (joy && SDL_JoystickGetButton(joy, 12) && SDL_JoystickGetButton(joy, 13)) { state_.running = false; break; }
+        } else {
+            toggleMiniplayer();
+        }
+        break;
     case 13:
         if (down) {
             SDL_Joystick* joy = SDL_JoystickFromInstanceID(instanceId);
             if (joy && SDL_JoystickGetButton(joy, 12) && SDL_JoystickGetButton(joy, 13)) { state_.running = false; break; }
         }
-        if (button == 12) handleControllerButton(SDL_CONTROLLER_BUTTON_BACK, down);
-        else handleControllerButton(SDL_CONTROLLER_BUTTON_START, down);
+        handleControllerButton(SDL_CONTROLLER_BUTTON_START, down);
         break;
     // R36S button indices:
     //   6 = L2, 7 = R2        (triggers exposed as digital buttons)
@@ -2256,15 +2262,13 @@ void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
         handleControllerButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, down);
         break;
     case 16:
-        // SELECT acts as FN.  Mirror the SDL_GameController BACK handler so the
-        // raw-joystick path (the one the real R36S actually uses) gets the same
-        // FN semantics: hold = modifier, tap-with-no-chord = toggle miniplayer.
-        // Without this the "SEL → MINI" hint was a no-op on-device.
+        // FN acts as the modifier chord key.  Hold = modifier/chords.
+        // Unlike the standard controller's BACK button (which conflates Select
+        // and Fn on a single key), the raw joystick path has separate Select
+        // (button 12) and Fn (button 16) keys.
         select_held_ = down;
         if (down) {
             select_action_triggered_ = false;
-        } else if (!select_action_triggered_) {
-            toggleMiniplayer();
         }
         break;
     default: break;

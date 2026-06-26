@@ -31,6 +31,7 @@ constexpr int kDividerGap  = 2 * U;      // 8 px between title and content
 constexpr int kSectionGap  = 3 * U;      // 12 px above each section header
 constexpr int kHeaderH     = 5 * U;      // 20 px — section label row
 constexpr int kRowH        = 7 * U;      // 28 px — comfortable, touch-friendly
+constexpr int kNoteH       = 5 * U;      // 20 px — disclaimer / helper text row
 constexpr int kHintH       = 9 * U;      // 36 px — footer hint bar
 
 // Quality cycle options.
@@ -42,16 +43,22 @@ enum RowKind {
     KIND_TOGGLE,        // ON/OFF pill
     KIND_SLIDER,        // ▰▰▰ N
     KIND_ACTION,        // > confirm action
+    KIND_NOTE,          // non-focusable muted helper / disclaimer text
 };
 
 struct Row {
     RowKind kind;
     const char* label;
+    bool disabled = false;   // greyed-out + non-focusable (e.g. a locked setting)
 };
 
 const Row kRows[] = {
     {KIND_HEADER, "PLAYBACK"},
-    {KIND_CYCLE,  "Max quality"},
+    // Max quality is LOCKED to 360p: tubed resolves the cookieless android
+    // muxed (itag 18) stream exclusively, so higher steps don't actually
+    // change anything.  Shown greyed-out with the note below explaining why.
+    {KIND_CYCLE,  "Max quality", true},
+    {KIND_NOTE,   "Locked to 360p - higher res isn't reliable yet"},
     {KIND_TOGGLE, "Hover previews"},
     {KIND_TOGGLE, "Autoplay next"},
     {KIND_HEADER, "HOME"},
@@ -78,7 +85,8 @@ int qualityStepIndex(int height) {
 }
 
 bool isFocusable(int rowIdx) {
-    return kRows[rowIdx].kind != KIND_HEADER;
+    const Row& r = kRows[rowIdx];
+    return r.kind != KIND_HEADER && r.kind != KIND_NOTE && !r.disabled;
 }
 
 int firstFocusableFrom(int start, int direction) {
@@ -92,6 +100,7 @@ int firstFocusableFrom(int start, int direction) {
 
 // Row layout height (varies by kind).
 int rowHeight(int rowIdx) {
+    if (kRows[rowIdx].kind == KIND_NOTE) return kNoteH;
     if (kRows[rowIdx].kind != KIND_HEADER) return kRowH;
     // First header has no extra gap; subsequent headers get a section gap.
     return kHeaderH + (rowIdx == 0 ? 0 : kSectionGap);
@@ -148,7 +157,12 @@ void drawCycleValue(SDL_Renderer* r, int xRight, int yCenter,
 } // namespace
 
 void SettingsModal::apply(App* app, const Settings& s) {
-    app->state_.maxQualityHeight        = s.maxQualityHeight;
+    (void)s.maxQualityHeight;
+    // Quality is locked to 360p regardless of any persisted value: tubed only
+    // resolves the cookieless android muxed (itag 18) stream, so forcing 360
+    // here keeps the cache key + "Loading 360p" text honest with what actually
+    // plays.  (The settings row is greyed out to match — see render().)
+    app->state_.maxQualityHeight        = 360;
     app->state_.homeFeedKind            = s.homeFeedKind;
     app->state_.volume                  = s.volume;
     app->state_.showDebugOverlay        = s.showDebugOverlay;
@@ -235,7 +249,18 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
             continue;
         }
 
-        const bool focused = (i == cursor);
+        if (row.kind == KIND_NOTE) {
+            // Muted disclaimer / helper line, indented like a value label.
+            int nh = 0;
+            getTextSize(row.label, 1, nullptr, &nh);
+            drawText(renderer, contentLeft + 2 * U, y + (kNoteH - nh) / 2,
+                     row.label, 1, theme::TEXT_MUTED);
+            y += rh;
+            continue;
+        }
+
+        const bool focused  = (i == cursor);
+        const bool disabled = row.disabled;
         const int yCenter = y + kRowH / 2;
 
         // Selection background: NEUTRAL elevated surface so the red accent
@@ -256,7 +281,9 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
         // Label
         int lh = 0;
         getTextSize(row.label, 1, nullptr, &lh);
-        SDL_Color labelCol = focused ? SDL_Color(theme::TEXT) : SDL_Color(theme::TEXT_ON);
+        SDL_Color labelCol = disabled ? SDL_Color(theme::TEXT_MUTED)
+                           : focused   ? SDL_Color(theme::TEXT)
+                                       : SDL_Color(theme::TEXT_ON);
         drawText(renderer, contentLeft + 2 * U, yCenter - lh / 2,
                  row.label, 1, labelCol);
 
@@ -269,7 +296,15 @@ void SettingsModal::render(App* app, SDL_Renderer* renderer, int width, int heig
                 val = (app->state_.homeFeedKind == "subscriptions")
                           ? "Subscriptions" : "Trending";
             }
-            drawCycleValue(renderer, contentRight, yCenter, val, focused);
+            if (disabled) {
+                // Locked: plain muted value, no chevrons (can't be edited).
+                int vw = 0, vh = 0;
+                getTextSize(val, 1, &vw, &vh);
+                drawText(renderer, contentRight - vw - 4, yCenter - vh / 2,
+                         val, 1, theme::TEXT_MUTED);
+            } else {
+                drawCycleValue(renderer, contentRight, yCenter, val, focused);
+            }
         } else if (row.kind == KIND_TOGGLE) {
             bool v = false;
             if      (std::strcmp(row.label, "Hover previews")    == 0) v = app->state_.hoverPreviewsEnabled;
@@ -318,6 +353,7 @@ bool SettingsModal::handleKey(App* app, SDL_Keycode key) {
 
     auto applyStep = [&](int delta) {
         const Row& row = kRows[cursor];
+        if (row.disabled) return;   // locked rows ignore edits
         const char* label = row.label;
         switch (row.kind) {
             case KIND_CYCLE:
