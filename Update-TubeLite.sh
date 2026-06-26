@@ -192,7 +192,7 @@ PRESERVE_ITEMS=(
 PRESERVED_COUNT=0
 for item in "${PRESERVE_ITEMS[@]}"; do
     if [ -e "$TARGET_DIR/$item" ]; then
-        cp -rp "$TARGET_DIR/$item" "$PRESERVE_DIR/"
+        cp -r "$TARGET_DIR/$item" "$PRESERVE_DIR/"
         log_info "Preserved $item"
         PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
     fi
@@ -217,7 +217,7 @@ rm -rf "$BACKUP_DIR"
 mv "$TARGET_DIR" "$BACKUP_DIR"
 
 # Copy new folder into place
-if cp -rp "$SRC_DIR" "$TARGET_DIR"; then
+if cp -r "$SRC_DIR" "$TARGET_DIR"; then
     log_ok "Files replaced successfully."
 else
     log_err "Failed to replace files. Rolling back..."
@@ -230,7 +230,7 @@ log_step "Restoring preserved configurations..."
 for item in "${PRESERVE_ITEMS[@]}"; do
     if [ -e "$PRESERVE_DIR/$item" ]; then
         rm -rf "$TARGET_DIR/$item"
-        cp -rp "$PRESERVE_DIR/$item" "$TARGET_DIR/"
+        cp -r "$PRESERVE_DIR/$item" "$TARGET_DIR/"
         log_info "Restored $item"
     fi
 done
