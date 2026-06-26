@@ -1059,7 +1059,7 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
                 const int bx = 20;
                 const int by = titleY + titleH + 6;
                 const int bw = width - bx - 12;
-                const int bh = 20;
+                const int bh = 24;
 
                 SDL_Rect bar{bx, by, bw, bh};
                 fillRoundedRect(renderer_, bar, theme::RADIUS_PANEL, theme::PANEL.a8(alpha));
@@ -1071,7 +1071,11 @@ void Compositor::renderBrowseHeader(App* app, int width, int /*height*/, const s
                 SDL_Color qCol = app->current_search_query_.empty()
                                  ? SDL_Color(theme::TEXT_MUTED.a8(alpha))
                                  : SDL_Color(theme::TEXT.a8(alpha));
-                drawText(renderer_, bx + 8, by + 3, q, 1, qCol);
+
+                int fontHeight = 14;
+                getTextSize("Ay", 1, nullptr, &fontHeight);
+                int textY = by + (bh - fontHeight) / 2;
+                drawText(renderer_, bx + 8, textY, q, 1, qCol);
             }
         }
 
