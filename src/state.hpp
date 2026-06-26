@@ -30,6 +30,10 @@ struct TubeState {
     bool showSignInHelp{false};      // modal: how to sign in via cookies.txt
     bool showSettingsModal{false};   // modal: Settings (quality, home feed, etc.)
     int  settingsModalIndex{0};      // selected row inside the settings modal
+    bool showQueuePanel{false};      // player: explicit up-next queue (START)
+    int  queueSelectedIndex{0};      // selected row inside the queue panel
+    bool showCardMenu{false};        // browse: Play Next / Add to Queue for focused card (START)
+    int  cardMenuIndex{0};           // selected row inside the card action menu
     bool authed{false};              // mirror of YouTubeAPI::isAuthed() (cookies present)
     bool authChecked{false};         // has tubed been queried at least once
     bool backgroundDaemonEnabled{true};

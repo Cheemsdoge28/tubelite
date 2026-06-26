@@ -15,6 +15,10 @@ private:
     void renderPlaybackOverlay(App* app, int width, int height);
     void drawDebugOverlay(App* app, int width, int height);
     void drawSignInHelp(App* app, int width, int height);
+    // Browse: action menu for the focused card (Play Now / Play Next / Add to Queue).
+    void drawCardMenu(App* app, int width, int height);
+    // Player: explicit up-next queue list with reorder/remove/play-now.
+    void drawQueuePanel(App* app, int width, int height);
     // Topmost screen-off confirmation prompt (drawn above the player HUD).
     void drawScreenOffPrompt(App* app, int width, int height);
     // Short fade-from-black drawn over a freshly-appeared video surface.
@@ -47,7 +51,8 @@ private:
     // previously issued every frame.
     std::string  hud_cache_id_;
     int          hud_cache_width_{-1};
-    bool         hud_cache_speed_{false};    // speed-badge visible last frame
+    double       hud_cache_speed_{1.0};      // last speed VALUE (not just "visible") —
+                                             // keying on a bool missed 1.25→1.5 changes
     long long    hud_cache_views_{-2};       // sentinel: -2 = never populated
     std::string  hud_title_;                 // pre-truncated title
     std::string  hud_author_;                // pre-truncated author
@@ -70,6 +75,6 @@ private:
     std::string  hud_static_video_id_;
     bool         hud_static_drawer_open_{false};
     bool         hud_static_playing_{false};
-    bool         hud_static_speed_badge_{false};
+    double       hud_static_speed_badge_{1.0};  // last baked speed VALUE
     long long    hud_static_views_{-2};
 };

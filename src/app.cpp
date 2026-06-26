@@ -1248,6 +1248,17 @@ void App::playVideo(const YouTubeVideo& video, bool forceFullscreen) {
     // the grid doesn't re-decode every thumbnail.
 
     current_video_ = video;
+    // Layered-queue anchor: if this video exists in the source grid, remember it
+    // as where grid-autoplay should resume after the explicit queue empties.
+    // Queue-sourced videos that aren't in the grid leave the anchor untouched.
+    {
+        std::shared_ptr<ui::GridContainer> anchorGrid = getPlaybackGrid();
+        if (anchorGrid) {
+            for (const auto& gv : anchorGrid->videos) {
+                if (gv.id == video.id) { gridAnchorId_ = video.id; break; }
+            }
+        }
+    }
     state_.isLoadingVideo = true;
     state_.showDescriptionDrawer = false;
     description_scroll_row_ = 0;
@@ -2003,6 +2014,17 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         return;
     }
 
+    // Card action menu (browse) and queue panel (player) capture all buttons
+    // while open — same pattern as the settings modal above.
+    if (state_.showCardMenu && down) {
+        handleCardMenuButton(button);
+        return;
+    }
+    if (state_.showQueuePanel && down) {
+        handleQueuePanelButton(button);
+        return;
+    }
+
     if (button == SDL_CONTROLLER_BUTTON_START && controller_ != nullptr && SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_BACK)) {
         state_.running = false;
         return;
@@ -2022,6 +2044,26 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
         else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) keyboard_.toggleMode(state_, uiDirty_);
         else if (button == SDL_CONTROLLER_BUTTON_START)    activateKeyboardGo();
         else if (button == SDL_CONTROLLER_BUTTON_B)        closeKeyboard(false);
+        return;
+    }
+
+    // START opens the queue panel (player) or the focused card's action menu
+    // (browse: Play Now / Play Next / Add to Queue).  BACK+START quit is handled
+    // earlier, so a lone START reaches here.
+    if (button == SDL_CONTROLLER_BUTTON_START) {
+        if (state_.currentScreen == TubeState::Screen::Playback) {
+            state_.showQueuePanel    = true;
+            state_.queueSelectedIndex = 0;
+            ui_sounds::play(ui_sounds::Sound::Select);
+            uiDirty_ = true;
+            return;
+        }
+        if ((state_.currentScreen == TubeState::Screen::Home ||
+             state_.currentScreen == TubeState::Screen::Search) &&
+            !isInputLocked() && focus_manager_.getFocusedCard()) {
+            openCardMenu();
+            return;
+        }
         return;
     }
 
@@ -2948,38 +2990,44 @@ void App::saveDaemonQueue() {
             v["audio_url"] = audio_url;
         };
 
+        // Build the effective daemon sequence: the source grid (so the daemon's
+        // prev/next still span the whole feed — identical to before when the
+        // queue is empty, hence no regression), with the explicit queue spliced
+        // in right AFTER the current track so the daemon honours "play next /
+        // add to queue" exactly like the foreground app does.
+        std::vector<YouTubeVideo> seq;
         std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-        if (!grid || grid->videos.empty()) {
-            nlohmann::json v;
-            v["id"] = current_video_.id;
-            v["title"] = current_video_.title;
-            v["author"] = current_video_.author;
-            v["duration_seconds"] = current_video_.duration_seconds;
-            v["duration_string"] = current_video_.duration_string;
-            // Pass any already-resolved stream we have so the daemon can start instantly.
-            attachResolvedStream(v, current_video_.id);
-            j["videos"].push_back(v);
-            j["current_index"] = 0;
-        } else {
-            int current_idx = 0;
-            for (size_t i = 0; i < grid->videos.size(); ++i) {
-                nlohmann::json v;
-                const auto& vid = grid->videos[i];
-                v["id"] = vid.id;
-                v["title"] = vid.title;
-                v["author"] = vid.author;
-                v["duration_seconds"] = vid.duration_seconds;
-                v["duration_string"] = vid.duration_string;
-                // Prefer the daemon's native 360p cache, but fall back to any
-                // already-resolved playback stream before forcing a re-resolve.
-                attachResolvedStream(v, vid.id);
-                if (vid.id == current_video_.id) {
-                    current_idx = static_cast<int>(i);
-                }
-                j["videos"].push_back(v);
-            }
-            j["current_index"] = current_idx;
+        if (grid && !grid->videos.empty()) seq = grid->videos;
+
+        int current_idx = -1;
+        for (size_t i = 0; i < seq.size(); ++i) {
+            if (seq[i].id == current_video_.id) { current_idx = static_cast<int>(i); break; }
         }
+        if (current_idx < 0) {            // current came from the queue / isn't in the grid
+            seq.insert(seq.begin(), current_video_);
+            current_idx = 0;
+        }
+        if (!playQueue_.empty()) {
+            std::vector<YouTubeVideo> ins;
+            for (const auto& q : playQueue_)
+                if (!q.id.empty() && q.id != current_video_.id) ins.push_back(q);
+            seq.insert(seq.begin() + current_idx + 1, ins.begin(), ins.end());
+        }
+        if (seq.empty()) return;
+
+        for (const auto& vid : seq) {
+            nlohmann::json v;
+            v["id"] = vid.id;
+            v["title"] = vid.title;
+            v["author"] = vid.author;
+            v["duration_seconds"] = vid.duration_seconds;
+            v["duration_string"] = vid.duration_string;
+            // Prefer the daemon's native 360p cache, but fall back to any
+            // already-resolved playback stream before forcing a re-resolve.
+            attachResolvedStream(v, vid.id);
+            j["videos"].push_back(v);
+        }
+        j["current_index"] = current_idx;
         j["current_position"] = mpv_player_.getPlaybackTime();
         j["speed"]            = state_.speed;
         
@@ -2991,11 +3039,145 @@ void App::saveDaemonQueue() {
 }
 
 
-void App::playNextTrack() {
+// ── Explicit play-queue helpers ───────────────────────────────────────────
+// "What plays next" = the explicit queue first, then the source grid anchored
+// at gridAnchorId_.  Non-consuming peek used by prefetch so prefetch always
+// targets exactly what playNextTrack() will play next.
+bool App::nextUpVideo(YouTubeVideo& out) const {
+    if (!playQueue_.empty()) { out = playQueue_.front(); return true; }
     std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
+    if (!grid || grid->videos.empty()) return false;
+    const std::string anchor = gridAnchorId_.empty() ? current_video_.id : gridAnchorId_;
+    for (size_t i = 0; i < grid->videos.size(); ++i) {
+        if (grid->videos[i].id == anchor) {
+            if (i + 1 < grid->videos.size()) { out = grid->videos[i + 1]; return true; }
+            return false;
+        }
+    }
+    return false;
+}
+
+void App::addToQueueNext(const YouTubeVideo& v) {
+    if (v.id.empty()) return;
+    playQueue_.insert(playQueue_.begin(), v);
+    prefetched_next_video_id_.clear();   // the "next" changed — let prefetch re-evaluate
+    uiDirty_ = true;
+}
+
+void App::addToQueueEnd(const YouTubeVideo& v) {
+    if (v.id.empty()) return;
+    const bool wasEmpty = playQueue_.empty();
+    playQueue_.push_back(v);
+    if (wasEmpty) prefetched_next_video_id_.clear();
+    uiDirty_ = true;
+}
+
+void App::playQueueIndexNow(int idx) {
+    if (idx < 0 || idx >= static_cast<int>(playQueue_.size())) return;
+    YouTubeVideo v = playQueue_[idx];
+    // Jumping to an item drops it and everything before it from the queue.
+    playQueue_.erase(playQueue_.begin(), playQueue_.begin() + idx + 1);
+    prefetched_next_video_id_.clear();
+    playVideo(v, !state_.miniplayerActive);
+}
+
+void App::removeFromQueue(int idx) {
+    if (idx < 0 || idx >= static_cast<int>(playQueue_.size())) return;
+    playQueue_.erase(playQueue_.begin() + idx);
+    prefetched_next_video_id_.clear();
+    if (state_.queueSelectedIndex >= static_cast<int>(playQueue_.size()))
+        state_.queueSelectedIndex = std::max(0, static_cast<int>(playQueue_.size()) - 1);
+    uiDirty_ = true;
+}
+
+void App::moveQueueItem(int idx, int delta) {
+    int j = idx + delta;
+    if (idx < 0 || idx >= static_cast<int>(playQueue_.size())) return;
+    if (j   < 0 || j   >= static_cast<int>(playQueue_.size())) return;
+    std::swap(playQueue_[idx], playQueue_[j]);
+    state_.queueSelectedIndex = j;
+    prefetched_next_video_id_.clear();
+    uiDirty_ = true;
+}
+
+void App::openCardMenu() {
+    if (!focus_manager_.getFocusedCard()) return;
+    state_.showCardMenu = true;
+    state_.cardMenuIndex = 0;
+    ui_sounds::play(ui_sounds::Sound::Select);
+    uiDirty_ = true;
+}
+
+void App::handleCardMenuButton(int button) {
+    // Rows: 0 Play Now · 1 Play Next · 2 Add to Queue · 3 Cancel
+    const int N = 4;
+    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+        state_.cardMenuIndex = (state_.cardMenuIndex + N - 1) % N; uiDirty_ = true;
+    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+        state_.cardMenuIndex = (state_.cardMenuIndex + 1) % N; uiDirty_ = true;
+    } else if (button == SDL_CONTROLLER_BUTTON_B) {
+        state_.showCardMenu = false; ui_sounds::play(ui_sounds::Sound::Back); uiDirty_ = true;
+    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+        auto card = focus_manager_.getFocusedCard();
+        state_.showCardMenu = false;
+        if (card) {
+            switch (state_.cardMenuIndex) {
+                case 0: ui_sounds::play(ui_sounds::Sound::Select); playVideo(card->video, false); return;
+                case 1: addToQueueNext(card->video); break;
+                case 2: addToQueueEnd(card->video);  break;
+                default: break;   // Cancel
+            }
+        }
+        ui_sounds::play(ui_sounds::Sound::Select);
+        uiDirty_ = true;
+    }
+}
+
+void App::handleQueuePanelButton(int button) {
+    int n = static_cast<int>(playQueue_.size());
+    if (button == SDL_CONTROLLER_BUTTON_B || button == SDL_CONTROLLER_BUTTON_START) {
+        state_.showQueuePanel = false; ui_sounds::play(ui_sounds::Sound::Back); uiDirty_ = true; return;
+    }
+    if (n == 0) return;
+    if (state_.queueSelectedIndex >= n) state_.queueSelectedIndex = n - 1;
+    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+        state_.queueSelectedIndex = (state_.queueSelectedIndex + n - 1) % n; uiDirty_ = true;
+    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+        state_.queueSelectedIndex = (state_.queueSelectedIndex + 1) % n; uiDirty_ = true;
+    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+        int idx = state_.queueSelectedIndex;
+        state_.showQueuePanel = false;
+        ui_sounds::play(ui_sounds::Sound::Select);
+        playQueueIndexNow(idx);
+    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+        ui_sounds::play(ui_sounds::Sound::Back);
+        removeFromQueue(state_.queueSelectedIndex);
+        if (playQueue_.empty()) state_.showQueuePanel = false;
+    } else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+        moveQueueItem(state_.queueSelectedIndex, -1);
+    } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+        moveQueueItem(state_.queueSelectedIndex, +1);
+    }
+}
+
+void App::playNextTrack() {
+    // Layered model: the explicit queue takes priority.
+    if (!playQueue_.empty()) {
+        YouTubeVideo next = playQueue_.front();
+        playQueue_.erase(playQueue_.begin());
+        prefetched_next_video_id_.clear();
+        playVideo(next, !state_.miniplayerActive);
+        showPlaybackToast("Next in Queue");
+        return;
+    }
+    // Otherwise continue from the source grid, anchored at the last grid video
+    // we played (so autoplay still works after the queue drains, even though
+    // current_video_ may be a queued item that isn't in the grid).
+    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
+    const std::string anchor = gridAnchorId_.empty() ? current_video_.id : gridAnchorId_;
     if (grid && !grid->videos.empty()) {
         for (size_t i = 0; i < grid->videos.size(); ++i) {
-            if (grid->videos[i].id == current_video_.id) {
+            if (grid->videos[i].id == anchor) {
                 if (i + 1 < grid->videos.size()) {
                     auto nextVideo = grid->videos[i + 1];
                     focus_manager_.setFocusedIndex(i + 1);
@@ -3004,7 +3186,7 @@ void App::playNextTrack() {
                 } else {
                     showPlaybackToast("End of Playlist");
                 }
-                break;
+                return;
             }
         }
     }
@@ -3231,24 +3413,11 @@ void App::handleVideoEnded() {
 
 void App::prefetchNextVideo() {
     if (prefetched_next_video_id_ == current_video_.id) return;
-    
-    // Find the next video in the active grid
-    std::shared_ptr<ui::GridContainer> grid = getPlaybackGrid();
-    if (!grid || grid->videos.empty()) return;
-    
+
+    // Single source of truth: prefetch exactly what playNextTrack() will play —
+    // the explicit queue front, else the grid continuation from the anchor.
     YouTubeVideo nextVideo;
-    bool foundCurrent = false;
-    for (size_t i = 0; i < grid->videos.size(); ++i) {
-        if (grid->videos[i].id == current_video_.id) {
-            if (i + 1 < grid->videos.size()) {
-                nextVideo = grid->videos[i + 1];
-                foundCurrent = true;
-            }
-            break;
-        }
-    }
-    
-    if (!foundCurrent) return;
+    if (!nextUpVideo(nextVideo)) return;
 
     // Mark as prefetched so we don't spam requests
     prefetched_next_video_id_ = current_video_.id;

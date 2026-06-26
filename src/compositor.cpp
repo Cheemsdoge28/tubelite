@@ -99,6 +99,10 @@ void Compositor::render(App* app, int width, int height) {
         if (app->state_.showSettingsModal) {
             SettingsModal::render(app, renderer_, width, height);
         }
+        // Up-next queue panel (START) — sits above the HUD.
+        if (app->state_.showQueuePanel) {
+            drawQueuePanel(app, width, height);
+        }
 
         { PROFILE_SCOPE("SDL_RenderPresent"); SDL_RenderPresent(renderer_); }
         return;
@@ -390,6 +394,11 @@ void Compositor::render(App* app, int width, int height) {
         SettingsModal::render(app, renderer_, width, height);
     }
 
+    // Card action menu (browse) — Play Now / Play Next / Add to Queue.
+    if (app->state_.showCardMenu) {
+        drawCardMenu(app, width, height);
+    }
+
     // Screen-off confirmation — drawn ABSOLUTELY LAST so it sits above the
     // player HUD (the regular playback toast was getting obscured by the
     // overlay).  Only shown while the X-press is "armed".
@@ -428,6 +437,115 @@ void Compositor::drawScreenOffPrompt(App* app, int width, int height) {
                      "Press X again to confirm  -  any other button cancels",
                      1, theme::ACCENT_BRIGHT);
     app->uiDirty_ = true;   // keep the prompt animating/visible until resolved
+}
+
+void Compositor::drawCardMenu(App* app, int width, int height) {
+    // Action menu for the focused browse card.  Static (no per-frame animation),
+    // so it deliberately does NOT set uiDirty_ — the input handlers redraw it on
+    // open/navigation, and the render-gate keeps it on screen otherwise.
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_Rect scrim{0, 0, width, height};
+    fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(200));
+
+    auto card = app->focus_manager_.getFocusedCard();
+    const std::string vtitle = card ? card->video.title : std::string();
+
+    const char* items[] = { "Play Now", "Play Next", "Add to Queue", "Cancel" };
+    const int nItems = 4;
+    const int rowH = 30, headH = 38, footH = 26;
+    const int cw = std::min(width - 40, 300);
+    const int ch = headH + nItems * rowH + footH;
+    const int cx = (width - cw) / 2;
+    const int cy = (height - ch) / 2;
+
+    fillRoundedRect(renderer_, SDL_Rect{cx + 2, cy + 3, cw, ch}, theme::RADIUS_CARD, theme::BLACK.a8(60));
+    SDL_Rect cardR{cx, cy, cw, ch};
+    fillRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::SURFACE);
+    fillRoundedRect(renderer_, SDL_Rect{cx, cy, 3, ch}, 2, theme::ACCENT);
+    drawRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::BORDER);
+
+    const int padL = cx + 14;
+    std::string ht = truncateTextToWidth(vtitle, 1, cw - 28);
+    drawText(renderer_, padL, cy + 12, ht.empty() ? "Add to queue" : ht, 1, theme::TEXT);
+    SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 200);
+    SDL_Rect hr{cx + 12, cy + headH - 6, cw - 24, 1};
+    SDL_RenderFillRect(renderer_, &hr);
+
+    for (int i = 0; i < nItems; ++i) {
+        const int ry = cy + headH + i * rowH;
+        const bool sel = (app->state_.cardMenuIndex == i);
+        if (sel) {
+            SDL_Rect hl{cx + 8, ry + 2, cw - 16, rowH - 4};
+            fillRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(45));
+            drawRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(160));
+        }
+        drawText(renderer_, padL, ry + (rowH - 8) / 2, items[i], 1,
+                 sel ? SDL_Color(theme::TEXT) : SDL_Color(theme::TEXT_3));
+    }
+    drawText(renderer_, padL, cy + ch - footH + 7, "A  Select       B  Close", 1, theme::TEXT_MUTED);
+}
+
+void Compositor::drawQueuePanel(App* app, int width, int height) {
+    // Up-next queue (YouTube-Music style).  Drawn over the player; the player
+    // path already renders every frame, so no uiDirty_ poke needed here.
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_Rect scrim{0, 0, width, height};
+    fillRoundedRect(renderer_, scrim, 0, theme::BLACK.a8(205));
+
+    const auto& q = app->playQueue_;
+    const int n = static_cast<int>(q.size());
+
+    const int headH = 34, footH = 26, rowH = 34;
+    const int cw = std::min(width - 24, 440);
+    const int cx = (width - cw) / 2;
+    const int maxRows = std::max(1, (height - 24 - headH - footH) / rowH);
+    const int visRows = std::max(1, std::min(std::max(n, 1), maxRows));
+    const int ch = headH + footH + visRows * rowH;
+    const int cy = (height - ch) / 2;
+
+    fillRoundedRect(renderer_, SDL_Rect{cx + 2, cy + 3, cw, ch}, theme::RADIUS_CARD, theme::BLACK.a8(60));
+    SDL_Rect cardR{cx, cy, cw, ch};
+    fillRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::SURFACE);
+    fillRoundedRect(renderer_, SDL_Rect{cx, cy, 3, ch}, 2, theme::ACCENT);
+    drawRoundedRect(renderer_, cardR, theme::RADIUS_CARD, theme::BORDER);
+
+    const int padL = cx + 14;
+    char hdr[48]; snprintf(hdr, sizeof(hdr), "UP NEXT  (%d)", n);
+    drawText(renderer_, padL, cy + 9, hdr, 1, theme::ACCENT);
+    { const char* sub = "B close"; int sw = 0; getTextSize(sub, 1, &sw, nullptr);
+      drawText(renderer_, cx + cw - 14 - sw, cy + 9, sub, 1, theme::TEXT_MUTED); }
+    SDL_SetRenderDrawColor(renderer_, theme::DIVIDER.r, theme::DIVIDER.g, theme::DIVIDER.b, 200);
+    SDL_Rect hr{cx + 12, cy + headH - 4, cw - 24, 1};
+    SDL_RenderFillRect(renderer_, &hr);
+
+    if (n == 0) {
+        drawTextCentered(renderer_, cx + cw / 2, cy + headH + 16, "Queue is empty", 1, theme::TEXT_3);
+        drawTextCentered(renderer_, cx + cw / 2, cy + headH + 34, "Autoplay continues from the feed", 1, theme::TEXT_MUTED);
+    } else {
+        int sel = app->state_.queueSelectedIndex;
+        if (sel < 0) sel = 0; if (sel >= n) sel = n - 1;
+        int first = 0;
+        if (sel >= visRows) first = sel - visRows + 1;
+        if (first + visRows > n) first = std::max(0, n - visRows);
+        for (int r = 0; r < visRows && (first + r) < n; ++r) {
+            const int i  = first + r;
+            const int ry = cy + headH + r * rowH;
+            const bool selRow = (i == sel);
+            if (selRow) {
+                SDL_Rect hl{cx + 8, ry + 2, cw - 16, rowH - 4};
+                fillRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(45));
+                drawRoundedRect(renderer_, hl, theme::RADIUS_PILL, theme::ACCENT.a8(150));
+            }
+            char num[8]; snprintf(num, sizeof(num), "%d", i + 1);
+            drawText(renderer_, padL, ry + 11, num, 1, theme::TEXT_MUTED);
+            const int tx = padL + 24;
+            const int avail = cw - (tx - cx) - 14;
+            drawText(renderer_, tx, ry + 4, truncateTextToWidth(q[i].title, 1, avail), 1,
+                     selRow ? SDL_Color(theme::TEXT) : SDL_Color(theme::TEXT_3));
+            drawText(renderer_, tx, ry + 18, truncateTextToWidth(q[i].author, 1, avail), 1, theme::TEXT_MUTED);
+        }
+    }
+    drawText(renderer_, padL, cy + ch - footH + 7, "A Play    X Remove    L1/R1 Move", 1, theme::TEXT_MUTED);
 }
 
 void Compositor::drawSignInHelp(App* app, int width, int height) {
@@ -918,12 +1036,12 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
     const long long curViews = app->active_video_metadata_.view_count;
     if (hud_cache_id_    != app->current_video_.id ||
         hud_cache_width_ != width                   ||
-        hud_cache_speed_ != hasBadge                ||
+        hud_cache_speed_ != app->state_.speed       ||
         hud_cache_views_ != curViews) {
 
         hud_cache_id_    = app->current_video_.id;
         hud_cache_width_ = width;
-        hud_cache_speed_ = hasBadge;
+        hud_cache_speed_ = app->state_.speed;
         hud_cache_views_ = curViews;
 
         int maxTitleW = width - 28 - (hasBadge ? 60 : 0);
@@ -962,7 +1080,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         hud_static_w_                 != width  ||
         hud_static_h_                 != height ||
         hud_static_video_id_          != app->current_video_.id ||
-        hud_static_speed_badge_       != hasBadge ||
+        hud_static_speed_badge_       != app->state_.speed ||
         hud_static_views_             != curViews ||
         hud_static_drawer_open_       != drawerOpen ||
         hud_static_playing_           != playingState) {
@@ -985,12 +1103,17 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         // 52px two-row layout: title row + meta row.  Layered scrim fades the
         // background toward transparent at the bottom so the video shows
         // through.  Left red accent bar mirrors the browse header.
-        const int topH = 52;
+        // Roomier top panel: taller bar + more left/row padding so the title,
+        // channel and stats aren't crammed against the edges.
+        const int topH   = 60;   // was 52
+        const int padL   = 14;   // was 12
+        const int titleY = 9;    // was 4
+        const int metaY  = 38;   // was 32
         SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 235);
-        SDL_Rect topPanelHi{0, 0, width, topH - 16};
+        SDL_Rect topPanelHi{0, 0, width, topH - 18};
         SDL_RenderFillRect(renderer_, &topPanelHi);
         SDL_SetRenderDrawColor(renderer_, theme::BAR.r, theme::BAR.g, theme::BAR.b, 170);
-        SDL_Rect topPanelLo{0, topH - 16, width, 16};
+        SDL_Rect topPanelLo{0, topH - 18, width, 18};
         SDL_RenderFillRect(renderer_, &topPanelLo);
 
         // Left red accent bar (matches browse header)
@@ -1004,29 +1127,35 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         SDL_RenderFillRect(renderer_, &topBorder);
 
         // Title row
-        drawTextShadow(renderer_, 12, 4, hud_title_, 2, theme::WHITE);
+        drawTextShadow(renderer_, padL, titleY, hud_title_, 2, theme::WHITE);
 
-        // Speed badge (top-right corner)
-        int titleRightLimit = width - 12;
+        // Speed badge (top-right) — compact "1.5x" / "2x" (no clunky "1.50x"),
+        // padded, and vertically centred on the title row.
+        int titleRightLimit = width - padL;
         if (hasBadge) {
-            char spd[10]; snprintf(spd, sizeof(spd), "%.2fx", app->state_.speed);
-            int sw = 0, sh = 0; getTextSize(spd, 1, &sw, &sh);
-            SDL_Rect badge{width - sw - 18, 7, sw + 12, sh + 6};
-            fillRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::BLUE.a8(220));
-            drawRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::WHITE.a8(60));
-            drawText(renderer_, badge.x + 6, badge.y + 3, spd, 1, theme::WHITE);
-            titleRightLimit = badge.x - 8;
+            char num[12]; snprintf(num, sizeof(num), "%g", app->state_.speed);
+            std::string spdStr = std::string(num) + "x";
+            int sw = 0, sh = 0; getTextSize(spdStr, 1, &sw, &sh);
+            const int bpadX = 9, bpadY = 4;
+            const int bw = sw + bpadX * 2;
+            const int bh = sh + bpadY * 2;
+            int titleH = 0; getTextSize(hud_title_.empty() ? "X" : hud_title_, 2, nullptr, &titleH);
+            const int by = titleY + (titleH - bh) / 2;
+            SDL_Rect badge{width - padL - bw, by, bw, bh};
+            fillRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::BLUE.a8(235));
+            drawRoundedRect(renderer_, badge, theme::RADIUS_PILL, theme::WHITE.a8(45));
+            drawText(renderer_, badge.x + bpadX, badge.y + bpadY, spdStr, 1, theme::WHITE);
+            titleRightLimit = badge.x - 10;
         }
 
         // Meta row (channel · stats) — second line, smaller, muted
-        const int metaY = 32;
         if (!hud_author_.empty()) {
-            drawText(renderer_, 12, metaY, hud_author_, 1, theme::ACCENT);
+            drawText(renderer_, padL, metaY, hud_author_, 1, theme::ACCENT);
         }
         // Stats right-aligned; uses dimmer color so the title still owns the
         // visual emphasis.
-        if (titleRightLimit - hud_stats_w_ - 12 >= 0) {
-            drawText(renderer_, width - 12 - hud_stats_w_, metaY,
+        if (titleRightLimit - hud_stats_w_ - padL >= 0) {
+            drawText(renderer_, width - padL - hud_stats_w_, metaY,
                      hud_stats_, 1, theme::TEXT_3);
         }
 
@@ -1085,7 +1214,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         hud_static_w_           = width;
         hud_static_h_           = height;
         hud_static_video_id_    = app->current_video_.id;
-        hud_static_speed_badge_ = hasBadge;
+        hud_static_speed_badge_ = app->state_.speed;
         hud_static_views_       = curViews;
         hud_static_drawer_open_ = drawerOpen;
         hud_static_playing_     = playingState;

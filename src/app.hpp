@@ -209,6 +209,26 @@ private:
     float current_fps_{0.0f};
     float render_latency_ms_{0.0f};
     VideoPlaybackMetadata active_video_metadata_;
+
+    // ── Explicit play queue (YouTube-Music-style, layered over grid autoplay) ──
+    // playQueue_ holds user-added "play next / add to queue" items.  "What plays
+    // next" consults this FIRST, then falls back to continuing from the source
+    // grid anchored at gridAnchorId_ (the last grid video we played).  All of
+    // playNextTrack / prefetchNextVideo / saveDaemonQueue go through
+    // nextUpVideo() so prefetch and the daemon stay perfectly consistent.
+    std::vector<YouTubeVideo> playQueue_;
+    std::string gridAnchorId_;   // id of the last grid-sourced video (autoplay anchor)
+
+    bool nextUpVideo(YouTubeVideo& out) const;   // peek (non-consuming): queue-first, then grid
+    void addToQueueNext(const YouTubeVideo& v);   // insert at front of queue
+    void addToQueueEnd(const YouTubeVideo& v);    // append to queue
+    void playQueueIndexNow(int idx);              // jump to queue[idx], drop the ones before it
+    void removeFromQueue(int idx);
+    void moveQueueItem(int idx, int delta);
+    void openCardMenu();                          // browse: action menu for the focused card
+    void handleCardMenuButton(int sdlControllerButton);
+    void handleQueuePanelButton(int sdlControllerButton);
+
     std::optional<double> last_seek_time_;
     std::chrono::steady_clock::time_point last_seek_time_point_;
     std::vector<std::string> wrapped_description_lines_;
