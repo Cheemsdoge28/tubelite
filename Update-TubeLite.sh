@@ -46,10 +46,14 @@ log_warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
 log_err()  { echo -e "  ${RED}✗${NC} $1"; }
 log_info() { echo -e "  $1"; }
 
+normalize_version() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/^tubelite[[:space:]]+//g' | sed -E 's/^v//g' | tr -d ' \t\r\n'
+}
+
 log_step "Fetching latest release URL from GitHub..."
 
-# Inline Python to query GitHub API and extract download URL
-DOWNLOAD_URL=$(python3 - <<'EOF'
+# Inline Python to query GitHub API and extract download URL & tag name
+RESPONSE=$(python3 - <<'EOF'
 import urllib.request
 import json
 import sys
@@ -61,6 +65,7 @@ try:
     )
     with urllib.request.urlopen(req) as response:
         data = json.loads(response.read().decode())
+        tag_name = data.get('tag_name', '')
         download_url = None
         for asset in data.get('assets', []):
             if asset.get('name', '').lower().endswith('.zip'):
@@ -69,7 +74,7 @@ try:
         if not download_url:
             download_url = data.get('zipball_url')
         if download_url:
-            print(download_url)
+            print(f"{tag_name}|{download_url}")
             sys.exit(0)
         else:
             sys.stderr.write("No download URL found\n")
@@ -80,12 +85,44 @@ except Exception as e:
 EOF
 )
 
+if [ -z "$RESPONSE" ] || [[ "$RESPONSE" != *"|"* ]]; then
+    log_err "Failed to retrieve the latest release information from GitHub."
+    exit 1
+fi
+
+TAG_NAME="${RESPONSE%%|*}"
+DOWNLOAD_URL="${RESPONSE#*|}"
+
 if [ -z "$DOWNLOAD_URL" ]; then
     log_err "Failed to retrieve the latest download URL from GitHub."
     exit 1
 fi
 
-log_ok "Download URL: $DOWNLOAD_URL"
+log_ok "Latest release tag: $TAG_NAME"
+
+# ---------- Version Check ----------
+LOCAL_VERSION=""
+if [ -f "$TARGET_DIR/VERSION" ]; then
+    LOCAL_VERSION=$(cat "$TARGET_DIR/VERSION" | tr -d '\r\n')
+fi
+
+NORM_LOCAL=$(normalize_version "$LOCAL_VERSION")
+NORM_REMOTE=$(normalize_version "$TAG_NAME")
+
+if [ -n "$NORM_LOCAL" ] && [ "$NORM_LOCAL" = "$NORM_REMOTE" ]; then
+    log_warn "Current version ($LOCAL_VERSION) is already up to date with the latest release ($TAG_NAME)."
+    echo -n -e "${YELLOW}${BOLD}Would you like to reinstall anyway? (y/N): ${NC}"
+    # Read one character (-n 1), wait up to 30s (-t 30)
+    read -r -n 1 -t 30 ANSWER || ANSWER="n"
+    echo "" # Newline after single keypress
+    if [[ ! "$ANSWER" =~ ^[yY] ]]; then
+        log_step "Reinstallation cancelled. Backing out of updater..."
+        echo "Returning to EmulationStation in 3 seconds..."
+        sleep 3
+        exit 0
+    fi
+    log_info "Proceeding with reinstallation..."
+fi
 
 log_step "Downloading update package..."
 ZIP_PATH="/tmp/TubeLite_latest.zip"
