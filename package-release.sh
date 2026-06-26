@@ -36,6 +36,8 @@ BINARY_PATH="$(pick_binary || true)"
 
 copy_file "$SCRIPT_DIR/Install-TubeLite.sh" "$APP_DIR/Install-TubeLite.sh"
 copy_file "$SCRIPT_DIR/TubeLite.tbl" "$APP_DIR/TubeLite.tbl"
+copy_file "$SCRIPT_DIR/Update-TubeLite.sh" "$APP_DIR/Update-TubeLite.sh"
+copy_file "$SCRIPT_DIR/Update-TubeLite.tbl" "$APP_DIR/Update-TubeLite.tbl"
 if [ -n "$BINARY_PATH" ]; then
     # Stage the app binary under build/ (not bin/) — that's where the launcher
     # and the on-device helper scripts expect it.  yt-dlp stays under bin/.

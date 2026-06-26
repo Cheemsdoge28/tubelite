@@ -364,6 +364,7 @@ FORCE_REBUILD=0
 REINSTALL_DEPS=0
 for arg in "$@"; do
     case "$arg" in
+        -u|--update) exec bash "$SCRIPT_DIR/Update-TubeLite.sh" ;;
         --rebuild) FORCE_REBUILD=1 ;;
         --reinstall-deps) REINSTALL_DEPS=1 ;;
         --skip-theme) DO_THEME=0 ;;
@@ -543,7 +544,8 @@ if [ "$#" -eq 0 ]; then
         echo "7) Exit"
         echo "8) Fix Playback / Compatibility (libmpv)"
         echo "9) Fix Build Headers (for on-device compile)"
-        read -p "Enter choice [1-9]: " choice </dev/tty 2>/dev/null || choice="1"
+        echo "10) Update TubeLite (OTA)"
+        read -p "Enter choice [1-10]: " choice </dev/tty 2>/dev/null || choice="1"
     fi
 
     case "$choice" in
@@ -556,6 +558,7 @@ if [ "$#" -eq 0 ]; then
         7) exit 0 ;;
         8) run_compat_wizard; exit $? ;;
         9) fix_dev_headers; exit $? ;;
+        10) exec bash "$SCRIPT_DIR/Update-TubeLite.sh" ;;
         *) log_err "Invalid choice. Exiting."; exit 1 ;;
     esac
 fi

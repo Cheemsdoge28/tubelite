@@ -13,7 +13,8 @@ def main():
         "Uninstall Theme Only",
         "Exit",
         "Fix Playback / Compatibility (libmpv)",
-        "Fix Build Headers (for on-device compile)"
+        "Fix Build Headers (for on-device compile)",
+        "Update TubeLite (OTA)"
     ]
     
     selected = 0

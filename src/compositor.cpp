@@ -1470,17 +1470,24 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
             SDL_QueryTexture(sbTex, nullptr, nullptr, &sbW, &sbH);
             SDL_Rect thumbArea{previewX, previewY, thumbW, thumbH};
             SDL_Rect thumbRect = aspectFitRect(sbW, sbH, thumbArea);
+
+            // Draw the backplate using the same helper and color as the miniplayer
+            fillRoundedRect(renderer_, thumbArea, theme::RADIUS_CARD, theme::BG);
+
             SDL_RenderCopy(renderer_, sbTex, nullptr, &thumbRect);
 
-            SDL_SetRenderDrawColor(renderer_, theme::WHITE.r, theme::WHITE.g, theme::WHITE.b, 180);
-            SDL_RenderDrawRect(renderer_, &thumbRect);
+            // Mask corners so the letterboxed content conforms to the rounded card
+            maskRoundedCorners(renderer_, thumbArea, theme::RADIUS_CARD, theme::BG);
+
+            // Draw the white outline using the rounded helper
+            drawRoundedRect(renderer_, thumbArea, theme::RADIUS_CARD, theme::WHITE.a8(180));
 
             int tw = 0, th = 0;
             getTextSize(timeStr, 1, &tw, &th);
             int pillW = tw + 8;
             int pillH = th + 4;
-            int pillX = thumbRect.x + (thumbRect.w - pillW) / 2;
-            int pillY = thumbRect.y + thumbRect.h - pillH - 4;
+            int pillX = thumbArea.x + (thumbArea.w - pillW) / 2;
+            int pillY = thumbArea.y + thumbArea.h - pillH - 4;
 
             SDL_Rect tsBg{pillX, pillY, pillW, pillH};
             fillRoundedRect(renderer_, tsBg, theme::RADIUS_SM, theme::BLACK.a8(200));
