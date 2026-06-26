@@ -569,7 +569,8 @@ void Compositor::drawQueuePanel(App* app, int width, int height) {
         drawTextCentered(renderer_, cx + cw / 2, cy + headH + 34, "Autoplay continues from the feed", 1, theme::TEXT_MUTED);
     } else {
         int sel = app->state_.queueSelectedIndex;
-        if (sel < 0) sel = 0; if (sel >= n) sel = n - 1;
+        if (sel < 0) sel = 0;
+        if (sel >= n) sel = n - 1;
         int first = 0;
         if (sel >= visRows) first = sel - visRows + 1;
         if (first + visRows > n) first = std::max(0, n - visRows);
@@ -1186,7 +1187,7 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
         // padded, and vertically centred on the title row.
         int titleRightLimit = width - padL;
         if (hasBadge) {
-            char num[12]; snprintf(num, sizeof(num), "%g", app->state_.speed);
+            char num[24]; snprintf(num, sizeof(num), "%g", app->state_.speed);
             std::string spdStr = std::string(num) + "x";
             int sw = 0, sh = 0; getTextSize(spdStr, 1, &sw, &sh);
             const int bpadX = 9, bpadY = 4;
