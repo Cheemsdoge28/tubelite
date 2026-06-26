@@ -1,4 +1,13 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
-sudo bash "$SCRIPT_DIR/Update-TubeLite.sh"
+
+# If stdout is not a tty (e.g. launched directly from EmulationStation carousel),
+# redirect input/output to the physical console tty1 so the terminal output
+# and interactive prompts are visible and usable on the handheld screen.
+if [ ! -t 1 ]; then
+    clear > /dev/tty1 2>/dev/null || true
+    sudo bash "$SCRIPT_DIR/Update-TubeLite.sh" "$@" > /dev/tty1 2>&1 < /dev/tty1
+else
+    sudo bash "$SCRIPT_DIR/Update-TubeLite.sh" "$@"
+fi
