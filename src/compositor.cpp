@@ -63,6 +63,64 @@ static SDL_Rect aspectFitRect(int srcW, int srcH, const SDL_Rect& area) {
     return dst;
 }
 
+Compositor::~Compositor() {
+    if (storyboard_mask_texture_) {
+        SDL_DestroyTexture(storyboard_mask_texture_);
+        storyboard_mask_texture_ = nullptr;
+    }
+}
+
+void Compositor::initStoryboardMask(int w, int h, int r) {
+    if (storyboard_mask_texture_) {
+        return;
+    }
+    
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) return;
+    
+    SDL_FillRect(surf, nullptr, 0x00000000);
+    
+    uint32_t* pixels = static_cast<uint32_t*>(surf->pixels);
+    uint32_t bg_color = SDL_MapRGBA(surf->format, theme::BG.r, theme::BG.g, theme::BG.b, 255);
+    
+    double cx[4] = { r - 0.5, w - r - 0.5, r - 0.5, w - r - 0.5 };
+    double cy[4] = { r - 0.5, r - 0.5, h - r - 0.5, h - r - 0.5 };
+    
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            bool top = (y < r);
+            bool bottom = (y >= h - r);
+            bool left = (x < r);
+            bool right = (x >= w - r);
+            
+            if ((top || bottom) && (left || right)) {
+                int corner_idx = 0;
+                if (top && left) corner_idx = 0;
+                else if (top && right) corner_idx = 1;
+                else if (bottom && left) corner_idx = 2;
+                else if (bottom && right) corner_idx = 3;
+                
+                double dx = x - cx[corner_idx];
+                double dy = y - cy[corner_idx];
+                double dist = std::sqrt(dx*dx + dy*dy);
+                
+                if (dist > r + 0.5) {
+                    pixels[y * w + x] = bg_color;
+                } else if (dist >= r - 0.5) {
+                    double alpha = dist - (r - 0.5);
+                    uint8_t a = static_cast<uint8_t>(alpha * 255.0);
+                    pixels[y * w + x] = SDL_MapRGBA(surf->format, theme::BG.r, theme::BG.g, theme::BG.b, a);
+                }
+            }
+        }
+    }
+    
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+    storyboard_mask_texture_ = SDL_CreateTextureFromSurface(renderer_, surf);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    SDL_FreeSurface(surf);
+}
+
 void Compositor::render(App* app, int width, int height) {
     PROFILE_SCOPE("Compositor::render");
     if (app->state_.currentScreen == TubeState::Screen::Playback) {
@@ -1477,8 +1535,13 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
 
             SDL_RenderCopy(renderer_, sbTex, nullptr, &thumbRect);
 
-            // Mask corners so the letterboxed content conforms to the rounded card
-            maskRoundedCorners(renderer_, thumbArea, theme::RADIUS_CARD, theme::BG);
+            // Draw the pre-rendered and cached rounded corner mask on top
+            if (!storyboard_mask_texture_) {
+                initStoryboardMask(thumbW, thumbH, theme::RADIUS_CARD);
+            }
+            if (storyboard_mask_texture_) {
+                SDL_RenderCopy(renderer_, storyboard_mask_texture_, nullptr, &thumbArea);
+            }
 
             // Draw the white outline using the rounded helper
             drawRoundedRect(renderer_, thumbArea, theme::RADIUS_CARD, theme::WHITE.a8(180));

@@ -8,6 +8,7 @@ class App;
 class Compositor {
 public:
     Compositor(SDL_Renderer* renderer) : renderer_(renderer) {}
+    ~Compositor();
     void render(App* app, int width, int height);
 
 private:
@@ -23,6 +24,7 @@ private:
     void drawScreenOffPrompt(App* app, int width, int height);
     // Short fade-from-black drawn over a freshly-appeared video surface.
     void drawVideoFade(App* app, const SDL_Rect& region, int radius);
+    void initStoryboardMask(int w, int h, int r);
 
     SDL_Renderer* renderer_{nullptr};
     
@@ -78,4 +80,6 @@ private:
     bool         hud_static_playing_{false};
     double       hud_static_speed_badge_{1.0};  // last baked speed VALUE
     long long    hud_static_views_{-2};
+
+    SDL_Texture* storyboard_mask_texture_{nullptr};
 };
