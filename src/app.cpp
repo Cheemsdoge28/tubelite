@@ -1954,14 +1954,17 @@ void App::handleControllerButton(SDL_GameControllerButton button, bool down) {
                 uiDirty_ = true;
                 return;
             }
-        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT || button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+        } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+            // FN+R1 = next track.  (The old FN+DPAD_RIGHT skip stub was removed —
+            // skipping is on the shoulders only now, leaving the D-pad free.)
             if (state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) {
                 playNextTrack();
                 select_action_triggered_ = true;
                 uiDirty_ = true;
                 return;
             }
-        } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+        } else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+            // FN+L1 = previous track.
             if (state_.currentScreen == TubeState::Screen::Playback || state_.miniplayerActive) {
                 playPreviousTrack();
                 select_action_triggered_ = true;
@@ -2253,9 +2256,15 @@ void App::handleJoyButton(Uint8 button, SDL_JoystickID instanceId, bool down) {
         handleControllerButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK, down);
         break;
     case 16:
+        // SELECT acts as FN.  Mirror the SDL_GameController BACK handler so the
+        // raw-joystick path (the one the real R36S actually uses) gets the same
+        // FN semantics: hold = modifier, tap-with-no-chord = toggle miniplayer.
+        // Without this the "SEL → MINI" hint was a no-op on-device.
         select_held_ = down;
         if (down) {
             select_action_triggered_ = false;
+        } else if (!select_action_triggered_) {
+            toggleMiniplayer();
         }
         break;
     default: break;

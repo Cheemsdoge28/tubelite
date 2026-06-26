@@ -1233,28 +1233,29 @@ void Compositor::renderPlaybackOverlay(App* app, int width, int height) {
                 {"L2/R2", textColor, "VOL"}
             };
         } else if (fnHeld) {
-            // FN-held page: exactly what the buttons do WHILE FN is held — the
-            // chord controls.  Keeps FN+A=DESC discoverable.  This is also why
-            // the base page can drop the inline FN+/SEL chips: holding FN simply
-            // reveals them.
+            // FN-held page: the secondary "more controls" reference card surfaced
+            // by holding FN(SELECT).  The FN+ rows are true chords; SPEED/VOL are
+            // listed here purely to de-clutter the base row — L1/R1 and L2/R2
+            // still adjust them anytime (no FN needed).
             activeHints = {
                 {"FN+A", purple, "DESC"},
                 {"FN+L/R", purple, "SKIP"},
                 {"FN+Y", purple, "SETTINGS"},
-                {"FN", purple, "MINI"}
+                {"L1/R1", textColor, "SPEED"},
+                {"L2/R2", textColor, "VOL"}
             };
         } else {
-            // Base page: only the direct (no-modifier) actions you can do right
-            // now, plus START=QUEUE.  No inline FN+/SEL chips — hold FN to see
-            // those — so the row is no longer cramped/clipped.
+            // Base page: the primary direct actions + START=QUEUE + SEL=MINI, and
+            // an "FN MOD" chip advertising the hold-FN reference page.  Speed/vol
+            // moved to that page so this row isn't cramped/clipped.
             activeHints = {
                 {"A", red, playingState ? "PAUSE" : "PLAY"},
                 {"B", yellow, "EXIT"},
                 {"START", textColor, "QUEUE"},
+                {"SEL", textColor, "MINI"},
                 {"Y", green, "SUBS"},
                 {"X", blue, "LIGHT"},
-                {"L1/R1", textColor, "SPEED"},
-                {"L2/R2", textColor, "VOL"}
+                {"FN", purple, "MOD"}
             };
         }
         drawHintButtons(renderer_, activeHints, height - 28, 22, 1, width, panel, theme::CHIP.a8(160), textColor);
