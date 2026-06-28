@@ -248,8 +248,38 @@ else
     VERSION_TYPE="reinstall"
 fi
 
-# Run python inline controller menu
-CHOICE=$(python3 - "$VERSION_TYPE" "$LOCAL_VERSION" "$REMOTE_VERSION" <<'EOF'
+# ---------- Confirmation prompt ----------
+# Headless / scripted override: `--yes` (also -y / --non-interactive) skips the
+# interactive menu and proceeds with the recommended forward action.  This is
+# the supported recovery path on devices whose shipped updater had a broken
+# menu, and for any SSH/automation use where there's no controller to press.
+ASSUME_YES=0
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y|--non-interactive|--assume-yes) ASSUME_YES=1 ;;
+    esac
+done
+
+CHOICE=""
+if [ "$ASSUME_YES" -eq 1 ]; then
+    case "$VERSION_TYPE" in
+        upgrade)   CHOICE=0 ;;   # option 0 = Upgrade
+        downgrade) CHOICE=1 ;;   # option 1 = Downgrade
+        *)         CHOICE=1 ;;   # reinstall: option 1 = Reinstall
+    esac
+    log_info "Non-interactive (--yes): proceeding with $VERSION_TYPE."
+else
+# Interactive controller/keyboard menu.
+#
+# The program is passed via `python3 -c "$MENU_SRC"`, NOT `python3 - <<EOF`.
+# With the heredoc form Python reads its SCRIPT from stdin, which leaves stdin
+# at EOF — so the menu's input poll saw an instant EOF, took the non-tty
+# branch, and auto-cancelled on the very first loop (the js0 controller never
+# got a turn).  That's why the prompt cancelled itself with no keypress on
+# EVERY device.  Passing the source as a -c argument keeps stdin connected to
+# the real terminal (/dev/tty1 on-device, the SSH pty over ssh) so the D-pad
+# (js0) and arrow/Enter keys both work.
+MENU_SRC=$(cat <<'EOF'
 import struct, os, sys, time, select
 
 def main():
@@ -379,6 +409,10 @@ if __name__ == '__main__':
     print(main())
 EOF
 )
+    set +e
+    CHOICE=$(python3 -c "$MENU_SRC" "$VERSION_TYPE" "$LOCAL_VERSION" "$REMOTE_VERSION")
+    set -e
+fi
 
 if [ -z "$CHOICE" ]; then
     if [ "$VERSION_TYPE" = "upgrade" ]; then CHOICE="1"; else CHOICE="0"; fi
