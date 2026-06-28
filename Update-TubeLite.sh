@@ -171,16 +171,24 @@ if [ -n "$MANIFEST_URL" ]; then
     fi
     
     if [ -f "$MANIFEST_PATH" ] && [ -s "$MANIFEST_PATH" ]; then
-        PARSED=$(python3 -c '
+        PARSED=$(python3 - "$MANIFEST_PATH" <<'PYEOF' 2>/dev/null || true
 import json, sys
 try:
     with open(sys.argv[1]) as f:
         d = json.load(f)
-        force_inst = "true" if d.get("force_install") in (True, 1, "true", "1") else "false"
-        print(f"{d.get(\"version\",\"\")}|{d.get(\"tag\",\"\")}|{d.get(\"commit\",\"\")}|{force_inst}")
+    force_inst = "true" if d.get("force_install") in (True, 1, "true", "1") else "false"
+    # Plain %-formatting, NOT an f-string.  An f-string with quoted dict keys
+    # needs backslash-escaped quotes inside `python3 -c '...'`, which is a
+    # SyntaxError on Python < 3.12 (the device's eoan Python is far older) and
+    # silently broke manifest parsing — making the updater fall back to the tag
+    # name on every run.  A quoted heredoc keeps the quotes literal and the
+    # %-format avoids backslashes entirely.
+    print("%s|%s|%s|%s" % (
+        d.get("version", ""), d.get("tag", ""), d.get("commit", ""), force_inst))
 except Exception:
     pass
-' "$MANIFEST_PATH" 2>/dev/null || true)
+PYEOF
+)
         
         if [ -n "$PARSED" ] && [[ "$PARSED" == *"|"* ]]; then
             REMOTE_VERSION=$(echo "$PARSED" | cut -d'|' -f1)

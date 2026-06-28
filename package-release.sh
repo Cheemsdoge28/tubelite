@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_ROOT="${1:-$SCRIPT_DIR/dist/release}"
 APP_DIR="$RELEASE_ROOT/TubeLite"
 
-RELEASE_VERSION="1.6.1"
-RELEASE_TAG="Stable-2026-06-26"
+RELEASE_VERSION="1.6.2"
+RELEASE_TAG="Stable-2026-06-28"
 
 copy_file() {
     local source_path="$1"
@@ -137,6 +137,14 @@ Major Features & Improvements:
 - Unified installer and controller-friendly setup menu.
 
 Fixes in this build:
+- OTA Updater Manifest Parsing: Fixed a SyntaxError in the version-manifest
+  parser (an f-string with quoted dict keys, illegal on Python < 3.12 / the
+  device's eoan Python) that made the updater fail to read version.json and
+  fall back to the tag name on every run — which also silently disabled delta
+  updates. The parser now uses a quoted heredoc + %-formatting. NOTE: older
+  installs carrying the broken updater still receive THIS fix automatically:
+  the manifest failure is non-fatal and routes them through the full-package
+  update path, which replaces the updater itself.
 - Self-Preserving OTA Updater: Added a robust staged self-updating system (Update-TubeLite.sh/Update-TubeLite.tbl) that parses GitHub release API and prompts on reinstallation.
 - Input & Controller Modifier Separation: Split joystick Select (button 12) and Fn (button 16) modifier paths to prevent accidental miniplayer toggling during button chords.
 - Settings Overlay Chord Hint: Swapped search/home hints from SEL+Y to FN+Y (purple).
