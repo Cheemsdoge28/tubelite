@@ -192,8 +192,8 @@ static uint32_t  drm_handle  = 0;
 static uint32_t  drm_pitch   = 0;
 static uint64_t  drm_size    = 0;
 static uint32_t* drm_map     = nullptr;
-static int       drm_screen_w = 640;
-static int       drm_screen_h = 480;
+static int       drm_screen_w = 720;
+static int       drm_screen_h = 720;
 #endif
 
 static FT_Library ft_lib;

@@ -95,8 +95,8 @@ private:
     // in keyboard input handlers) is pure overhead.  Initialised right
     // after createWindow() in App::initialize and refreshed defensively
     // on SDL_WINDOWEVENT_SIZE_CHANGED.
-    int cached_window_w_{640};
-    int cached_window_h_{480};
+    int cached_window_w_{720};
+    int cached_window_h_{720};
     SDL_GameController* controller_{nullptr};
     SDL_Joystick* joystick_{nullptr};
 

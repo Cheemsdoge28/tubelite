@@ -9,8 +9,8 @@ namespace ui {
 VideoCard::VideoCard(ImageManager* im, const YouTubeVideo& video)
     : im_(im), video(video) {
     focusable = true;
-    bounds.w = 300; 
-    bounds.h = 240; 
+    bounds.w = 340;
+    bounds.h = 272;
 }
 
 void VideoCard::update(float dt) {

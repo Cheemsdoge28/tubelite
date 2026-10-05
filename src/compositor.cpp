@@ -286,8 +286,8 @@ void Compositor::render(App* app, int width, int height) {
     //     caused the full-screen flicker in the first place.
     if (app->state_.miniplayerActive) {
         PROFILE_SCOPE("miniplayer");
-        const int mW  = 240;
-        const int mVH = 135;   // video area height (16:9 of 240)
+        const int mW  = 360;
+        const int mVH = 202;   // video area height (16:9 of 360)
         const int mSH = 60;    // details/title strip height
         const int mH  = mVH + mSH;
         const int kStatusBarH = 48;  // matches StatusOverlay's bar height
@@ -414,7 +414,7 @@ void Compositor::render(App* app, int width, int height) {
 
         // ── Pass 2: live video frame (every frame, directly to screen) ────────
         // Fetch BEFORE any SDL render-target change to avoid the FBO conflict.
-        // mpv renders at the full window size (640×480, 4:3) so the texture
+        // mpv renders at the full window size so the texture
         // contains the video letterboxed within the FBO.  Pass getVideoRect()
         // as the source so the 16:9 miniplayer destination only receives the
         // actual video pixels — without this the letterbox bars get stretched
@@ -805,7 +805,7 @@ void Compositor::drawDebugOverlay(App* app, int width, int /*height*/) {
         const int sidecarRows = 5;     // tubed status + 3 latency lines + image stats
         const int sparkH      = 28;
         const int rowH        = 12;
-        const int panelW      = 320;
+        const int panelW      = 360;
         const int panelH      = 14 + headerRows * 16 + 6 + sidecarRows * 12 + 6
                               + 6 + (maxShown + 1) * rowH + 8 + sparkH + 10;
         const int panelX     = width - panelW - 10;

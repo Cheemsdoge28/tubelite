@@ -131,7 +131,7 @@ bool App::initialize() {
     home_grid_ = std::make_shared<ui::GridContainer>();
     home_grid_->title = "Trending Now";
     home_grid_->columns = 2;
-    home_grid_->bounds = {0, 100, 640, 332};
+    home_grid_->bounds = {0, 100, 720, 572};
     home_grid_->setImageManager(image_manager_.get());
     home_grid_->setActivateCallback(activate);
     home_grid_->onScrolledToBottom = [this]() {
@@ -145,7 +145,7 @@ bool App::initialize() {
     search_grid_ = std::make_shared<ui::GridContainer>();
     search_grid_->title = "";
     search_grid_->columns = 2;
-    search_grid_->bounds = {0, 100, 640, 332};
+    search_grid_->bounds = {0, 100, 720, 572};
     search_grid_->setImageManager(image_manager_.get());
     search_grid_->setActivateCallback(activate);
     search_grid_->onScrolledToBottom = [this]() {
@@ -780,7 +780,7 @@ bool App::createWindow() {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
 
     window_ = SDL_CreateWindow("tubelite", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               640, 480, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
+                               720, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
     if (window_ == nullptr) {
         logError(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
         return false;
